@@ -19,12 +19,10 @@
 // process allocate through mimalloc, name build/lib/quanta_mimalloc_override.o on
 // the link line; leave it out and the host keeps its own allocator.
 //
-// Threading: a Runtime and everything allocated in it belong to the thread that
-// created it, and none may move to another. One Runtime is live on a thread at a
-// time: the engine keeps its per-realm intrinsics (iterator, generator and
-// collection prototypes, ...) in thread-wide state, so a second Runtime made while
-// the first exists would take them over. Destroy a Runtime before making the next;
-// any number may follow one another.
+// Threading: an Isolate and everything allocated in it belong to the thread that
+// created it, and none may move to another. One Isolate is live on a thread at a
+// time; destroy it before making the next, and any number may follow one another.
+// Realms are what a browser has several of at once -- see Isolate and Realm below.
 //
 // Exceptions: a native function does not throw or return an error value. It
 // reports failure by calling one of the Throw* functions and returning (the
@@ -59,17 +57,99 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 
 // ---- Lifecycle ------------------------------------------------------------
 
+// What Evaluate reports. A script's completion value is deliberately not part of
+// it: the engine does not produce one for scripts (only eval has an observable
+// result), so a script that wants to hand something back sets a global, or calls a
+// function the embedder defined.
+struct EvaluateResult {
+    bool ok = false;
+    Value exception;
+    std::string error;
+};
+
+class Isolate;
+
+// One global environment: a document's, or a frame's. It has its own intrinsics
+// (its own Array.prototype, its own %ThrowTypeError%, ...), so an array made in one
+// is not `instanceof Array` in another, as between frames.
+//
+// Realms of one Isolate share its heap. A value made in one can be handed to another
+// (through Get, Set, Call, DefineGlobal) and stays alive for as long as anything
+// reaches it, from either. Destroying a Realm drops its timers and its queued jobs
+// at once; what it made stays usable for as long as something else still holds it,
+// and is freed after that. A Realm must be destroyed from outside script: not from a
+// native function it called, nor one called from it.
+class Realm {
+public:
+    ~Realm();
+
+    Realm(const Realm&) = delete;
+    Realm& operator=(const Realm&) = delete;
+
+    // The realm's global context: what DefineGlobal and DefineClass want. A class is
+    // defined in a realm, and so once for each realm that is to have it: ClassRef's
+    // pointers belong to the realm they were made in.
+    Context& GetContext();
+
+    EvaluateResult Evaluate(std::string_view source, const std::string& filename = "<embed>");
+
+private:
+    friend class Isolate;
+    Realm(Isolate& isolate, std::unique_ptr<Engine> engine);
+
+    Isolate* isolate_;
+    std::unique_ptr<Engine> engine_;
+};
+
+// A heap and an event loop, and the realms that run on them. A browser makes one per
+// thread and a Realm in it for each document.
+class Isolate {
+public:
+    // Makes the new Isolate's heap the thread's active one. Null while another
+    // Isolate is live on this thread, or if the engine could not start.
+    static std::unique_ptr<Isolate> Create();
+    // Destroys the realms still alive in it, then frees the heap.
+    ~Isolate();
+
+    Isolate(const Isolate&) = delete;
+    Isolate& operator=(const Isolate&) = delete;
+
+    std::unique_ptr<Realm> CreateRealm();
+
+    // Full collection, now. Ordinary collections happen on their own at the
+    // interpreter's safepoints.
+    void CollectGarbage();
+
+    // The event loop is the host's, and one per Isolate: its jobs and timers belong
+    // to whichever realm queued them and run in it. Evaluate runs a script and
+    // drains the job queue (promise reactions) once, and never waits for a timer.
+    // Everything below is how the host takes its turns:
+    //
+    // Runs every queued promise job, including ones those jobs queue, then reports
+    // rejections nobody handled. Call it after calling into script from the host
+    // (Call, resolving a promise) -- not from inside a native function, where the
+    // script that called it is still on the stack.
+    void PerformMicrotaskCheckpoint();
+    // Fires the built-in setTimeout/setInterval timers that are due, without
+    // waiting for any that are not, and runs the job queue after each. A host
+    // that defines its own timers has no use for these two.
+    bool RunDueTimers();
+    // Milliseconds until the next built-in timer is due (0 if one already is);
+    // nothing when there are none.
+    std::optional<int64_t> NextTimerDelayMs();
+
+private:
+    friend class Realm;
+    Isolate() = default;
+
+    std::unique_ptr<Quanta::Isolate> isolate_;
+    std::vector<Realm*> realms_;
+};
+
+// An Isolate with one Realm in it, for a host that has no use for more than one.
 class Runtime {
 public:
-    // A script's completion value is deliberately not part of this: the engine
-    // does not produce one for scripts (only eval has an observable result), so
-    // a script that wants to hand something back sets a global, or calls a
-    // function the embedder defined.
-    struct Result {
-        bool ok = false;
-        Value exception;
-        std::string error;
-    };
+    using Result = EvaluateResult;
 
     // Makes the new runtime's heap the thread's active one.
     static std::unique_ptr<Runtime> Create();
@@ -83,32 +163,15 @@ public:
 
     Result Evaluate(std::string_view source, const std::string& filename = "<embed>");
 
-    // Full collection, now. Ordinary collections happen on their own at the
-    // interpreter's safepoints.
     void CollectGarbage();
-
-    // The event loop is the host's. Evaluate runs a script and drains the job
-    // queue (promise reactions) once, and never waits for a timer. Everything
-    // below is how the host takes its turns:
-    //
-    // Runs every queued promise job, including ones those jobs queue, then
-    // reports rejections nobody handled. Call it after calling into script from
-    // the host (Call, resolving a promise) -- not from inside a native function,
-    // where the script that called it is still on the stack.
     void PerformMicrotaskCheckpoint();
-    // Fires the built-in setTimeout/setInterval timers that are due, without
-    // waiting for any that are not, and runs the job queue after each. A host
-    // that defines its own timers has no use for these two.
     bool RunDueTimers();
-    // Milliseconds until the next built-in timer is due (0 if one already is);
-    // nothing when there are none.
     std::optional<int64_t> NextTimerDelayMs();
 
 private:
     Runtime() = default;
-    // Declared before the engine: it is destroyed after it, and retires the heap.
     std::unique_ptr<Isolate> isolate_;
-    std::unique_ptr<Engine> engine_;
+    std::unique_ptr<Realm> realm_;
 };
 
 // ---- Exposing a class to script -------------------------------------------

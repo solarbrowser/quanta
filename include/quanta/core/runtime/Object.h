@@ -2132,8 +2132,10 @@ protected:
     // materialization. It also decides the GC root: a vector's storage is
     // malloc'd and invisible to the stack scan, registers are not.
     Value call_gated(Context& ctx, std::span<const Value> args, Value this_value);
+    // own_context: the body must not run on the caller's Context, which the register-mode
+    // paths do (a callee of another realm has to stand on one rooted in its own).
     Value call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
-                            const std::vector<Value>* args_vec);
+                            const std::vector<Value>* args_vec, bool own_context = false);
     Value call_tree_walker(Context& ctx, std::span<const Value> args, Value this_value);
     Value call_native(Context& ctx, std::span<const Value> args, Value this_value);
     Value call_native_rooted(Context& ctx, const std::vector<Value>& args_vec, Value this_value);

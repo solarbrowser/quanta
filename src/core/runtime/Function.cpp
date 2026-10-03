@@ -746,7 +746,7 @@ Value Function::call_fast_gate(Context& ctx, std::span<const Value> args, Value 
 }
 
 Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
-                                  const std::vector<Value>* args_vec) {
+                                  const std::vector<Value>* args_vec, bool own_context) {
     if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
         return call_default_impl_in_realm(foreign, ctx, args, this_value, args_vec);
     }
@@ -838,7 +838,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // cannot be missed here, because `super`, a private name and a direct eval
     // each force env_mode, which this same condition already excludes.
     bool ctor_ok = !is_class_constructor_ || !is_derived_ctor();
-    if (executable_ && executable_->fast_gate && ctor_ok &&
+    if (executable_ && executable_->fast_gate && ctor_ok && !own_context &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
         return call_gated(ctx, args, this_value);
     }
@@ -877,7 +877,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         // through now, so this call never needs to be the one Context
         // currently "is". No CallContextPool::acquire, no ExecContextScope:
         // ctx is the caller's own shared object, same as call_gated.
-        if (!slots.private_brands && executable_->fast_no_closures) {
+        if (!slots.private_brands && executable_->fast_no_closures && !own_context) {
             Environment* outer_env = get_closure_environment();
             if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
             if (!outer_env) outer_env = ctx.get_lexical_environment();
@@ -1158,13 +1158,13 @@ inline Realm* Function::foreign_realm() const {
 Value Function::call_gated_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
                                     Value this_value) {
     RealmScope scope(realm);
-    return call_gated(ctx, args, this_value);
+    return call_default_impl(ctx, args, this_value, nullptr, /*own_context=*/true);
 }
 
 Value Function::call_default_impl_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
                                            Value this_value, const std::vector<Value>* args_vec) {
     RealmScope scope(realm);
-    return call_default_impl(ctx, args, this_value, args_vec);
+    return call_default_impl(ctx, args, this_value, args_vec, /*own_context=*/true);
 }
 
 Value Function::call_native_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,

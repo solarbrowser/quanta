@@ -37,6 +37,10 @@ Isolate::~Isolate() {
 
 void Isolate::add_engine(Engine* engine) {
     engines_.push_back(engine);
+    // What the last realm left behind goes to the next one, whose pools the
+    // collector already prunes by reachability.
+    for (std::unique_ptr<Context>& context : retired_contexts_) engine->add_survivor_context(context.release());
+    retired_contexts_.clear();
 }
 
 void Isolate::remove_engine(Engine* engine) {

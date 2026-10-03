@@ -13,11 +13,15 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 
 | | |
 |---|---|
-| `Runtime::Create()` | New runtime; its heap becomes the thread's active one. Null on failure. Only one may be live per thread: destroy the previous one first. |
-| `Runtime::GetContext()` | The realm's global context -- what `DefineClass` and `DefineGlobal` take. |
-| `Runtime::Evaluate(source, filename)` | Runs a script and drains the job queue once. Returns `{ok, exception, error}`. There is no completion value: the engine does not produce one for scripts, so a script that wants to hand something back sets a global or calls a function the host defined. |
-| `Runtime::CollectGarbage()` | Full collection now. Ordinary ones happen on their own. |
-| `Runtime::PerformMicrotaskCheckpoint()`, `RunDueTimers()`, `NextTimerDelayMs()` | The host's turns of the event loop. See [event-loop.md](event-loop.md). |
+| `Isolate::Create()` | New Isolate (a heap and an event loop); its heap becomes the thread's active one. Null while another is live on the thread. |
+| `Isolate::CreateRealm()` | A new global environment in the Isolate, returned as `unique_ptr<Realm>`. Null on failure. |
+| `Isolate::CollectGarbage()` | Full collection now. Ordinary ones happen on their own. |
+| `Isolate::PerformMicrotaskCheckpoint()`, `RunDueTimers()`, `NextTimerDelayMs()` | The host's turns of the event loop, one per Isolate. See [event-loop.md](event-loop.md). |
+| `~Isolate()` | Destroys the realms still alive in it, then frees the heap. |
+| `Realm::GetContext()` | The realm's global context -- what `DefineClass` and `DefineGlobal` take. |
+| `Realm::Evaluate(source, filename)` | Runs a script in the realm and drains the job queue once. Returns `{ok, exception, error}`. There is no completion value: the engine does not produce one for scripts, so a script that wants to hand something back sets a global or calls a function the host defined. |
+| `~Realm()` | Destroys the realm: its timers and queued jobs go at once, and what it made is freed once nothing else can reach it. |
+| `Runtime::Create()` | An Isolate with one Realm in it. `GetContext`, `Evaluate`, `CollectGarbage`, `PerformMicrotaskCheckpoint`, `RunDueTimers` and `NextTimerDelayMs` are those of the Isolate or the Realm. |
 
 ## Exposing a class
 

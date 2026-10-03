@@ -92,9 +92,26 @@ int main() {
 
 Prints `Hello, Ada!`. `class Admin extends Greeter {}` works too: `PrototypeFromNewTarget` gives the subclass's prototype.
 
-## The model in four rules
+## Several realms
 
-- **One thread per Runtime, one Runtime at a time.** A `Runtime` and everything allocated in it belong to the thread that created it, and none may move to another. The engine keeps a few per-realm intrinsics (the iterator, generator and collection prototypes, ...) in thread-wide state, so a second Runtime made while the first exists would take them over: destroy a Runtime before making the next. Any number may follow one another; destroying one runs a collection that frees everything it built, and nothing of it may be used afterwards.
+```cpp
+auto isolate = qe::Isolate::Create();
+auto document = isolate->CreateRealm();   // one per document
+auto frame = isolate->CreateRealm();      // an iframe
+
+// A class is defined in a realm, and so once for each that is to have it:
+// ClassRef's pointers belong to the realm they were made in.
+qe::DefineClass(document->GetContext(), "Greeter", app::Construct, 1);
+qe::DefineClass(frame->GetContext(), "Greeter", app::Construct, 1);
+
+frame.reset();                            // the iframe goes away
+```
+
+A function of one realm called from another runs in its own: the errors it throws, the objects it makes and the prototypes it reaches are its realm's, as for a call across frames. What a destroyed realm made stays usable for as long as something else holds it -- a closure the document kept from the iframe still runs -- and is freed once nothing does. Destroy a realm from outside script, not from a native function it called or that was called from it. Several `Realm`s share one event loop; `Isolate::PerformMicrotaskCheckpoint` and `RunDueTimers` run each job in the realm that queued it.
+
+## The model in a few rules
+
+- **One Isolate per thread, any number of Realms in it.** An `Isolate` owns a thread's heap and event loop, and everything allocated in it belongs to the thread that created it; none may move to another. A `Realm` is one global environment in it -- a browser's document or frame -- with its own intrinsics (its own `Array.prototype`, its own `%ThrowTypeError%`), so an array from one is not `instanceof Array` in another. Realms of one Isolate share its heap: a value of one may be handed to another and stays alive for as long as either holds it. Destroying a Realm drops its timers and queued jobs at once; destroying the Isolate runs a collection that frees everything it built, and nothing of it may be used afterwards. A second Isolate cannot be made while one is live on the thread, but any number may follow one another. `Runtime` is an Isolate with one Realm in it, for a host that needs no more.
 - **Errors are a flag, not a return value.** A native function reports failure by calling `ThrowTypeError(ctx, ...)` and returning (the returned value is ignored while an exception is pending). The same flag is how the engine reports failure back: after `Get`, `Set`, `Call`, `ToUsvUtf8`, `ToUint32` or anything else that can run script, check `HasException(ctx)` and return.
 - **The event loop is the host's.** `Evaluate` runs a script and drains the promise job queue once; it never sleeps waiting for a timer. See [event-loop.md](event-loop.md).
 - **C++ members do not keep cells alive.** Only a native object's `Visit()` does. See [native-objects.md](native-objects.md); it is the part to read before writing a class.

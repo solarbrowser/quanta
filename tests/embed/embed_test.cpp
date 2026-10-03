@@ -578,54 +578,107 @@ static void test_sequential_runtimes() {
 }
 
 
-// Realms that share an Isolate live at once, and one can be destroyed while another
-// still holds closures it made.
-static void test_realm_teardown() {
-    Isolate isolate;
-    Engine::Config config;
-    // A script has no completion value, so a result is read back from a global.
-    auto eval = [](Engine& e, const char* expr) {
-        e.execute(std::string("globalThis.__r = (") + expr + ");");
-        return e.get_global_property("__r");
-    };
-    auto a = std::make_unique<Engine>(isolate, config);
-    auto b = std::make_unique<Engine>(isolate, config);
-    CHECK(a->initialize());
-    CHECK(b->initialize());
+// A script has no completion value, so a result is read back from a global.
+static Value eval_in(Embed::Realm& realm, const std::string& expr) {
+    realm.Evaluate("globalThis.__r = (" + expr + ");");
+    Context& ctx = realm.GetContext();
+    return Get(ctx, Value(ctx.get_global_object()), "__r");
+}
 
-    CHECK(eval(*a, "Array.prototype").as_object() != eval(*b, "Array.prototype").as_object());
+static Value global_of(Embed::Realm& realm, const char* name) {
+    Context& ctx = realm.GetContext();
+    return Get(ctx, Value(ctx.get_global_object()), name);
+}
 
-    // A closure over a local, a pending timer and a pending job: all b's.
-    b->execute("var count = 0; globalThis.f = (function () { var n = 40; return function () { return [n, 2].map(x => x + 1).length + n; }; })();"
-               "setTimeout(function () { globalThis.timerRan = true; }, 0);"
-               "Promise.resolve().then(function () { globalThis.jobRan = true; });");
-    a->set_global_property("g", b->get_global_property("f"));
-    CHECK(eval(*a, "g()").as_number() == 42);
-    CHECK(eval(*a, "Array.isArray(g.constructor) || g() instanceof Array").as_boolean() == false);
+static void set_global(Embed::Realm& realm, const char* name, const Value& value) {
+    Context& ctx = realm.GetContext();
+    Set(ctx, Value(ctx.get_global_object()), name, value);
+}
 
+// Realms that share an Isolate live at once, each with its own intrinsics, and one can
+// be destroyed while another still holds closures it made.
+static void test_realms() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    CHECK(isolate != nullptr);
+    CHECK(Embed::Isolate::Create() == nullptr);
+
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    CHECK(a && b);
+
+    CHECK(eval_in(*a, "Array.prototype").as_object() != eval_in(*b, "Array.prototype").as_object());
+    CHECK(eval_in(*a, "[1, 2].map(x => x + 1).length").as_number() == 2);
+    CHECK(eval_in(*b, "'abc'.constructor === String").as_boolean());
+
+    // A closure of b, held by a: it runs in b, and what it makes is b's.
+    b->Evaluate("globalThis.f = (function () { var n = 40; return function () { return [n, 2].map(x => x + 1); }; })();"
+                "globalThis.bArray = Array; globalThis.bTypeError = TypeError;");
+    set_global(*a, "g", global_of(*b, "f"));
+    set_global(*a, "bArray", global_of(*b, "bArray"));
+    set_global(*a, "bTypeError", global_of(*b, "bTypeError"));
+    CHECK(eval_in(*a, "g().length + g()[0]").as_number() == 43);
+    CHECK(eval_in(*a, "Array.isArray(g())").as_boolean());
+    CHECK(eval_in(*a, "!(g() instanceof Array)").as_boolean());
+    CHECK(eval_in(*a, "g() instanceof bArray").as_boolean());
+    // An error a function of b throws is b's, whoever called it.
+    b->Evaluate("globalThis.thrower = function () { null.x; };");
+    set_global(*a, "thrower", global_of(*b, "thrower"));
+    CHECK(eval_in(*a, "(function () { try { thrower(); } catch (e) { return e instanceof bTypeError && !(e instanceof TypeError); } })()").as_boolean());
+
+    // Patching one realm's iteration leaves the other's alone.
+    CHECK(eval_in(*a, "(function () { Array.prototype[Symbol.iterator] = function* () { yield 99; }; return [...[1, 2, 3]].join(); })()").to_string() == "99");
+    CHECK(eval_in(*b, "[...[1, 2, 3]].join()").to_string() == "1,2,3");
+    CHECK(eval_in(*b, "[1, 2, 3].map(x => x * 2).join()").to_string() == "2,4,6");
+
+    // b's timer goes with b.
+    b->Evaluate("setTimeout(function () { globalThis.timerRan = true; }, 0);");
+    CHECK(isolate->NextTimerDelayMs().has_value());
     b.reset();
-    Collector::collect();
-    Collector::collect();
-    CHECK(eval(*a, "g()").as_number() == 42);
-    CHECK(eval(*a, "typeof timerRan + typeof jobRan").to_string() == "undefinedundefined");
+    CHECK(!isolate->NextTimerDelayMs().has_value());
+    isolate->RunDueTimers();
+    isolate->PerformMicrotaskCheckpoint();
 
-    // The survivor of the dead realm goes once nothing holds it.
-    a->execute("g = undefined;");
-    Collector::collect();
-    Collector::collect();
-    CHECK(eval(*a, "[1, 2, 3].map(x => x * 2).length").as_number() == 3);
+    isolate->CollectGarbage();
+    isolate->CollectGarbage();
+    CHECK(eval_in(*a, "g().length + g()[0]").as_number() == 43);
+    CHECK(eval_in(*a, "(function () { try { thrower(); } catch (e) { return e instanceof bTypeError; } })()").as_boolean());
+
+    // Once nothing of b's is held, it is freed, and a goes on.
+    a->Evaluate("g = bArray = bTypeError = thrower = undefined;");
+    isolate->CollectGarbage();
+    isolate->CollectGarbage();
+    CHECK(eval_in(*a, "[1, 2, 3].map(x => x * 2).length").as_number() == 3);
 
     // Realms come and go in one Isolate without disturbing the one that stays.
     for (int i = 0; i < 6; i++) {
-        auto c = std::make_unique<Engine>(isolate, config);
-        CHECK(c->initialize());
-        c->execute("globalThis.keep = [1, 2, 3].map(x => x + 1);");
-        a->set_global_property("k", c->get_global_property("keep"));
+        std::unique_ptr<Embed::Realm> c = isolate->CreateRealm();
+        CHECK(c != nullptr);
+        c->Evaluate("globalThis.keep = [1, 2, 3].map(x => x + 1);");
+        set_global(*a, "k", global_of(*c, "keep"));
         c.reset();
-        Collector::collect();
-        CHECK(eval(*a, "k.length").as_number() == 3);
+        isolate->CollectGarbage();
+        CHECK(eval_in(*a, "k.length").as_number() == 3);
     }
+
+    // The last realm can go, and a new one take its place.
     a.reset();
+    isolate->CollectGarbage();
+    std::unique_ptr<Embed::Realm> d = isolate->CreateRealm();
+    CHECK(d != nullptr);
+    CHECK(eval_in(*d, "[1, 2, 3].map(x => x * 2).length").as_number() == 3);
+
+    // An Isolate that goes first takes the realms still alive with it.
+    std::unique_ptr<Embed::Realm> e = isolate->CreateRealm();
+    CHECK(e != nullptr);
+    isolate.reset();
+    d.reset();
+    e.reset();
+
+    // And a new Isolate may follow.
+    std::unique_ptr<Embed::Isolate> next = Embed::Isolate::Create();
+    CHECK(next != nullptr);
+    std::unique_ptr<Embed::Realm> f = next->CreateRealm();
+    CHECK(eval_in(*f, "1 + 1").as_number() == 2);
 }
 
 int main() {
@@ -653,7 +706,7 @@ int main() {
     // Last: it destroys the runtime everything above used.
     rt.reset();
     test_sequential_runtimes();
-    test_realm_teardown();
+    test_realms();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

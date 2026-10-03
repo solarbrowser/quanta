@@ -123,64 +123,122 @@ std::unique_ptr<Function> make_native(const char* name, NativeFn fn, int length)
 
 // ---- Lifecycle ------------------------------------------------------------
 
-std::unique_ptr<Runtime> Runtime::Create() {
-    std::unique_ptr<Runtime> rt(new Runtime());
-    Engine::Config config;
-    config.host_drives_event_loop = true;
-    rt->isolate_ = std::make_unique<Isolate>();
-    rt->engine_ = std::make_unique<Engine>(*rt->isolate_, config);
-    if (!rt->engine_->initialize()) return nullptr;
-    return rt;
+namespace {
+constinit thread_local bool g_isolate_live = false;
 }
 
-Runtime::~Runtime() {
+Realm::Realm(Isolate& isolate, std::unique_ptr<Engine> engine)
+    : isolate_(&isolate), engine_(std::move(engine)) {}
+
+Realm::~Realm() {
     if (!engine_) return;
+    if (isolate_) {
+        std::erase(isolate_->realms_, this);
+    }
     // A major cycle is incremental and can be open right now, with this engine's
     // contexts and environments queued to be traced. Let it end while they are
     // still there: tracing them after they are freed would corrupt the marks.
     if (Collector::major_in_progress()) Collector::collect();
-    // The engine's contexts first (they name cells); then the Isolate, whose heap is
-    // retired by one collection that frees everything the runtime built.
     engine_.reset();
-    isolate_.reset();
 }
 
-Context& Runtime::GetContext() {
+Context& Realm::GetContext() {
     return *engine_->get_global_context();
 }
 
-Runtime::Result Runtime::Evaluate(std::string_view source, const std::string& filename) {
+EvaluateResult Realm::Evaluate(std::string_view source, const std::string& filename) {
     Engine::Result r = engine_->execute(std::string(source), filename);
-    Result out;
+    EvaluateResult out;
     out.ok = r.success;
     out.exception = r.exception_value;
     out.error = r.error_message;
     return out;
 }
 
-void Runtime::CollectGarbage() {
-    engine_->force_gc();
+std::unique_ptr<Isolate> Isolate::Create() {
+    if (g_isolate_live) return nullptr;
+    std::unique_ptr<Isolate> isolate(new Isolate());
+    isolate->isolate_ = std::make_unique<Quanta::Isolate>();
+    g_isolate_live = true;
+    return isolate;
 }
 
-void Runtime::PerformMicrotaskCheckpoint() {
-    HeapScope heap_scope(engine_->get_heap());
-    RealmScope realm_scope(engine_->realm());
-    Context& ctx = GetContext();
-    ctx.drain_microtasks();
+Isolate::~Isolate() {
+    if (!isolate_) return;
+    // The realms the host still holds go with the Isolate; their owners find them
+    // empty and have nothing to free.
+    for (Realm* realm : std::vector<Realm*>(realms_)) {
+        if (Collector::major_in_progress()) Collector::collect();
+        realm->engine_.reset();
+        realm->isolate_ = nullptr;
+    }
+    realms_.clear();
+    isolate_.reset();
+    g_isolate_live = false;
+}
+
+std::unique_ptr<Realm> Isolate::CreateRealm() {
+    Engine::Config config;
+    config.host_drives_event_loop = true;
+    auto engine = std::make_unique<Engine>(*isolate_, config);
+    if (!engine->initialize()) return nullptr;
+    std::unique_ptr<Realm> realm(new Realm(*this, std::move(engine)));
+    realms_.push_back(realm.get());
+    return realm;
+}
+
+void Isolate::CollectGarbage() {
+    HeapScope heap_scope(isolate_->heap());
+    Collector::collect();
+}
+
+void Isolate::PerformMicrotaskCheckpoint() {
+    HeapScope heap_scope(isolate_->heap());
+    // Each job runs in the realm that queued it; this is for the ones that did not
+    // say, and for what runs after the last.
+    RealmScope realm_scope(realms_.empty() ? nullptr : realms_.front()->engine_->realm());
+    EventLoop::instance().drain_microtasks();
     Promise::report_unhandled_rejections();
 }
 
-bool Runtime::RunDueTimers() {
-    HeapScope heap_scope(engine_->get_heap());
-    RealmScope realm_scope(engine_->realm());
+bool Isolate::RunDueTimers() {
+    HeapScope heap_scope(isolate_->heap());
+    RealmScope realm_scope(realms_.empty() ? nullptr : realms_.front()->engine_->realm());
     return EventLoop::instance().run_due_timers();
 }
 
-std::optional<int64_t> Runtime::NextTimerDelayMs() {
+std::optional<int64_t> Isolate::NextTimerDelayMs() {
     auto delay = EventLoop::instance().next_timer_delay();
     if (!delay) return std::nullopt;
     return delay->count();
 }
+
+std::unique_ptr<Runtime> Runtime::Create() {
+    std::unique_ptr<Runtime> rt(new Runtime());
+    rt->isolate_ = Isolate::Create();
+    if (!rt->isolate_) return nullptr;
+    rt->realm_ = rt->isolate_->CreateRealm();
+    if (!rt->realm_) return nullptr;
+    return rt;
+}
+
+Runtime::~Runtime() {
+    // The realm first, then the Isolate, whose heap is retired by one collection
+    // that frees everything the runtime built.
+    realm_.reset();
+    isolate_.reset();
+}
+
+Context& Runtime::GetContext() { return realm_->GetContext(); }
+
+Runtime::Result Runtime::Evaluate(std::string_view source, const std::string& filename) {
+    return realm_->Evaluate(source, filename);
+}
+
+void Runtime::CollectGarbage() { isolate_->CollectGarbage(); }
+void Runtime::PerformMicrotaskCheckpoint() { isolate_->PerformMicrotaskCheckpoint(); }
+bool Runtime::RunDueTimers() { return isolate_->RunDueTimers(); }
+std::optional<int64_t> Runtime::NextTimerDelayMs() { return isolate_->NextTimerDelayMs(); }
 
 // ---- Exposing a class to script -------------------------------------------
 
