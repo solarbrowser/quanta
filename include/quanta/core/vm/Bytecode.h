@@ -1073,6 +1073,8 @@ struct BytecodeChunk {
     ~BytecodeChunk();
 
     void trace(Visitor& v) const;
+    // Forgets the cells the call sites' feedback has learned (see FunctionExecutable::drop_feedback_of).
+    void drop_feedback() const;
 };
 
 // Human-readable dump for QUANTA_VM_DISASM=1.

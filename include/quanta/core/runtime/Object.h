@@ -24,6 +24,8 @@
 
 namespace Quanta {
 
+class Realm;
+
 class PropertyDescriptor;
 class HybridDescriptorMap;
 class ScriptUnit;
@@ -2135,6 +2137,15 @@ protected:
     Value call_tree_walker(Context& ctx, std::span<const Value> args, Value this_value);
     Value call_native(Context& ctx, std::span<const Value> args, Value this_value);
     Value call_native_rooted(Context& ctx, const std::vector<Value>& args_vec, Value this_value);
+    // The same calls, made with `realm` current: for a callee that belongs to a realm
+    // other than the running one (10.2.1.1 PrepareForOrdinaryCall). Kept out of line so
+    // the common call does not carry the scope.
+    Value call_gated_in_realm(Realm* realm, Context& ctx, std::span<const Value> args, Value this_value);
+    Value call_default_impl_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
+                                     Value this_value, const std::vector<Value>* args_vec);
+    Value call_native_in_realm(Realm* realm, Context& ctx, std::span<const Value> args, Value this_value);
+    // The realm this function belongs to when it is not the running one, else null.
+    inline Realm* foreign_realm() const;
 };
 
 // get_type()-based replacement for dynamic_cast<Function*>: Object is no

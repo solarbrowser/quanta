@@ -8,6 +8,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/vm/Bytecode.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/gc/Collector.h"
 
 namespace Quanta {
@@ -42,14 +43,15 @@ namespace Quanta {
 // GC major epoch, instead of every live executable's chunk being walked on
 // every single minor collection unconditionally -- see FunctionExecutable.h.
 // Eight bytes per decl site is negligible next to that.
-static_assert(sizeof(FunctionExecutable) == 248);
+// Then by owner_realm_ (8 bytes): which realm's cells the chunks' feedback names.
+static_assert(sizeof(FunctionExecutable) == 256);
 #else
 static_assert(sizeof(FunctionExecutable) <= 256);
 #endif
 
 constinit thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;
 
-FunctionExecutable::FunctionExecutable() {
+FunctionExecutable::FunctionExecutable() : owner_realm_(g_current_realm) {
     live_next_ = live_head_;
     if (live_head_) live_head_->live_prev_ = this;
     live_head_ = this;
@@ -126,6 +128,19 @@ void FunctionExecutable::add_parameter(const Parameter& p, bool copy) {
                  : std::unique_ptr<Parameter>());
     } else {
         parameter_objects.push_back(nullptr);
+    }
+}
+
+void FunctionExecutable::drop_feedback_of(const Realm* realm) {
+    for (FunctionExecutable* exe = live_head_; exe; exe = exe->live_next_) {
+        if (realm && exe->owner_realm_ != realm) continue;
+        if (exe->bytecode_chunk) exe->bytecode_chunk->drop_feedback();
+        if (exe->suspendable_chunk) exe->suspendable_chunk->drop_feedback();
+        for (const auto& p : exe->parameter_objects) {
+            if (!p) continue;
+            if (p->default_chunk()) p->default_chunk()->drop_feedback();
+            if (p->pattern_chunk()) p->pattern_chunk()->drop_feedback();
+        }
     }
 }
 

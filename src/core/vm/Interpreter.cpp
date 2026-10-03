@@ -5477,8 +5477,12 @@ Value h_gen_CallDirectEval(Frame& f, uint32_t pc, Value acc) {
                     // whatever was true before this call -- a nested direct eval
                     // inside an argument has come and gone by now.
                     const bool saved = ctx.is_direct_eval_call();
-                    ctx.set_direct_eval_call(true);
-                    acc = callee.as_function()->call_register_args(ctx, call_args, Value());
+                    // Only the running realm's own %eval% makes the call direct; one
+                    // taken from another realm is an ordinary call (19.2.1).
+                    Function* fn = callee.as_function();
+                    Context* home = fn->is_native() ? fn->get_closure_context() : nullptr;
+                    ctx.set_direct_eval_call(!home || home->realm() == g_current_realm);
+                    acc = fn->call_register_args(ctx, call_args, Value());
                     ctx.set_direct_eval_call(saved);
                 } else {
                     ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");

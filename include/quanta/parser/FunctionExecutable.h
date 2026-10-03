@@ -270,6 +270,9 @@ private:
     static constinit thread_local FunctionExecutable* live_head_;
     FunctionExecutable* live_next_ = nullptr;
     FunctionExecutable* live_prev_ = nullptr;
+    // The realm that was running when this was made, which is whose cells its
+    // chunks' feedback comes to name.
+    class Realm* owner_realm_;
 
 public:
     // Decl-site defaults for Function's own lazy "length"/toString() sources:
@@ -438,6 +441,13 @@ public:
     // new instance reuses it -- exactly the dangling-constant corruption
     // this registry prevents.
     static void gc_trace_roots(Visitor& v);
+    // Forgets what the chunks of `realm`'s executables (every executable, for null)
+    // learned about cells. Feedback is a cache and is learned again; but these live as
+    // long as the program text does, which is longer than the realm, and while they
+    // name its cells the collector counts them as roots.
+    static void drop_feedback_of(const class Realm* realm);
+    // The realm that parsed this, and so the one its functions belong to.
+    class Realm* owner_realm() const { return owner_realm_; }
 
     // Retraces this executable's chunks only if something could have changed
     // since the last time THIS METHOD traced them this major epoch: constants

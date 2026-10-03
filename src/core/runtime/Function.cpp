@@ -71,8 +71,15 @@ namespace Quanta {
 // context to keep -- the two places that read one are an arrow's super/this
 // (this is never an arrow) and the fallback for an outer environment, which
 // the environment below supplies directly.
+//
+// What such a closure keeps instead is its realm's global Context, which is never freed
+// before the realm is and costs nothing to hold: a call finds the realm to run in
+// through it, which the caller's own Context cannot say once the two differ.
 static Context* capture_closure_context(Context* closure_context, bool capture_free) {
-    if (capture_free) return nullptr;
+    if (capture_free) {
+        Realm* realm = closure_context ? closure_context->realm() : nullptr;
+        return realm ? realm->global_ctx : nullptr;
+    }
     if (closure_context) closure_context->mark_exposed_to_escape();
     return closure_context;
 }
@@ -247,7 +254,7 @@ Function::Function(const std::string& name,
 Function::Function(const std::string& name,
                    std::function<Value(Context&, std::span<const Value>, Value)> native_fn,
                    bool create_prototype)
-    : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
+    : Object(ObjectType::Function), closure_context_(current_realm().global_ctx), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
       instance_data_(new NativeFunctionData{.fn = std::move(native_fn), .declared_length = 0, .name = name})
@@ -267,7 +274,7 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, std::span<const Value>, Value)> native_fn,
                    uint32_t arity,
                    bool create_prototype)
-    : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
+    : Object(ObjectType::Function), closure_context_(current_realm().global_ctx), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
       instance_data_(new NativeFunctionData{.fn = std::move(native_fn), .declared_length = arity, .name = name})
@@ -287,7 +294,7 @@ Function::Function(const std::string& name,
                                         bool, Value)> construct_fn,
                    uint32_t arity,
                    bool create_prototype)
-    : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
+    : Object(ObjectType::Function), closure_context_(current_realm().global_ctx), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
       has_construct_native_(true),
@@ -528,6 +535,11 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 // entry's checks and frame. The caller has established the gate and holds the
 // call-stack frame.
 Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this_value) {
+    // 10.2.1.1 PrepareForOrdinaryCall: the callee runs in its own realm. Almost
+    // every call finds it already current, which is the one compare this costs.
+    if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
+        return call_gated_in_realm(foreign, ctx, args, this_value);
+    }
     // Runs directly on the caller's own ctx instead of a freshly
     // pool-acquired one. Native
     // code (promise reactions, job queues) that captures ctx is still
@@ -735,6 +747,9 @@ Value Function::call_fast_gate(Context& ctx, std::span<const Value> args, Value 
 
 Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
                                   const std::vector<Value>* args_vec) {
+    if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
+        return call_default_impl_in_realm(foreign, ctx, args, this_value, args_vec);
+    }
     // A vector's storage is malloc'd and invisible to the stack scan, so it
     // has to be rooted for the whole call. Register-resident arguments are
     // already covered by the caller's own frame and need nothing.
@@ -1127,8 +1142,44 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     return call_native(ctx, args_vec, this_value);
 }
 
+inline Realm* Function::foreign_realm() const {
+    Realm* running = g_current_realm;
+    if (is_native_) {
+        // A native's closure context is its realm's global Context.
+        Context* home = closure_context_;
+        return home && (!running || home != running->global_ctx) ? home->realm() : nullptr;
+    }
+    // Code belongs to the realm that parsed it, which the executable it shares with
+    // its siblings records; reading it costs no more than the executable already does.
+    Realm* own = executable_ ? executable_->owner_realm() : nullptr;
+    return own != running ? own : nullptr;
+}
+
+Value Function::call_gated_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
+                                    Value this_value) {
+    RealmScope scope(realm);
+    return call_gated(ctx, args, this_value);
+}
+
+Value Function::call_default_impl_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
+                                           Value this_value, const std::vector<Value>* args_vec) {
+    RealmScope scope(realm);
+    return call_default_impl(ctx, args, this_value, args_vec);
+}
+
+Value Function::call_native_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
+                                     Value this_value) {
+    RealmScope scope(realm);
+    return call_native(ctx, args, this_value);
+}
+
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
                                               Value this_value) {
+    // A native runs in the realm it was made in; its closure context is that realm's
+    // global Context (see the native constructors).
+    if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
+        return call_native_in_realm(foreign, ctx, args, this_value);
+    }
     // Consumed immediately so a nested call triggered from inside this
     // invocation doesn't inherit it.
     const bool is_construct_invocation = ctx.consume_pending_construct_call();

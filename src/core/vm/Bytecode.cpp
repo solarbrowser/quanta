@@ -33,6 +33,13 @@ std::vector<ClosureTemplate>& BytecodeChunk::ensure_closures() {
 
 const FeedbackBody FeedbackSlot::kEmpty;
 
+void BytecodeChunk::drop_feedback() const {
+    for (const auto& slot : feedback) const_cast<FeedbackSlot&>(slot).body.reset();
+    if (ic_feedback) {
+        for (auto& kfb : ic_feedback->keyed_feedback) kfb.reset();
+    }
+}
+
 void BytecodeChunk::trace(Visitor& v) const {
     for (const auto& c : constants) {
         v.visit(c);

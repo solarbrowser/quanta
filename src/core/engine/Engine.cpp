@@ -49,6 +49,22 @@ const std::vector<Engine*>& Engine::all_engines() {
 
 Context* Engine::find_realm_owning_function(Object* fn) {
     if (!fn) return nullptr;
+    // A function records its realm (its closure context, or for a native or a
+    // closure that captures nothing, the realm's global Context).
+    if (fn->get_type() == Object::ObjectType::Function) {
+        // A bound function has no realm of its own: it is its target's.
+        if (fn->has_internal_slot("__bound_target__")) {
+            Value target = fn->get_internal_slot("__bound_target__");
+            Object* target_obj = target.is_function() ? static_cast<Object*>(target.as_function())
+                               : target.is_object() ? target.as_object() : nullptr;
+            if (target_obj && target_obj != fn) return find_realm_owning_function(target_obj);
+        }
+        if (Context* home = static_cast<Function*>(fn)->get_closure_context()) {
+            if (Realm* realm = home->realm()) {
+                if (realm->global_ctx) return realm->global_ctx;
+            }
+        }
+    }
     Object* target_proto = fn->get_prototype();
     if (!target_proto) return nullptr;
     for (Engine* e : engine_registry()) {
@@ -169,6 +185,7 @@ void Engine::retire_into(Engine& heir) {
     if (Collector::major_in_progress()) Collector::collect();
 
     EventLoop::instance().drop_realm(realm_.get());
+    FunctionExecutable::drop_feedback_of(realm_.get());
 
     // Contexts that outlive the Engine must not name it.
     for (Context* ctx : survivor_contexts_) ctx->rebind_engine(&heir);
@@ -247,8 +264,17 @@ void Engine::shutdown() {
         return;
     }
     
-    global_context_.reset();
-    
+    // Cells hold their realm's global Context as their closure context, and the heap
+    // is collected after this Engine is gone, so the Isolate keeps it (and the Realm
+    // it adopts) until then.
+    if (isolate_ && global_context_) {
+        realm_->retire();
+        global_context_->adopt_realm(std::move(realm_));
+        isolate_->retired_contexts_.push_back(std::move(global_context_));
+    } else {
+        global_context_.reset();
+    }
+
     initialized_ = false;
 }
 

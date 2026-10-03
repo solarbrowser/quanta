@@ -193,51 +193,27 @@ Value object_prototype_to_string(Context& ctx, const Value& this_val) {
 static Value box_primitive(Context& ctx, const Value& value) {
     if (value.is_string()) {
         auto string_obj = ObjectFactory::create_string(value.to_string());
-        Value str_ctor = ctx.get_binding("String");
-        if (str_ctor.is_function()) {
-            Value str_proto = static_cast<Object*>(str_ctor.as_function())->get_property("prototype");
-            if (str_proto.is_object()) string_obj->initialize_prototype(str_proto.as_object());
-        }
+        if (Object* proto = Context::primitive_prototype(Context::PrimitiveKind::String)) string_obj->initialize_prototype(proto);
         return Value(string_obj.release());
     } else if (value.is_number()) {
         auto number_obj = std::make_unique<Object>(Object::ObjectType::Number);
         number_obj->set_property("[[PrimitiveValue]]", Value(value.as_number()), PropertyAttributes::Writable);
-        Value num_ctor = ctx.get_binding("Number");
-        if (num_ctor.is_function()) {
-            Value num_proto = static_cast<Object*>(num_ctor.as_function())->get_property("prototype");
-            if (num_proto.is_object()) {
-                number_obj->initialize_prototype(num_proto.as_object());
-            }
-        }
+        if (Object* proto = Context::primitive_prototype(Context::PrimitiveKind::Number)) number_obj->initialize_prototype(proto);
         return Value(number_obj.release());
     } else if (value.is_boolean()) {
         auto boolean_obj = ObjectFactory::create_boolean(value.to_boolean());
-        Value bool_ctor = ctx.get_binding("Boolean");
-        if (bool_ctor.is_function()) {
-            Value bool_proto = static_cast<Object*>(bool_ctor.as_function())->get_property("prototype");
-            if (bool_proto.is_object()) boolean_obj->initialize_prototype(bool_proto.as_object());
-        }
+        if (Object* proto = Context::primitive_prototype(Context::PrimitiveKind::Boolean)) boolean_obj->initialize_prototype(proto);
         return Value(boolean_obj.release());
     } else if (value.is_symbol()) {
         auto symbol_obj = std::make_unique<Object>(Object::ObjectType::Symbol);
-        Value sym_ctor = ctx.get_binding("Symbol");
-        if (sym_ctor.is_function()) {
-            Value sym_proto = static_cast<Object*>(sym_ctor.as_function())->get_property("prototype");
-            if (sym_proto.is_object()) {
-                symbol_obj->initialize_prototype(sym_proto.as_object());
-            }
-        }
+        if (Object* proto = Context::primitive_prototype(Context::PrimitiveKind::Symbol)) symbol_obj->initialize_prototype(proto);
         symbol_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
         return Value(symbol_obj.release());
     } else if (value.is_bigint()) {
         // No own valueOf/toString: they must resolve through BigInt.prototype so
         // user overrides there stay observable (OrdinaryToPrimitive).
         auto bigint_obj = std::make_unique<Object>(Object::ObjectType::BigInt);
-        Value bigint_ctor = ctx.get_binding("BigInt");
-        if (bigint_ctor.is_function()) {
-            Value bigint_proto = static_cast<Object*>(bigint_ctor.as_function())->get_property("prototype");
-            if (bigint_proto.is_object()) bigint_obj->initialize_prototype(bigint_proto.as_object());
-        }
+        if (Object* proto = Context::primitive_prototype(Context::PrimitiveKind::BigInt)) bigint_obj->initialize_prototype(proto);
         bigint_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
         return Value(bigint_obj.release());
     }

@@ -844,6 +844,13 @@ std::string JSON::Stringifier::stringify(const Value& value) {
     return stringify_value(value);
 }
 
+// A BigInt wrapper (Object(0n)), told by the value it holds rather than by its
+// prototype: one from another realm has that realm's BigInt.prototype.
+static bool is_bigint_wrapper(const Object* obj) {
+    Object* o = const_cast<Object*>(obj);
+    return o->has_own_property("[[PrimitiveValue]]") && o->get_property("[[PrimitiveValue]]").is_bigint();
+}
+
 std::string JSON::Stringifier::stringify_value(const Value& value) {
     if (value.is_null()) {
         return "null";
@@ -885,18 +892,12 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
                     Value raw_str = const_cast<Object*>(obj)->get_property("rawJSON");
                     return raw_str.is_string() ? raw_str.to_string() : "null";
                 }
-
-                // BigInt wrapper object (Object(0n)): prototype is BigInt.prototype -> TypeError
-                if (context_) {
-                    Value bigint_ctor = context_->get_binding("BigInt");
-                    if (bigint_ctor.is_function()) {
-                        Value bigint_proto = bigint_ctor.as_function()->get_property("prototype");
-                        if (bigint_proto.is_object() && obj->get_prototype() == bigint_proto.as_object()) {
-                            context_->throw_type_error("Do not know how to serialize a BigInt");
-                            return "";
-                        }
-                    }
-                }
+            }
+            // A wrapper the replacer handed back has had its toJSON turn already; calling
+            // it again is not what 25.5.2.2 says.
+            if (skip_bigint_toJSON_ && context_ && !is_proxy && is_bigint_wrapper(obj)) {
+                context_->throw_type_error("Do not know how to serialize a BigInt");
+                return "";
             }
             // Determine if it's array-like by unwrapping Proxies (Array.isArray semantics).
             const Object* unwrapped = obj;
@@ -922,6 +923,11 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
                     current_key_ = saved;
                     return r;
                 }
+            }
+
+            if (obj && context_ && !is_proxy && is_bigint_wrapper(obj)) {
+                context_->throw_type_error("Do not know how to serialize a BigInt");
+                return "";
             }
 
             // Boxed Boolean/Number/String: spec calls ToNumber(v) / ToString(v) which

@@ -587,7 +587,15 @@ void Context::throw_error(const std::string& message) {
 // outright -- a revoked Proxy does both -- and an engine error must not come
 // out prototype-less because of that, so the realm's global answers then. Any
 // exception the chain lookup raised belongs to nobody and is dropped.
+//
+// An error belongs to the realm that is running, which is not this Context's when a
+// native made in another realm was called on it: the native is the one throwing.
 Value Context::intrinsic_error_constructor(const std::string& name) {
+    Realm* running = g_current_realm;
+    if (__builtin_expect(running && running->global_ctx && running->global_ctx != this &&
+                 realm() != running, 0)) {
+        return running->global_ctx->intrinsic_error_constructor(name);
+    }
     const bool had_exception = has_exception();
     Value saved = had_exception ? get_exception() : Value();
     Value ctor = get_binding(name);
@@ -624,7 +632,10 @@ void Context::throw_type_error_as(Context& realm, const std::string& message) {
         throw_type_error(message);
         return;
     }
-    realm.throw_type_error(message);
+    {
+        RealmScope realm_scope(realm.realm());
+        realm.throw_type_error(message);
+    }
     Value exc = realm.get_exception();
     realm.clear_exception();
     throw_exception(exc, true);
@@ -635,7 +646,10 @@ void Context::throw_syntax_error_as(Context& realm, const std::string& message) 
         throw_syntax_error(message);
         return;
     }
-    realm.throw_syntax_error(message);
+    {
+        RealmScope realm_scope(realm.realm());
+        realm.throw_syntax_error(message);
+    }
     Value exc = realm.get_exception();
     realm.clear_exception();
     throw_exception(exc, true);
@@ -834,6 +848,8 @@ bool Context::check_execution_depth() const {
 void Context::initialize_global_context() {
     if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
     builtins_->realm = engine_ ? engine_->realm() : nullptr;
+    // Set before any builtin exists: each native made from here on names it.
+    if (builtins_->realm) builtins_->realm->global_ctx = this;
     global_object_ = ObjectFactory::create_object().release();
     this_value_ = global_object_ ? Value(global_object_) : Value();
 
@@ -861,12 +877,6 @@ Function* Context::intrinsic_promise() {
 Object* Context::primitive_prototype(PrimitiveKind kind) {
     Realm* realm = g_current_realm;
     return realm ? realm->primitive_protos[static_cast<size_t>(kind)] : nullptr;
-}
-
-Realm* Context::realm() const {
-    const Context* root = builtins_root_ ? builtins_root_ : this;
-    if (root->builtins_ && root->builtins_->realm) return root->builtins_->realm;
-    return g_current_realm;
 }
 
 void Context::capture_primitive_prototypes() {

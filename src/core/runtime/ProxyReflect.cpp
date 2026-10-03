@@ -1516,8 +1516,8 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
         // Function::construct's identical fix for why target's own default
         // isn't right when newTarget is a cross-realm constructor.
         if (!nt_proto.is_object()) {
-            Object* realm_default =
-                Engine::realm_intrinsic_prototype_for(new_target_obj, target->get_name());
+            // An ordinary function's default is %Object.prototype% whatever it is called.
+            Object* realm_default = Engine::realm_intrinsic_prototype_for(new_target_obj, "Object");
             nt_proto = realm_default ? Value(realm_default) : target->get_property("prototype");
         }
         if (nt_proto.is_object()) new_object->initialize_prototype(nt_proto.as_object());

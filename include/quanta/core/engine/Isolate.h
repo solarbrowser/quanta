@@ -7,12 +7,14 @@
 #ifndef QUANTA_ENGINE_ISOLATE_H
 #define QUANTA_ENGINE_ISOLATE_H
 
+#include <memory>
 #include <vector>
 
 namespace Quanta {
 
 class Engine;
 class Heap;
+class Context;
 
 // One GC heap and the realms (Engines) that live in it. A browser makes one
 // Isolate per thread and one Engine in it per document; $262.createRealm and
@@ -50,6 +52,9 @@ private:
     Heap* heap_;
     std::vector<Engine*> engines_;
     bool closing_ = false;
+    // Global Contexts of realms that are gone, kept until the heap that refers to
+    // them is.
+    std::vector<std::unique_ptr<Context>> retired_contexts_;
 };
 
 }

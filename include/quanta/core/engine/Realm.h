@@ -15,6 +15,7 @@ class Object;
 class Function;
 class Engine;
 class Visitor;
+class Context;
 
 // The intrinsics one realm owns. They used to be thread-wide statics, which made
 // a second realm on the thread overwrite (or be overwritten by) the first; held
@@ -34,6 +35,11 @@ public:
     Realm& operator=(const Realm&) = delete;
 
     Engine* engine() const { return engine_; }
+
+    // The realm's global Context. A native function made while this realm is current
+    // keeps it as its closure context, which is how a call to it finds the realm to
+    // run in.
+    Context* global_ctx = nullptr;
 
     // Set once the realm's Engine is gone but its global Context lingers because a
     // live cell can still reach it (see Engine::retire_into).

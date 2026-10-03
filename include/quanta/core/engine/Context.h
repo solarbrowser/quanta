@@ -378,7 +378,11 @@ public:
     static Object* primitive_prototype(PrimitiveKind kind);
     // The realm this context belongs to: its root global Context's, or the thread's
     // current realm for a context with none.
-    Realm* realm() const;
+    Realm* realm() const {
+        const Context* root = builtins_root_ ? builtins_root_ : this;
+        if (root->builtins_ && root->builtins_->realm) return root->builtins_->realm;
+        return g_current_realm;
+    }
     // The realm's %Promise%, captured the same way and for the same reason:
     // Promise.resolve's fast path has to know it is dealing with the untouched
     // constructor before it may skip building a capability.
