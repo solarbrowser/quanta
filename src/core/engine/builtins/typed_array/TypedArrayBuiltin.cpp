@@ -1478,7 +1478,7 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
-            if (Iterator::s_array_iterator_prototype_) iter->initialize_prototype(Iterator::s_array_iterator_prototype_);
+            if (Iterator::s_array_iterator_prototype_()) iter->initialize_prototype(Iterator::s_array_iterator_prototype_());
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
@@ -1506,7 +1506,7 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
-            if (Iterator::s_array_iterator_prototype_) iter->initialize_prototype(Iterator::s_array_iterator_prototype_);
+            if (Iterator::s_array_iterator_prototype_()) iter->initialize_prototype(Iterator::s_array_iterator_prototype_());
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
@@ -1532,7 +1532,7 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
-            if (Iterator::s_array_iterator_prototype_) iter->initialize_prototype(Iterator::s_array_iterator_prototype_);
+            if (Iterator::s_array_iterator_prototype_()) iter->initialize_prototype(Iterator::s_array_iterator_prototype_());
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.

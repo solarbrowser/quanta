@@ -9,6 +9,7 @@
 #include "quanta/core/runtime/Value.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/runtime/MapSet.h"
 #include <memory>
 #include <vector>
@@ -65,13 +66,11 @@ public:
 
     // Well-known prototype objects (set during setup_iterator_prototype).
     // Thread-local: each agent builds and owns its own intrinsics.
-    static constinit thread_local Object* s_iterator_prototype_;
-    static constinit thread_local Object* s_array_iterator_prototype_;
-    static constinit thread_local Object* s_string_iterator_prototype_;
-    static constinit thread_local Object* s_map_iterator_prototype_;
-    static constinit thread_local Object* s_set_iterator_prototype_;
-    // Forgets the above; see Engine::release_thread_realm_state.
-    static void reset_realm_prototypes();
+    static Object*& s_iterator_prototype_() { return current_realm().iterator_proto; }
+    static Object*& s_array_iterator_prototype_() { return current_realm().array_iterator_proto; }
+    static Object*& s_string_iterator_prototype_() { return current_realm().string_iterator_proto; }
+    static Object*& s_map_iterator_prototype_() { return current_realm().map_iterator_proto; }
+    static Object*& s_set_iterator_prototype_() { return current_realm().set_iterator_proto; }
 
 protected:
     IteratorResult next_default();

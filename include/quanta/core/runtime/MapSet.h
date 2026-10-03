@@ -9,6 +9,7 @@
 #include "quanta/core/runtime/Value.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Realm.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -119,7 +120,7 @@ public:
     
     static void setup_map_prototype(Context& ctx);
     
-    static constinit thread_local Object* prototype_object;
+    static Object*& prototype_object() { return current_realm().map_proto; }
     
 private:
     std::vector<MapEntry>::iterator find_entry(const Value& key);
@@ -189,7 +190,7 @@ public:
     
     static void setup_set_prototype(Context& ctx);
     
-    static constinit thread_local Object* prototype_object;
+    static Object*& prototype_object() { return current_realm().set_proto; }
     
 private:
     std::vector<SetEntry>::iterator find_value(const Value& value);
@@ -239,7 +240,7 @@ public:
 
     static void setup_weakmap_prototype(Context& ctx);
 
-    static constinit thread_local Object* prototype_object;
+    static Object*& prototype_object() { return current_realm().weakmap_proto; }
 };
 
 /**
@@ -278,7 +279,7 @@ public:
 
     static void setup_weakset_prototype(Context& ctx);
 
-    static constinit thread_local Object* prototype_object;
+    static Object*& prototype_object() { return current_realm().weakset_proto; }
 };
 
 /**
@@ -310,7 +311,7 @@ public:
 
     static void setup_weakref_prototype(Context& ctx);
 
-    static constinit thread_local Object* prototype_object;
+    static Object*& prototype_object() { return current_realm().weakref_proto; }
 };
 
 /**
@@ -358,12 +359,9 @@ public:
 
     static void setup_finalization_registry_prototype(Context& ctx);
 
-    static constinit thread_local Object* prototype_object;
+    static Object*& prototype_object() { return current_realm().finalization_registry_proto; }
 };
 
 
-// Forgets Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry's prototype
-// pointers; see Engine::release_thread_realm_state.
-void reset_collection_prototypes();
 
 }

@@ -137,10 +137,6 @@ Engine::~Engine() {
 void Engine::release_thread_realm_state() {
     Object::current_context_ = nullptr;
     EventLoop::instance().clear();
-    Iterator::reset_realm_prototypes();
-    Generator::reset_realm_prototypes();
-    AsyncGenerator::reset_realm_prototypes();
-    reset_collection_prototypes();
     Function::reset_realm_intrinsics();
 }
 

@@ -71,7 +71,7 @@ Iterator::IteratorResult Iterator::next_default() {
 
 // CreateIterResultObject's %Object.prototype% must come from the ITERABLE's
 // own realm (the array/Map/Set the iterator walks), not the calling ctx's --
-// the iterator's own kind-specific prototype (s_array_iterator_prototype_ &
+// the iterator's own kind-specific prototype (s_array_iterator_prototype_() &
 // co.) is a thread_local "last realm set up" cache, so the underlying
 // collection's own (already realm-correct) [[Prototype]] is the only
 // reliable signal here. Strings carry no such signal (a primitive has no
@@ -166,19 +166,6 @@ Value Iterator::iterator_throw(Context& ctx, std::span<const Value> args, Value 
     return Value();
 }
 
-constinit thread_local Object* Iterator::s_iterator_prototype_ = nullptr;
-constinit thread_local Object* Iterator::s_array_iterator_prototype_ = nullptr;
-constinit thread_local Object* Iterator::s_string_iterator_prototype_ = nullptr;
-constinit thread_local Object* Iterator::s_map_iterator_prototype_ = nullptr;
-constinit thread_local Object* Iterator::s_set_iterator_prototype_ = nullptr;
-
-void Iterator::reset_realm_prototypes() {
-    s_iterator_prototype_ = nullptr;
-    s_array_iterator_prototype_ = nullptr;
-    s_string_iterator_prototype_ = nullptr;
-    s_map_iterator_prototype_ = nullptr;
-    s_set_iterator_prototype_ = nullptr;
-}
 
 void Iterator::setup_iterator_prototype(Context& ctx) {
     // %IteratorPrototype% - only has [Symbol.iterator] returning this
@@ -218,7 +205,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
                     ctx.throw_type_error("Iterator.prototype[Symbol.toStringTag] setter: this is not an object");
                     return Value();
                 }
-                if (self == iter_proto_raw || self == Iterator::s_iterator_prototype_) {
+                if (self == iter_proto_raw || self == Iterator::s_iterator_prototype_()) {
                     ctx.throw_type_error("Cannot set Iterator.prototype[Symbol.toStringTag]");
                     return Value();
                 }
@@ -235,7 +222,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
         iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
 
-    s_iterator_prototype_ = iter_proto.get();
+    s_iterator_prototype_() = iter_proto.get();
     ctx.create_binding("@@IteratorPrototype", Value(iter_proto.release()));
 
     // Shared "next" on a kind-specific prototype: dispatches through the virtual Iterator::next() override of whatever subclass `this` actually is, so monkey-patching the prototype's "next" (instead of relying on an own property per instance) is observable, matching the spec.
@@ -246,13 +233,13 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
     // %ArrayIteratorPrototype%
     auto arr_iter_proto = ObjectFactory::create_object();
-    arr_iter_proto->initialize_prototype(s_iterator_prototype_);
+    arr_iter_proto->initialize_prototype(s_iterator_prototype_());
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("Array Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         arr_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
     install_next(arr_iter_proto.get());
-    s_array_iterator_prototype_ = arr_iter_proto.get();
+    s_array_iterator_prototype_() = arr_iter_proto.get();
     // Registered AFTER install_next so setting up `next` here doesn't itself
     // trip the array-spread protector (see Object::array_iterator_protector_intact).
     Object::watch_array_iterator_prototype(arr_iter_proto.get());
@@ -260,35 +247,35 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
     // %StringIteratorPrototype%
     auto str_iter_proto = ObjectFactory::create_object();
-    str_iter_proto->initialize_prototype(s_iterator_prototype_);
+    str_iter_proto->initialize_prototype(s_iterator_prototype_());
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("String Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         str_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
     install_next(str_iter_proto.get());
-    s_string_iterator_prototype_ = str_iter_proto.get();
+    s_string_iterator_prototype_() = str_iter_proto.get();
     ctx.create_binding("@@StringIteratorPrototype", Value(str_iter_proto.release()));
 
     // %MapIteratorPrototype%
     auto map_iter_proto = ObjectFactory::create_object();
-    map_iter_proto->initialize_prototype(s_iterator_prototype_);
+    map_iter_proto->initialize_prototype(s_iterator_prototype_());
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("Map Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         map_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
     install_next(map_iter_proto.get());
-    s_map_iterator_prototype_ = map_iter_proto.get();
+    s_map_iterator_prototype_() = map_iter_proto.get();
     ctx.create_binding("@@MapIteratorPrototype", Value(map_iter_proto.release()));
 
     // %SetIteratorPrototype%
     auto set_iter_proto = ObjectFactory::create_object();
-    set_iter_proto->initialize_prototype(s_iterator_prototype_);
+    set_iter_proto->initialize_prototype(s_iterator_prototype_());
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("Set Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         set_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
     install_next(set_iter_proto.get());
-    s_set_iterator_prototype_ = set_iter_proto.get();
+    s_set_iterator_prototype_() = set_iter_proto.get();
     ctx.create_binding("@@SetIteratorPrototype", Value(set_iter_proto.release()));
 }
 
@@ -327,8 +314,8 @@ Value Iterator::create_iterator_result(const Value& value, bool done, Context* r
 ArrayIterator::ArrayIterator(Object* array, Kind kind)
     : Iterator([this]() { return this->next_impl(); }), array_(array), kind_(kind), index_(0) {
     set_custom_kind(CustomKind::ArrayIterator);
-    if (s_array_iterator_prototype_) {
-        initialize_prototype(s_array_iterator_prototype_);
+    if (s_array_iterator_prototype_()) {
+        initialize_prototype(s_array_iterator_prototype_());
     }
 }
 
@@ -375,8 +362,8 @@ Iterator::IteratorResult ArrayIterator::next_impl() {
 StringIterator::StringIterator(const std::string& str)
     : Iterator(), string_(str), position_(0) {
     set_custom_kind(CustomKind::StringIterator);
-    if (s_string_iterator_prototype_) {
-        initialize_prototype(s_string_iterator_prototype_);
+    if (s_string_iterator_prototype_()) {
+        initialize_prototype(s_string_iterator_prototype_());
     }
 }
 
@@ -416,8 +403,8 @@ Iterator::IteratorResult StringIterator::next_impl() {
 MapIterator::MapIterator(Map* map, Kind kind)
     : Iterator(), map_(map), kind_(kind) {
     set_custom_kind(CustomKind::MapIterator);
-    if (s_map_iterator_prototype_) {
-        initialize_prototype(s_map_iterator_prototype_);
+    if (s_map_iterator_prototype_()) {
+        initialize_prototype(s_map_iterator_prototype_());
     }
 }
 
@@ -458,8 +445,8 @@ Iterator::IteratorResult MapIterator::next_impl() {
 SetIterator::SetIterator(Set* set, Kind kind)
     : Iterator(), set_(set), kind_(kind) {
     set_custom_kind(CustomKind::SetIterator);
-    if (s_set_iterator_prototype_) {
-        initialize_prototype(s_set_iterator_prototype_);
+    if (s_set_iterator_prototype_()) {
+        initialize_prototype(s_set_iterator_prototype_());
     }
 }
 

@@ -2127,8 +2127,8 @@ void register_string_builtins(Context& ctx) {
             const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
             auto iterator = ObjectFactory::create_object();
-            if (Iterator::s_string_iterator_prototype_) {
-                iterator->initialize_prototype(Iterator::s_string_iterator_prototype_);
+            if (Iterator::s_string_iterator_prototype_()) {
+                iterator->initialize_prototype(Iterator::s_string_iterator_prototype_());
             }
             struct StringIterState { std::string str; size_t index = 0; };
             auto state = std::make_shared<StringIterState>(StringIterState{str, 0});

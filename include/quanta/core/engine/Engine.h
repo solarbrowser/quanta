@@ -190,7 +190,7 @@ public:
 
     // Iterator Helper result objects' own [[Prototype]] is NOT %Iterator.prototype%
     // (what find_realm_owning_object(obj, "Iterator") would check, via "Iterator"'s
-    // own exposed .prototype property) -- it's Iterator::s_iterator_prototype_,
+    // own exposed .prototype property) -- it's Iterator::s_iterator_prototype_(),
     // a separate object that register_iterator_helpers installs map/filter/take/
     // drop/etc. directly onto, which array/string/map/set iterators (and every
     // Iterator Helper's own next()-result) reach before ever reaching %Iterator.

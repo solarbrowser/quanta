@@ -3213,8 +3213,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     return Value(result.release());
                 }, 0);
             iterator->set_property("next", Value(next_fn.release()));
-            if (Iterator::s_array_iterator_prototype_) {
-                iterator->initialize_prototype(Iterator::s_array_iterator_prototype_);
+            if (Iterator::s_array_iterator_prototype_()) {
+                iterator->initialize_prototype(Iterator::s_array_iterator_prototype_());
             }
             return Value(iterator.release());
         }, 0);

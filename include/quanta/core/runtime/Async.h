@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Value.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/runtime/Promise.h"
 #include <memory>
 #include <functional>
@@ -208,11 +209,9 @@ public:
 
     static void setup_async_generator_prototype(Context& ctx);
     // Thread-local: each agent owns its own intrinsics.
-    static constinit thread_local Object* s_async_generator_prototype_;
+    static Object*& s_async_generator_prototype_() { return current_realm().async_generator_proto; }
     // %AsyncGeneratorFunction.prototype% -- [[Prototype]] of all async generator functions
-    static constinit thread_local Object* s_async_generator_function_prototype_;
-    // Forgets the two above; see Engine::release_thread_realm_state.
-    static void reset_realm_prototypes();
+    static Object*& s_async_generator_function_prototype_() { return current_realm().async_generator_function_proto; }
 
     static AsyncGenerator* get_current() { return current_; }
     static void set_current(AsyncGenerator* g) { current_ = g; }

@@ -308,8 +308,8 @@ void register_iterator_helpers(Context& ctx) {
     // iterable, and called from wherever script holds a reference to it).
     Context* home_ctx = &ctx;
     // Add ES2025 Iterator Helpers to %IteratorPrototype%
-    if (Iterator::s_iterator_prototype_) {
-        Object* iter_proto_obj = Iterator::s_iterator_prototype_;
+    if (Iterator::s_iterator_prototype_()) {
+        Object* iter_proto_obj = Iterator::s_iterator_prototype_();
 
         auto call_iter_next = [](Context& ctx, Object* iter) -> std::pair<Value,bool> {
             Value nxt = iter->get_property("next");
@@ -594,7 +594,7 @@ void register_iterator_helpers(Context& ctx) {
 void register_iterator_constructor(Context& ctx) {
     // Same reasoning as register_iterator_helpers's own home_ctx.
     Context* home_ctx = &ctx;
-    // This realm's own %IteratorHelperPrototype% (Iterator::s_iterator_prototype_,
+    // This realm's own %IteratorHelperPrototype% (Iterator::s_iterator_prototype_(),
     // already set up by Iterator::setup_iterator_prototype + register_iterator_helpers
     // earlier in this same realm's sequential bootstrap), captured now rather than
     // read live from the thread_local at call time -- reading it live would pick up
@@ -603,7 +603,7 @@ void register_iterator_constructor(Context& ctx) {
     // zipKeyed/concat below, which build their own helper object directly instead of
     // going through create_iterator_helper_base (which already takes an explicit
     // iterator_proto argument from its caller).
-    Object* helper_proto_ptr = Iterator::s_iterator_prototype_;
+    Object* helper_proto_ptr = Iterator::s_iterator_prototype_();
     auto iterator_constructor = ObjectFactory::create_native_constructor_with_new_target("Iterator",
         [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)args;
@@ -1364,7 +1364,7 @@ void register_iterator_constructor(Context& ctx) {
                     if (!self || receiver.is_nullish() || (!receiver.is_nullish() && !receiver.is_object_like())) {
                         ctx.throw_type_error("[Symbol.toStringTag] setter: this is not an object"); return Value();
                     }
-                    if (self == iter_proto_home || self == Iterator::s_iterator_prototype_) {
+                    if (self == iter_proto_home || self == Iterator::s_iterator_prototype_()) {
                         ctx.throw_type_error("Cannot assign to read only property");
                         return Value();
                     }
@@ -1398,7 +1398,7 @@ void register_iterator_constructor(Context& ctx) {
                 if (!self || receiver.is_nullish() || (!receiver.is_nullish() && !receiver.is_object_like())) {
                     ctx.throw_type_error("constructor setter: this is not an object"); return Value();
                 }
-                if (self == iter_proto_home || self == Iterator::s_iterator_prototype_) {
+                if (self == iter_proto_home || self == Iterator::s_iterator_prototype_()) {
                     ctx.throw_type_error("Cannot assign to read only property 'constructor'");
                     return Value();
                 }
@@ -1615,11 +1615,11 @@ void register_iterator_constructor(Context& ctx) {
             auto helper = ObjectFactory::create_object();
             // helper_proto_ptr -- the real, live %IteratorHelperPrototype% (register_
             // iterator_helpers installs map/filter/take/drop/etc. directly on this
-            // realm's own Iterator::s_iterator_prototype_, and array/string/map/set
+            // realm's own Iterator::s_iterator_prototype_(), and array/string/map/set
             // iterators reach it before ever reaching iterator_proto_ptr,
             // register_iterator_constructor's own separate, largely shadowed copy of
             // the same methods -- confirmed empirically: [].values().drop(0)'s own
-            // [[Prototype]] is s_iterator_prototype_, not iterator_proto_ptr).
+            // [[Prototype]] is s_iterator_prototype_(), not iterator_proto_ptr).
             helper->initialize_prototype(helper_proto_ptr);
             helper->set_internal_slot("__ic_items__", Value(items.release()));
             helper->set_internal_slot("__ic_methods__", Value(methods.release()));
@@ -2029,8 +2029,8 @@ void register_iterator_constructor(Context& ctx) {
     }
     ctx.register_built_in_object("Iterator", iterator_constructor.release());
 
-    if (Iterator::s_iterator_prototype_ && Iterator::s_iterator_prototype_ != iter_proto_raw) {
-        Iterator::s_iterator_prototype_->initialize_prototype(iter_proto_raw);
+    if (Iterator::s_iterator_prototype_() && Iterator::s_iterator_prototype_() != iter_proto_raw) {
+        Iterator::s_iterator_prototype_()->initialize_prototype(iter_proto_raw);
     }
 }
 

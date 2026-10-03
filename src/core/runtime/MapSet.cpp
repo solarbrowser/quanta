@@ -94,21 +94,7 @@ static bool iterate_with_closing(Context& ctx, const Value& iterable_val, Object
     return true;
 }
 
-constinit thread_local Object* Map::prototype_object = nullptr;
-constinit thread_local Object* Set::prototype_object = nullptr;
-constinit thread_local Object* WeakMap::prototype_object = nullptr;
-constinit thread_local Object* WeakSet::prototype_object = nullptr;
-constinit thread_local Object* WeakRef::prototype_object = nullptr;
-constinit thread_local Object* FinalizationRegistry::prototype_object = nullptr;
 
-void reset_collection_prototypes() {
-    Map::prototype_object = nullptr;
-    Set::prototype_object = nullptr;
-    WeakMap::prototype_object = nullptr;
-    WeakSet::prototype_object = nullptr;
-    WeakRef::prototype_object = nullptr;
-    FinalizationRegistry::prototype_object = nullptr;
-}
 
 
 
@@ -325,6 +311,21 @@ std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) con
                     [](const MapEntry& e) -> const Value& { return e.key; });
 }
 
+// GetPrototypeFromConstructor(newTarget, "%X.prototype%"): newTarget's own
+// "prototype" when that is an object, else the intrinsic of newTarget's realm --
+// which is `fallback` (the running realm's) only when the two coincide. An
+// exception from reading "prototype" is left pending on ctx.
+static Object* prototype_from_new_target(Context& ctx, const Value& new_target, Object* fallback,
+                                         const char* ctor_name) {
+    Object* nt = new_target.as_object_or_null();
+    if (!nt) return fallback;
+    Value p = nt->get_property("prototype");
+    if (ctx.has_exception()) return nullptr;
+    if (Object* proto = p.as_object_or_null()) return proto;
+    if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt, ctor_name)) return realm_default;
+    return fallback;
+}
+
 Value Map::map_constructor(Context& ctx, std::span<const Value> args, Value receiver,
                             bool is_construct, Value new_target) {
     if (!is_construct) {
@@ -333,17 +334,9 @@ Value Map::map_constructor(Context& ctx, std::span<const Value> args, Value rece
     }
     auto map = std::make_unique<Map>();
 
-    // ES6 subclassing: use new.target.prototype if provided
-    if (new_target.is_function()) {
-        Value nt_proto = new_target.as_function()->get_property("prototype");
-        if (nt_proto.is_object()) {
-            map->initialize_prototype(nt_proto.as_object());
-        } else if (Map::prototype_object) {
-            map->initialize_prototype(Map::prototype_object);
-        }
-    } else if (Map::prototype_object) {
-        map->initialize_prototype(Map::prototype_object);
-    }
+    Object* map_proto = prototype_from_new_target(ctx, new_target, Map::prototype_object(), "Map");
+    if (ctx.has_exception()) return Value();
+    if (map_proto) map->initialize_prototype(map_proto);
 
     Map* map_ptr = map.get();
     Object* map_obj = map.release();
@@ -670,7 +663,7 @@ void Map::setup_map_prototype(Context& ctx) {
     PropertyDescriptor map_tag_desc(Value(std::string("Map")), PropertyAttributes::Configurable);
     map_prototype->set_property_descriptor("Symbol.toStringTag", map_tag_desc);
 
-    Map::prototype_object = map_prototype.get();
+    Map::prototype_object() = map_prototype.get();
 
     auto map_groupBy_fn = ObjectFactory::create_native_function("groupBy",
         [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
@@ -686,10 +679,10 @@ void Map::setup_map_prototype(Context& ctx) {
             Function* callback = args[1].as_function();
 
             auto result_map = std::make_unique<Map>();
-            // Map::prototype_object is the thread_local "last realm set up"
+            // Map::prototype_object() is the thread_local "last realm set up"
             // cache -- Map.groupBy's own realm (home_ctx) is what its result
             // must actually use once 2+ realms exist.
-            Object* map_proto = Map::prototype_object;
+            Object* map_proto = Map::prototype_object();
             if (Engine::all_engines().size() > 1) {
                 if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(home_ctx, "Map")) map_proto = realm_proto;
             }
@@ -907,17 +900,9 @@ Value Set::set_constructor(Context& ctx, std::span<const Value> args, Value rece
     }
     auto set = std::make_unique<Set>();
 
-    // ES6 subclassing: use new.target.prototype if provided
-    if (new_target.is_function()) {
-        Value nt_proto = new_target.as_function()->get_property("prototype");
-        if (nt_proto.is_object()) {
-            set->initialize_prototype(nt_proto.as_object());
-        } else if (Set::prototype_object) {
-            set->initialize_prototype(Set::prototype_object);
-        }
-    } else if (Set::prototype_object) {
-        set->initialize_prototype(Set::prototype_object);
-    }
+    Object* set_proto = prototype_from_new_target(ctx, new_target, Set::prototype_object(), "Set");
+    if (ctx.has_exception()) return Value();
+    if (set_proto) set->initialize_prototype(set_proto);
 
     Set* set_ptr = set.get();
     Object* set_obj = set.release();
@@ -1289,7 +1274,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 result->add(normalize_zero(v));
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
+            if (Set::prototype_object()) result->initialize_prototype(Set::prototype_object());
             return Value(result.release());
         }, 1);
     set_prototype->set_property("union", Value(union_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1319,7 +1304,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 }
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
+            if (Set::prototype_object()) result->initialize_prototype(Set::prototype_object());
             return Value(result.release());
         }, 1);
     set_prototype->set_property("intersection", Value(intersection_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1349,7 +1334,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 }
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
+            if (Set::prototype_object()) result->initialize_prototype(Set::prototype_object());
             return Value(result.release());
         }, 1);
     set_prototype->set_property("difference", Value(difference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1375,7 +1360,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 else { if (!in_result) result->add(v); }
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
+            if (Set::prototype_object()) result->initialize_prototype(Set::prototype_object());
             return Value(result.release());
         }, 1);
     set_prototype->set_property("symmetricDifference", Value(symmetricDifference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1473,7 +1458,7 @@ void Set::setup_set_prototype(Context& ctx) {
     PropertyDescriptor set_tag_desc(Value(std::string("Set")), PropertyAttributes::Configurable);
     set_prototype->set_property_descriptor("Symbol.toStringTag", set_tag_desc);
 
-    Set::prototype_object = set_prototype.get();
+    Set::prototype_object() = set_prototype.get();
 
     // Symbol.species getter: Set[Symbol.species] === Set
     {
@@ -1628,7 +1613,7 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
         }
     }
 
-    WeakMap::prototype_object = weakmap_prototype.get();
+    WeakMap::prototype_object() = weakmap_prototype.get();
 
     weakmap_constructor_fn->set_property("prototype", Value(weakmap_prototype.release()), PropertyAttributes::None);
     ctx.register_built_in_object("WeakMap", weakmap_constructor_fn.release());
@@ -1696,7 +1681,7 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
         }
     }
 
-    WeakSet::prototype_object = weakset_prototype.get();
+    WeakSet::prototype_object() = weakset_prototype.get();
 
     weakset_constructor_fn->set_property("prototype", Value(weakset_prototype.release()), PropertyAttributes::None);
     ctx.register_built_in_object("WeakSet", weakset_constructor_fn.release());
@@ -1704,16 +1689,15 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
 
 Value WeakMap::weakmap_constructor(Context& ctx, std::span<const Value> args, Value receiver,
                                     bool is_construct, Value new_target) {
-    (void)new_target;
     if (!is_construct) {
         ctx.throw_type_error("Constructor WeakMap requires 'new'");
         return Value();
     }
     auto weakmap = std::make_unique<WeakMap>();
 
-    if (WeakMap::prototype_object) {
-        weakmap->initialize_prototype(WeakMap::prototype_object);
-    }
+    Object* weakmap_proto = prototype_from_new_target(ctx, new_target, WeakMap::prototype_object(), "WeakMap");
+    if (ctx.has_exception()) return Value();
+    if (weakmap_proto) weakmap->initialize_prototype(weakmap_proto);
 
     Object* wm_obj = weakmap.release();
 
@@ -1867,16 +1851,15 @@ Value WeakMap::weakmap_delete(Context& ctx, std::span<const Value> args, Value r
 
 Value WeakSet::weakset_constructor(Context& ctx, std::span<const Value> args, Value receiver,
                                     bool is_construct, Value new_target) {
-    (void)new_target;
     if (!is_construct) {
         ctx.throw_type_error("Constructor WeakSet requires 'new'");
         return Value();
     }
     auto weakset = std::make_unique<WeakSet>();
 
-    if (WeakSet::prototype_object) {
-        weakset->initialize_prototype(WeakSet::prototype_object);
-    }
+    Object* weakset_proto = prototype_from_new_target(ctx, new_target, WeakSet::prototype_object(), "WeakSet");
+    if (ctx.has_exception()) return Value();
+    if (weakset_proto) weakset->initialize_prototype(weakset_proto);
 
     Object* ws_obj = weakset.release();
 
@@ -2029,15 +2012,8 @@ Value WeakRef::weakref_constructor(Context& ctx, std::span<const Value> args, Va
         ? std::make_unique<WeakRef>(target.as_symbol())
         : std::make_unique<WeakRef>(target.is_function() ? static_cast<Object*>(target.as_function()) : target.as_object());
 
-    Object* proto = WeakRef::prototype_object;
-    Value nt = new_target;
-    if (nt.is_object() || nt.is_function()) {
-        Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
-        Value p = nt_obj->get_property("prototype");
-        if (ctx.has_exception()) return Value();
-        if (p.is_object()) proto = p.as_object();
-        else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
-    }
+    Object* proto = prototype_from_new_target(ctx, new_target, WeakRef::prototype_object(), "WeakRef");
+    if (ctx.has_exception()) return Value();
     if (proto) weakref->initialize_prototype(proto);
     return Value(weakref.release());
 }
@@ -2072,7 +2048,7 @@ void WeakRef::setup_weakref_prototype(Context& ctx) {
         }
     }
 
-    WeakRef::prototype_object = weakref_prototype.get();
+    WeakRef::prototype_object() = weakref_prototype.get();
 
     weakref_constructor_fn->set_property("prototype", Value(weakref_prototype.release()), PropertyAttributes::None);
     ctx.register_built_in_object("WeakRef", weakref_constructor_fn.release());
@@ -2142,15 +2118,8 @@ Value FinalizationRegistry::fr_constructor(Context& ctx, std::span<const Value> 
     Context* global_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
     auto registry = std::make_unique<FinalizationRegistry>(args[0].as_function(), global_ctx);
 
-    Object* proto = FinalizationRegistry::prototype_object;
-    Value nt = new_target;
-    if (nt.is_object() || nt.is_function()) {
-        Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
-        Value p = nt_obj->get_property("prototype");
-        if (ctx.has_exception()) return Value();
-        if (p.is_object()) proto = p.as_object();
-        else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
-    }
+    Object* proto = prototype_from_new_target(ctx, new_target, FinalizationRegistry::prototype_object(), "FinalizationRegistry");
+    if (ctx.has_exception()) return Value();
     if (proto) registry->initialize_prototype(proto);
     return Value(registry.release());
 }
@@ -2233,7 +2202,7 @@ void FinalizationRegistry::setup_finalization_registry_prototype(Context& ctx) {
         }
     }
 
-    FinalizationRegistry::prototype_object = fr_prototype.get();
+    FinalizationRegistry::prototype_object() = fr_prototype.get();
 
     fr_constructor_fn->set_property("prototype", Value(fr_prototype.release()), PropertyAttributes::None);
     ctx.register_built_in_object("FinalizationRegistry", fr_constructor_fn.release());

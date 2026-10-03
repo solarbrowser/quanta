@@ -9,6 +9,7 @@
 #include "quanta/core/runtime/Value.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Realm.h"
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -143,9 +144,9 @@ public:
     static void reset_yield_counter();
 
     // %GeneratorPrototype%. Thread-local: each agent owns its own intrinsics.
-    static constinit thread_local Object* s_generator_prototype_;
+    static Object*& s_generator_prototype_() { return current_realm().generator_proto; }
     // %GeneratorFunction.prototype%
-    static constinit thread_local Object* s_generator_function_prototype_;
+    static Object*& s_generator_function_prototype_() { return current_realm().generator_function_proto; }
     // The exact Function object installed as %GeneratorPrototype%.next.
     // ForOfStatement::iterator_step compares its own resolved `next` against
     // this: a match means the call it is about to make would only rebuild
@@ -154,9 +155,7 @@ public:
     // read `.next` once for the whole loop (spec), so this identity check is
     // exactly as sound as making the call -- a `next` reassigned mid-loop,
     // on the instance or the prototype, was never going to be seen by either.
-    static constinit thread_local Function* s_generator_next_fn_;
-    // Forgets the three above; see Engine::release_thread_realm_state.
-    static void reset_realm_prototypes();
+    static Function*& s_generator_next_fn_() { return current_realm().generator_next_fn; }
 
 private:
     void complete_generator(const Value& value);

@@ -1078,7 +1078,7 @@ bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, Value& n
     // outcomes -- and the plain-value outcome, the overwhelming majority of
     // every step of every for-of over a generator, needs no {value, done}
     // object at all: it hands the two fields straight to the caller.
-    if (next_fn.as_function() == Generator::s_generator_next_fn_ && iterator.is_object()) {
+    if (next_fn.as_function() == Generator::s_generator_next_fn_() && iterator.is_object()) {
         Object* iter_obj = iterator.as_object();
         if (iter_obj->get_type() == Object::ObjectType::Custom &&
             static_cast<CustomObjectBase*>(iter_obj)->get_custom_kind() == CustomObjectBase::CustomKind::Generator) {

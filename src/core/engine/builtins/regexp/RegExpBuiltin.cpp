@@ -1484,7 +1484,7 @@ void register_regexp_builtins(Context& ctx) {
     Object* regexp_string_iter_proto = nullptr;
     {
         auto proto = ObjectFactory::create_object();
-        proto->initialize_prototype(Iterator::s_iterator_prototype_);
+        proto->initialize_prototype(Iterator::s_iterator_prototype_());
         Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
         if (tag_sym) {
             PropertyDescriptor tag_desc(Value(std::string("RegExp String Iterator")),

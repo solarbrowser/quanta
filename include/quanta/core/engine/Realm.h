@@ -29,7 +29,7 @@ class Realm {
 public:
     static constexpr size_t kPrimitiveKinds = 5;  // String, Number, Boolean, BigInt, Symbol
 
-    explicit Realm(Engine* engine) : engine_(engine) {}
+    explicit Realm(Engine* engine = nullptr) : engine_(engine) {}
     Realm(const Realm&) = delete;
     Realm& operator=(const Realm&) = delete;
 
@@ -52,6 +52,29 @@ public:
     Object* primitive_protos[kPrimitiveKinds] = {};
     Function* intrinsic_promise = nullptr;
 
+    // %IteratorPrototype% and the prototypes of the built-in iterators.
+    Object* iterator_proto = nullptr;
+    Object* array_iterator_proto = nullptr;
+    Object* string_iterator_proto = nullptr;
+    Object* map_iterator_proto = nullptr;
+    Object* set_iterator_proto = nullptr;
+
+    // %GeneratorPrototype%, %GeneratorFunction.prototype%, and the exact Function
+    // installed as %GeneratorPrototype%.next.
+    Object* generator_proto = nullptr;
+    Object* generator_function_proto = nullptr;
+    Function* generator_next_fn = nullptr;
+    Object* async_generator_proto = nullptr;
+    Object* async_generator_function_proto = nullptr;
+
+    // The keyed collections' and weak references' prototypes.
+    Object* map_proto = nullptr;
+    Object* set_proto = nullptr;
+    Object* weakmap_proto = nullptr;
+    Object* weakset_proto = nullptr;
+    Object* weakref_proto = nullptr;
+    Object* finalization_registry_proto = nullptr;
+
     void trace(Visitor& v) const;
 
 private:
@@ -60,6 +83,17 @@ private:
 
 // The realm the running code belongs to. Null before any engine exists.
 inline constinit thread_local Realm* g_current_realm = nullptr;
+
+// A realm with nothing in it, standing in where code asks for the current
+// realm's intrinsics with no realm current (before the first engine, after the
+// last): reads find nothing, as the statics this replaces did, and writes land
+// somewhere harmless.
+Realm& null_realm();
+
+inline Realm& current_realm() {
+    Realm* realm = g_current_realm;
+    return realm ? *realm : null_realm();
+}
 
 // Makes `realm` current for a scope, restoring whatever was current before.
 class RealmScope {

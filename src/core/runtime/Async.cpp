@@ -549,14 +549,10 @@ void AsyncFunction::trace(Visitor& v) {
 }
 
 
-constinit thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
-constinit thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
 
-void AsyncGenerator::reset_realm_prototypes() {
-    s_async_generator_prototype_ = nullptr;
-    s_async_generator_function_prototype_ = nullptr;
-}
 constinit thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
+
+static Realm& realm_of(Context* closure_context);
 
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx,
                                AsyncGeneratorFunction* owner_fn, Context* outer_ctx)
@@ -571,8 +567,9 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx,
     mco_create(&fiber_->co, &desc);
     FiberRegistry::register_fiber(this, static_cast<char*>(fiber_->co->stack_base),
                                    fiber_->co->stack_size, fiber_.get(), this);
-    if (s_async_generator_prototype_) {
-        initialize_prototype(s_async_generator_prototype_);
+    // GetPrototypeFromConstructor's fallback: the function's own realm.
+    if (Object* default_proto = realm_of(owner_fn ? owner_fn->get_closure_context() : nullptr).async_generator_proto) {
+        initialize_prototype(default_proto);
     }
 }
 
@@ -872,23 +869,23 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
         async_gen_prototype->set_property_descriptor(tag_sym->to_property_key(), ag_tag);
     }
 
-    s_async_generator_prototype_ = async_gen_prototype.get();
+    s_async_generator_prototype_() = async_gen_prototype.get();
     ctx.create_binding("AsyncGeneratorPrototype", Value(async_gen_prototype.release()));
 
     // %AsyncGeneratorFunction.prototype% -- [[Prototype]] of all async generator functions
     // Per spec: %AsyncGeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
     auto async_gen_fn_proto = ObjectFactory::create_object();
     Object* func_proto = ObjectFactory::get_function_prototype();
-    async_gen_fn_proto->initialize_prototype(func_proto ? func_proto : s_async_generator_prototype_);
+    async_gen_fn_proto->initialize_prototype(func_proto ? func_proto : s_async_generator_prototype_());
     if (tag_sym) {
         PropertyDescriptor agf_tag(Value(std::string("AsyncGeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         async_gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), agf_tag);
     }
     // %AsyncGeneratorFunction.prototype%.prototype = %AsyncGeneratorPrototype% (27.4.3.3: non-writable, non-enumerable, configurable)
-    PropertyDescriptor agfp_proto_desc(Value(s_async_generator_prototype_), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    PropertyDescriptor agfp_proto_desc(Value(s_async_generator_prototype_()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     async_gen_fn_proto->set_property_descriptor("prototype", agfp_proto_desc);
 
-    s_async_generator_function_prototype_ = async_gen_fn_proto.get();
+    s_async_generator_function_prototype_() = async_gen_fn_proto.get();
     ctx.create_binding("@@AsyncGeneratorFunctionPrototype", Value(async_gen_fn_proto.release()));
 
     // AsyncGeneratorFunction constructor
@@ -990,10 +987,10 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
 
     // Both constructor links are { writable: false, enumerable: false, configurable: true };
     // %AsyncGeneratorPrototype%.constructor is %AsyncGeneratorFunction.prototype%, not the ctor.
-    if (s_async_generator_function_prototype_) {
-        s_async_generator_function_prototype_->set_property("constructor", Value(async_generator_function_constructor.get()), PropertyAttributes::Configurable);
-        async_generator_function_constructor->set_property("prototype", Value(s_async_generator_function_prototype_), PropertyAttributes::None);
-        s_async_generator_prototype_->set_property("constructor", Value(s_async_generator_function_prototype_), PropertyAttributes::Configurable);
+    if (s_async_generator_function_prototype_()) {
+        s_async_generator_function_prototype_()->set_property("constructor", Value(async_generator_function_constructor.get()), PropertyAttributes::Configurable);
+        async_generator_function_constructor->set_property("prototype", Value(s_async_generator_function_prototype_()), PropertyAttributes::None);
+        s_async_generator_prototype_()->set_property("constructor", Value(s_async_generator_function_prototype_()), PropertyAttributes::Configurable);
     }
 
     ctx.create_binding("AsyncGeneratorFunction", Value(async_generator_function_constructor.release()));
@@ -1682,24 +1679,18 @@ EventLoop& EventLoop::instance() {
 }
 
 
-// Realm-scoped %AsyncGeneratorPrototype%/%AsyncGeneratorFunction.prototype% for
-// closure_context's own realm, falling back to the (thread_local, single-realm-
-// correct) shared default. Free in the single/no-realm case: one vector-size check.
+// The realm a function belongs to: its closure context's, or the running one.
+static Realm& realm_of(Context* closure_context) {
+    Realm* realm = closure_context ? closure_context->realm() : nullptr;
+    return realm ? *realm : current_realm();
+}
+
+// %AsyncGeneratorPrototype%/%AsyncGeneratorFunction.prototype% of closure_context's own realm.
 static Object* realm_async_generator_prototype(Context* closure_context) {
-    if (closure_context && Engine::all_engines().size() > 1 &&
-        closure_context->has_binding("AsyncGeneratorPrototype")) {
-        Value v = closure_context->get_binding("AsyncGeneratorPrototype");
-        if (v.is_object()) return v.as_object();
-    }
-    return AsyncGenerator::s_async_generator_prototype_;
+    return realm_of(closure_context).async_generator_proto;
 }
 static Object* realm_async_generator_function_prototype(Context* closure_context) {
-    if (closure_context && Engine::all_engines().size() > 1 &&
-        closure_context->has_binding("@@AsyncGeneratorFunctionPrototype")) {
-        Value v = closure_context->get_binding("@@AsyncGeneratorFunctionPrototype");
-        if (v.is_object()) return v.as_object();
-    }
-    return AsyncGenerator::s_async_generator_function_prototype_;
+    return realm_of(closure_context).async_generator_function_proto;
 }
 
 AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
@@ -1710,12 +1701,12 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
     set_function_kind(FunctionKind::AsyncGenerator);
     set_is_constructor(false);
     // Each async generator function gets a unique 'prototype' object inheriting from %AsyncGeneratorPrototype%
-    if (AsyncGenerator::s_async_generator_prototype_) {
+    if (AsyncGenerator::s_async_generator_prototype_()) {
         auto fn_proto = ObjectFactory::create_object();
         fn_proto->initialize_prototype(realm_async_generator_prototype(closure_context));
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
-        if (AsyncGenerator::s_async_generator_function_prototype_) {
+        if (AsyncGenerator::s_async_generator_function_prototype_()) {
             this->initialize_prototype(realm_async_generator_function_prototype(closure_context));
         }
     }
@@ -1728,12 +1719,12 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
     : Function(name, std::move(params), std::move(body), closure_context) {
     set_function_kind(FunctionKind::AsyncGenerator);
     set_is_constructor(false);
-    if (AsyncGenerator::s_async_generator_prototype_) {
+    if (AsyncGenerator::s_async_generator_prototype_()) {
         auto fn_proto = ObjectFactory::create_object();
         fn_proto->initialize_prototype(realm_async_generator_prototype(closure_context));
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
-        if (AsyncGenerator::s_async_generator_function_prototype_) {
+        if (AsyncGenerator::s_async_generator_function_prototype_()) {
             this->initialize_prototype(realm_async_generator_function_prototype(closure_context));
         }
     }
@@ -1749,12 +1740,12 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
     : Function(name, std::move(executable), closure_context) {
     set_function_kind(FunctionKind::AsyncGenerator);
     set_is_constructor(false);
-    if (AsyncGenerator::s_async_generator_prototype_) {
+    if (AsyncGenerator::s_async_generator_prototype_()) {
         auto fn_proto = ObjectFactory::create_object();
         fn_proto->initialize_prototype(realm_async_generator_prototype(closure_context));
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
-        if (AsyncGenerator::s_async_generator_function_prototype_) {
+        if (AsyncGenerator::s_async_generator_function_prototype_()) {
             this->initialize_prototype(realm_async_generator_function_prototype(closure_context));
         }
     }

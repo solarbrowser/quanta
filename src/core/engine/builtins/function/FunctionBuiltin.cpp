@@ -548,7 +548,7 @@ void register_function_builtins(Context& ctx) {
                 // Function.prototype always throws (no legacy non-strict caller/arguments shadowing for it).
                 if (fn && fn != function_proto_ptr) {
                     bool is_bound = !fn->get_internal_slot("__bound_target__").is_undefined();
-                    bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_;
+                    bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_();
                     if (is_bound || is_generator_fn || fn->is_strict() || fn->is_class_constructor() || fn->is_arrow()) {
                         ctx.throw_type_error_as(*home_ctx, "'caller' and 'arguments' are restricted function properties");
                         return Value();
