@@ -240,6 +240,19 @@ void Runtime::PerformMicrotaskCheckpoint() { isolate_->PerformMicrotaskCheckpoin
 bool Runtime::RunDueTimers() { return isolate_->RunDueTimers(); }
 std::optional<int64_t> Runtime::NextTimerDelayMs() { return isolate_->NextTimerDelayMs(); }
 
+// ---- Per-realm data -------------------------------------------------------
+
+void SetRealmData(Context& ctx, const void* key, void* value) {
+    if (Quanta::Realm* realm = ctx.realm()) realm->embedder_data[key] = value;
+}
+
+void* GetRealmData(Context& ctx, const void* key) {
+    Quanta::Realm* realm = g_current_realm ? g_current_realm : ctx.realm();
+    if (!realm) return nullptr;
+    auto it = realm->embedder_data.find(key);
+    return it == realm->embedder_data.end() ? nullptr : it->second;
+}
+
 // ---- Exposing a class to script -------------------------------------------
 
 ClassRef DefineClass(Context& ctx, const char* name, NativeFn constructor, int length, Object* parentProto) {
@@ -268,15 +281,31 @@ ClassRef DefineClass(Context& ctx, const char* name, NativeFn constructor, int l
     return {ctor_ptr, proto_ptr};
 }
 
+// The realm a class's members belong to: the one that made its constructor, which is
+// the holder itself for a static member and the prototype's "constructor" for the rest.
+// The members' natives are made while it is current, so they run in it.
+static Quanta::Realm* realm_of_holder(Object* holder) {
+    Object* fn = holder;
+    if (holder->get_type() != Object::ObjectType::Function) {
+        Value ctor = holder->get_property("constructor");
+        fn = ctor.is_function() ? static_cast<Object*>(ctor.as_function()) : nullptr;
+    }
+    Context* home = fn ? Engine::find_realm_owning_function(fn) : nullptr;
+    return home ? home->realm() : g_current_realm;
+}
+
 void DefineMethod(Object* proto, const char* name, NativeFn fn, int length) {
+    RealmScope realm_scope(realm_of_holder(proto));
     proto->set_property(name, Value(make_native(name, fn, length).release()), PropertyAttributes::Default);
 }
 
 void DefineStaticMethod(Object* constructor, const char* name, NativeFn fn, int length) {
+    RealmScope realm_scope(realm_of_holder(constructor));
     constructor->set_property(name, Value(make_native(name, fn, length).release()), PropertyAttributes::Default);
 }
 
 void DefineAccessor(Object* proto, const char* name, NativeFn getter, NativeFn setter) {
+    RealmScope realm_scope(realm_of_holder(proto));
     PropertyDescriptor desc;
     desc.set_getter(make_native((std::string("get ") + name).c_str(), getter, 0).release());
     if (setter) desc.set_setter(make_native((std::string("set ") + name).c_str(), setter, 1).release());

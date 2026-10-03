@@ -681,6 +681,38 @@ static void test_realms() {
     CHECK(eval_in(*f, "1 + 1").as_number() == 2);
 }
 
+static int g_realm_key;
+
+static Value ProbeRealm(Context& ctx, Value, Args, Value) {
+    return Value(static_cast<double>(reinterpret_cast<intptr_t>(GetRealmData(ctx, &g_realm_key))));
+}
+
+static void define_probe(Embed::Realm& realm, intptr_t tag) {
+    Context& ctx = realm.GetContext();
+    SetRealmData(ctx, &g_realm_key, reinterpret_cast<void*>(tag));
+    ClassRef probe = DefineClass(ctx, "Probe", [](Context&, Value, Args, Value) { return Undefined(); }, 0);
+    DefineStaticMethod(probe.constructor, "get", ProbeRealm, 0);
+    DefineGlobal(ctx, "Probe", probe.constructor);
+}
+
+// What a host keeps per realm is told apart by the realm the native runs in.
+static void test_realm_data() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    define_probe(*a, 1);
+    define_probe(*b, 2);
+    CHECK(eval_in(*a, "Probe.get()").as_number() == 1);
+    CHECK(eval_in(*b, "Probe.get()").as_number() == 2);
+    // b's native, called by a's script, still answers for b.
+    set_global(*a, "BProbe", global_of(*b, "Probe"));
+    CHECK(eval_in(*a, "BProbe.get()").as_number() == 2);
+    CHECK(eval_in(*a, "Probe.get()").as_number() == 1);
+    // And through a callback b's native makes into a function of a's.
+    set_global(*b, "AProbe", global_of(*a, "Probe"));
+    CHECK(eval_in(*b, "AProbe.get()").as_number() == 1);
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -707,6 +739,7 @@ int main() {
     rt.reset();
     test_sequential_runtimes();
     test_realms();
+    test_realm_data();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

@@ -8,6 +8,7 @@
 #define QUANTA_ENGINE_REALM_H
 
 #include <cstddef>
+#include <unordered_map>
 
 namespace Quanta {
 
@@ -103,6 +104,10 @@ public:
     Object* weakset_proto = nullptr;
     Object* weakref_proto = nullptr;
     Object* finalization_registry_proto = nullptr;
+
+    // What an embedder keeps per realm (Embed::SetRealmData). Not cells: the embedder
+    // owns what these point at and must keep any cell they name alive another way.
+    std::unordered_map<const void*, void*> embedder_data;
 
     void trace(Visitor& v) const;
 

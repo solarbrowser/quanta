@@ -174,6 +174,21 @@ private:
     std::unique_ptr<Realm> realm_;
 };
 
+// ---- Per-realm data -------------------------------------------------------
+
+// A host that keeps something per realm (the prototypes of the classes it defined, say)
+// cannot keep it in a static: a second realm would take the place of the first. These
+// hold one pointer per key per realm instead, `key` being any address the host owns
+// (typically a static's). SetRealmData is for setup, with the realm's own context from
+// Realm::GetContext(), next to DefineClass. GetRealmData is for natives: it answers for
+// the realm the native is running in, which is the one that defined it even when script
+// of another realm called it. Called from host code outside any native it answers for the
+// realm last entered, so go through Realm::Evaluate or Call first, or keep the realm in
+// hand and ask Set's context. The pointer is the host's: the realm neither owns nor
+// traces it, so a cell it names has to be kept alive some other way (a ClassRef is).
+void  SetRealmData(Context& ctx, const void* key, void* value);
+void* GetRealmData(Context& ctx, const void* key);   // null: not set in that realm
+
 // ---- Exposing a class to script -------------------------------------------
 
 struct ClassRef {

@@ -514,6 +514,11 @@ static void declare_pattern_parameter_names(Context& function_context, ASTNode* 
     }
 }
 
+// The Context a native of another realm was handed by its caller. The native runs in its
+// own realm but on this one, which belongs to the caller's, so a script function it calls
+// back must not run on it either (see call_native_in_realm).
+static constinit thread_local const Context* g_borrowed_ctx = nullptr;
+
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     switch (get_function_kind()) {
         case FunctionKind::Async: return static_cast<AsyncFunction*>(this)->call(ctx, args, this_value);
@@ -539,6 +544,9 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
     // every call finds it already current, which is the one compare this costs.
     if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
         return call_gated_in_realm(foreign, ctx, args, this_value);
+    }
+    if (UNLIKELY_NATIVE(&ctx == g_borrowed_ctx)) {
+        return call_default_impl(ctx, args, this_value, nullptr, /*own_context=*/true);
     }
     // Runs directly on the caller's own ctx instead of a freshly
     // pool-acquired one. Native
@@ -750,6 +758,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
         return call_default_impl_in_realm(foreign, ctx, args, this_value, args_vec);
     }
+    own_context = own_context || &ctx == g_borrowed_ctx;
     // A vector's storage is malloc'd and invisible to the stack scan, so it
     // has to be rooted for the whole call. Register-resident arguments are
     // already covered by the caller's own frame and need nothing.
@@ -1169,6 +1178,11 @@ Value Function::call_default_impl_in_realm(Realm* realm, Context& ctx, std::span
 
 Value Function::call_native_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
                                      Value this_value) {
+    struct Borrow {
+        const Context* previous;
+        explicit Borrow(const Context* c) : previous(g_borrowed_ctx) { g_borrowed_ctx = c; }
+        ~Borrow() { g_borrowed_ctx = previous; }
+    } borrow(&ctx);
     RealmScope scope(realm);
     return call_native(ctx, args, this_value);
 }

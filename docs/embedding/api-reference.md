@@ -23,6 +23,13 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 | `~Realm()` | Destroys the realm: its timers and queued jobs go at once, and what it made is freed once nothing else can reach it. |
 | `Runtime::Create()` | An Isolate with one Realm in it. `GetContext`, `Evaluate`, `CollectGarbage`, `PerformMicrotaskCheckpoint`, `RunDueTimers` and `NextTimerDelayMs` are those of the Isolate or the Realm. |
 
+## Per-realm data
+
+| | |
+|---|---|
+| `SetRealmData(ctx, key, value)` | Keeps one `void*` per `key` in the realm `ctx` belongs to (use the realm's own `GetContext()`, at setup next to `DefineClass`). `key` is any address you own. A host that keeps a class's prototypes in a static would have the second realm replace the first; keep them here instead. |
+| `GetRealmData(ctx, key)` | For natives: the value of the realm the native is running in, which is the one that defined it even when script of another realm called it. Null if never set there. From host code outside any native it answers for the realm last entered, so go through `Realm::Evaluate` or `Call` first. The realm neither owns nor traces the pointer. |
+
 ## Exposing a class
 
 | | |
