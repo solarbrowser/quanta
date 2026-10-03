@@ -128,6 +128,7 @@ Engine::~Engine() {
     if (g_current_realm == realm_.get()) {
         g_current_realm = reg.empty() ? nullptr : reg.front()->realm();
     }
+    Object::rebuild_protector_filter();
     if (reg.empty()) release_thread_realm_state();
     if (Heap::active_or_null() == heap_) {
         Heap::set_active(nullptr);
@@ -137,7 +138,6 @@ Engine::~Engine() {
 void Engine::release_thread_realm_state() {
     Object::current_context_ = nullptr;
     EventLoop::instance().clear();
-    Function::reset_realm_intrinsics();
 }
 
 bool Engine::initialize() {
@@ -159,15 +159,18 @@ bool Engine::initialize() {
         Context* saved_context = Object::current_context_;
         Object::current_context_ = nullptr;
 
-        global_context_ = ContextFactory::create_global_context(this);
+        {
+            Object::ProtectorInitScope protectors;
+            global_context_ = ContextFactory::create_global_context(this);
 
-        module_loader_ = std::make_unique<ModuleLoader>(this);
+            module_loader_ = std::make_unique<ModuleLoader>(this);
 
-        ObjectFactory::initialize_memory_pools();
+            ObjectFactory::initialize_memory_pools();
 
-        setup_built_in_functions();
-        setup_built_in_objects();
-        setup_error_types();
+            setup_built_in_functions();
+            setup_built_in_objects();
+            setup_error_types();
+        }
 
         Object::current_context_ = saved_context;
         

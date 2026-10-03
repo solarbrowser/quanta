@@ -67,6 +67,17 @@ public:
     Object* async_generator_proto = nullptr;
     Object* async_generator_function_proto = nullptr;
 
+    // Protector state (see Object.cpp): the objects whose mutation invalidates a
+    // fast path, and the flags that fast path trusts until it does. Array iteration
+    // and instanceof keep thread-wide flags instead, because their fast paths do not
+    // check which realm an object came from.
+    Object* watched_array_iterator_proto = nullptr;
+    Object* watched_regexp_proto = nullptr;
+    bool regexp_proto_intact = false;
+    Object* watched_promise_proto = nullptr;
+    Object* watched_promise_ctor = nullptr;
+    bool promise_species_intact = false;
+
     // The keyed collections' and weak references' prototypes.
     Object* map_proto = nullptr;
     Object* set_proto = nullptr;

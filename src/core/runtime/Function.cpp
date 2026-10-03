@@ -58,12 +58,6 @@ static bool is_anon_func_def(const ASTNode* node) {
 
 namespace Quanta {
 
-void Function::reset_realm_intrinsics() {
-    Object::watch_regexp_prototype(nullptr);
-    Object::watch_array_iterator_prototype(nullptr);
-    Object::watch_promise_species(nullptr, nullptr);
-}
-
 // closure_context_ is stored for the Function's whole life and read by the
 // tracer (Function::trace_default) and by every arrow's `this`/`super` lookup,
 // so the Context has to outlive the call that created the closure. Saying so

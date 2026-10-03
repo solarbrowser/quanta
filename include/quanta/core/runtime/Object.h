@@ -136,13 +136,9 @@ public:
     // through the iterator protocol (an iterator object plus a result object
     // and a next() call per element). See Object.cpp for what clears it.
     static bool array_iterator_protector_intact();
-    // Registered once by Iterator's setup so a later write to
+    // Registered once per realm by Iterator's setup so a later write to its
     // %ArrayIteratorPrototype%.next can be recognised as invalidating.
     static void watch_array_iterator_prototype(Object* proto);
-    // Called once after the intrinsics are installed: their own @@iterator
-    // definitions would otherwise leave the protector permanently cleared
-    // before any user code has run.
-    static void arm_array_iterator_protector();
     // Same idea for RegExp.prototype's exec and flags: true while neither has
     // been redefined or deleted, which is what lets [Symbol.replace] answer
     // without running exec and building a match object per match. Armed once
@@ -169,10 +165,29 @@ public:
     // (ordinary_has_instance) directly. Broad like the array-iterator
     // protector rather than target-specific like RegExp/Promise's, since
     // Symbol.hasInstance can be shadowed on any individual function, not just
-    // redefined on the one shared prototype. Armed once after Function's own
-    // is installed.
+    // redefined on the one shared prototype.
     static bool has_instance_protector_intact();
-    static void arm_has_instance_protector();
+    // Every property write asks whether its target is one a protector watches, and
+    // answers from a small bit filter of the watched objects' addresses. Rebuilt
+    // from the live realms when one is destroyed, so the dead ones' bits do not pile
+    // up until everything takes the slow path.
+    static void rebuild_protector_filter();
+
+    // Standing up a realm's intrinsics writes @@iterator, @@hasInstance and the
+    // watched properties itself, which is exactly what clears the protectors. For
+    // the scope's duration those writes are not counted: the thread-wide flags are
+    // put back as they were, so a realm made late does not re-arm a flag that an
+    // earlier realm's script has already cleared.
+    class ProtectorInitScope {
+    public:
+        ProtectorInitScope();
+        ~ProtectorInitScope();
+        ProtectorInitScope(const ProtectorInitScope&) = delete;
+        ProtectorInitScope& operator=(const ProtectorInitScope&) = delete;
+    private:
+        bool array_iterator_intact_;
+        bool has_instance_intact_;
+    };
     // A direct shape-slot write (bypassing set_property's general
     // shape+descriptor sync) must still move this or a cached descriptor-side
     // read (own_desc_value/own_desc_epoch in h_GetNamedRest) can keep
@@ -682,6 +697,7 @@ public:
     // mutations need to bump proto_epoch(), so ordinary objects never pay it.
     static constexpr uintptr_t kUsedAsPrototype = 0x02;
     bool used_as_prototype() const { return proto_.flag(kUsedAsPrototype); }
+
     // Bumps the epoch on the transition, not just on changes to an object
     // already in a chain: a cache keyed on a prototype POINTER would
     // otherwise never notice a fresh object taking the address a dead
@@ -2085,9 +2101,7 @@ public:
     std::string to_string() const;
 
     // The %ThrowTypeError% intrinsic, shared by Function.prototype.caller/.arguments and arguments.callee.
-    // Forgets this thread's protector watches (they point into a realm); see
-    // Engine::release_thread_realm_state.
-    static void reset_realm_intrinsics();
+
 
     // A fresh unmapped arguments object for `args`: elements, length, callee,
     // @@iterator. Bound to nothing. For a function whose `arguments` reads were

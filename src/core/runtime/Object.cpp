@@ -14,6 +14,7 @@
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Error.h"
@@ -1357,49 +1358,69 @@ namespace {
 // iterator object plus a result object and a next() call PER ELEMENT) only
 // while nothing has redefined how arrays iterate. Cleared forever the first
 // time anything writes an @@iterator anywhere (covering both
-// Array.prototype and per-instance shadowing) or patches
+// Array.prototype and per-instance shadowing) or patches any realm's
 // %ArrayIteratorPrototype%.next. Real code never does either, so the fast
 // path effectively always holds; when it does not, correctness wins.
-constinit thread_local bool g_regexp_proto_intact = false;
-constinit thread_local Object* g_regexp_prototype = nullptr;
+//
+// Two protectors are thread-wide (this one and instanceof's): their fast paths
+// do not ask which realm an object came from, so a write in any realm has to
+// clear them for all. The RegExp and Promise ones are per realm (see Realm):
+// their fast paths compare the object's prototype with the running realm's
+// watched one, so another realm's objects simply take the slow path.
 constinit thread_local bool g_array_iterator_intact = true;
-constinit thread_local Object* g_array_iterator_prototype = nullptr;
-constinit thread_local bool g_promise_species_intact = false;
-constinit thread_local Object* g_promise_prototype = nullptr;
-constinit thread_local Object* g_promise_constructor = nullptr;
 constinit thread_local bool g_has_instance_intact = true;
+
+// 1024 bits over the watched objects' addresses (a handful per realm), so that
+// the check every property write makes costs one load, a shift and a mask. A false
+// positive only means the slower comparison against each realm's watched pointers.
+constinit thread_local uint64_t g_watch_filter[16] = {};
+inline size_t watch_slot(const Object* p) { return (reinterpret_cast<uintptr_t>(p) >> 4) & 1023; }
+inline void watch_filter_add(const Object* p) {
+    if (!p) return;
+    size_t slot = watch_slot(p);
+    g_watch_filter[slot >> 6] |= uint64_t(1) << (slot & 63);
+}
+inline bool maybe_watched(const Object* p) {
+    size_t slot = watch_slot(p);
+    return (g_watch_filter[slot >> 6] >> (slot & 63)) & 1;
+}
+
+// A write to an object that may be one some realm watches.
+void note_watched_write(const Object* target, const std::string& key) {
+    for (Engine* engine : Engine::all_engines()) {
+        Realm* realm = engine->realm();
+        if (!realm) continue;
+        if (target == realm->watched_array_iterator_proto && key == "next") {
+            g_array_iterator_intact = false;
+        }
+        // RegExp.prototype's exec, its flags getter, and the eight accessors that
+        // getter reads. A replace that skips building a match object reads none of
+        // them and asks the pattern itself instead, so it may only be taken while
+        // every one still says what the general path would have read -- deleting
+        // one counts too, since the general path then reads something else.
+        if (realm->regexp_proto_intact && target == realm->watched_regexp_proto) {
+            static const char* const kWatched[] = {
+                "exec", "flags", "hasIndices", "global", "ignoreCase",
+                "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
+            };
+            for (const char* w : kWatched) {
+                if (key == w) { realm->regexp_proto_intact = false; break; }
+            }
+        }
+        // Promise.prototype.constructor (species_constructor's first read) or
+        // Promise[Symbol.species] (its second, an accessor call) redefined.
+        if (realm->promise_species_intact &&
+            ((target == realm->watched_promise_proto && key == "constructor") ||
+             (target == realm->watched_promise_ctor && key == "Symbol.species"))) {
+            realm->promise_species_intact = false;
+        }
+    }
+}
 
 // Both checks lead with a length test so the common case costs a compare.
 inline void note_protector_write(const Object* target, const std::string& key) {
-    if (g_array_iterator_intact) {
-        if (key.size() == 15 && key[0] == 'S' && key == "Symbol.iterator") {
-            g_array_iterator_intact = false;
-        } else if (key.size() == 4 && key[0] == 'n' &&
-                   target == g_array_iterator_prototype && key == "next") {
-            g_array_iterator_intact = false;
-        }
-    }
-    // RegExp.prototype's exec, its flags getter, and the eight accessors that
-    // getter reads. A replace that skips building a match object reads none of
-    // them and asks the pattern itself instead, so it may only be taken while
-    // every one still says what the general path would have read -- deleting
-    // one counts too, since the general path then reads something else. The
-    // pointer test leads so that writes to anything else cost one compare.
-    if (g_regexp_proto_intact && target == g_regexp_prototype) {
-        static const char* const kWatched[] = {
-            "exec", "flags", "hasIndices", "global", "ignoreCase",
-            "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
-        };
-        for (const char* w : kWatched) {
-            if (key == w) { g_regexp_proto_intact = false; break; }
-        }
-    }
-    // Promise.prototype.constructor (species_constructor's first read) or
-    // Promise[Symbol.species] (its second, an accessor call) redefined.
-    if (g_promise_species_intact &&
-        ((target == g_promise_prototype && key == "constructor") ||
-         (target == g_promise_constructor && key == "Symbol.species"))) {
-        g_promise_species_intact = false;
+    if (g_array_iterator_intact && key.size() == 15 && key[0] == 'S' && key == "Symbol.iterator") {
+        g_array_iterator_intact = false;
     }
     // Symbol.hasInstance written anywhere -- own a specific function
     // (per-instance shadowing) or Function.prototype itself.
@@ -1407,29 +1428,56 @@ inline void note_protector_write(const Object* target, const std::string& key) {
         key == "Symbol.hasInstance") {
         g_has_instance_intact = false;
     }
+    if (maybe_watched(target)) note_watched_write(target, key);
 }
 }  // namespace
 
-bool Object::array_iterator_protector_intact() { return g_array_iterator_intact; }
-bool Object::regexp_proto_protector_intact() { return g_regexp_proto_intact; }
-Object* Object::watched_regexp_prototype() { return g_regexp_prototype; }
-void Object::watch_regexp_prototype(Object* proto) {
-    g_regexp_prototype = proto;
-    g_regexp_proto_intact = proto != nullptr;
+Object::ProtectorInitScope::ProtectorInitScope()
+    : array_iterator_intact_(g_array_iterator_intact), has_instance_intact_(g_has_instance_intact) {}
+
+Object::ProtectorInitScope::~ProtectorInitScope() {
+    g_array_iterator_intact = array_iterator_intact_;
+    g_has_instance_intact = has_instance_intact_;
 }
-void Object::watch_array_iterator_prototype(Object* proto) { g_array_iterator_prototype = proto; }
-void Object::arm_array_iterator_protector() { g_array_iterator_intact = true; }
+
+bool Object::array_iterator_protector_intact() { return g_array_iterator_intact; }
+bool Object::regexp_proto_protector_intact() { return current_realm().regexp_proto_intact; }
+Object* Object::watched_regexp_prototype() { return current_realm().watched_regexp_proto; }
+void Object::watch_regexp_prototype(Object* proto) {
+    Realm& realm = current_realm();
+    realm.watched_regexp_proto = proto;
+    realm.regexp_proto_intact = proto != nullptr;
+    watch_filter_add(proto);
+}
+void Object::watch_array_iterator_prototype(Object* proto) {
+    current_realm().watched_array_iterator_proto = proto;
+    watch_filter_add(proto);
+}
 
 bool Object::has_instance_protector_intact() { return g_has_instance_intact; }
-void Object::arm_has_instance_protector() { g_has_instance_intact = true; }
 
-bool Object::promise_species_protector_intact() { return g_promise_species_intact; }
-Object* Object::watched_promise_prototype() { return g_promise_prototype; }
-Object* Object::watched_promise_constructor() { return g_promise_constructor; }
+bool Object::promise_species_protector_intact() { return current_realm().promise_species_intact; }
+Object* Object::watched_promise_prototype() { return current_realm().watched_promise_proto; }
+Object* Object::watched_promise_constructor() { return current_realm().watched_promise_ctor; }
 void Object::watch_promise_species(Object* promise_ctor, Object* promise_proto) {
-    g_promise_constructor = promise_ctor;
-    g_promise_prototype = promise_proto;
-    g_promise_species_intact = promise_ctor != nullptr && promise_proto != nullptr;
+    Realm& realm = current_realm();
+    realm.watched_promise_ctor = promise_ctor;
+    realm.watched_promise_proto = promise_proto;
+    realm.promise_species_intact = promise_ctor != nullptr && promise_proto != nullptr;
+    watch_filter_add(promise_ctor);
+    watch_filter_add(promise_proto);
+}
+
+void Object::rebuild_protector_filter() {
+    for (uint64_t& word : g_watch_filter) word = 0;
+    for (Engine* engine : Engine::all_engines()) {
+        Realm* realm = engine->realm();
+        if (!realm) continue;
+        watch_filter_add(realm->watched_array_iterator_proto);
+        watch_filter_add(realm->watched_regexp_proto);
+        watch_filter_add(realm->watched_promise_proto);
+        watch_filter_add(realm->watched_promise_ctor);
+    }
 }
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {

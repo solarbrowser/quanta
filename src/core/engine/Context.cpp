@@ -851,15 +851,6 @@ void Context::initialize_global_context() {
 
     setup_global_bindings();
 
-    // Standing up the intrinsics necessarily writes @@iterator onto the
-    // Array/Set/Map/String/... prototypes, which is exactly the mutation that
-    // clears the array-spread protector. Arm it here, once everything is in
-    // place, so only genuine user mutations can clear it afterwards.
-    Object::arm_array_iterator_protector();
-    // Same reasoning: installing Function.prototype[Symbol.hasInstance]
-    // itself is the one write note_protector_write cannot tell apart from a
-    // user's own override.
-    Object::arm_has_instance_protector();
 }
 
 Function* Context::intrinsic_promise() {
