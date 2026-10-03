@@ -425,6 +425,8 @@ public:
     // Drops every timer and queued job. For when the last realm on the thread is
     // gone: what is left names contexts and functions that no longer exist.
     void clear();
+    // Drops the timers and queued jobs that belong to `realm`.
+    void drop_realm(Realm* realm);
     void gc_trace(class Visitor& v) const;
 
     static EventLoop& instance();

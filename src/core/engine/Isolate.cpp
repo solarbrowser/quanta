@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/Isolate.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Heap.h"
 #include <algorithm>
@@ -16,6 +17,10 @@ Isolate::Isolate() : heap_(new Heap()) {
 }
 
 Isolate::~Isolate() {
+    // Realms made inside the Isolate (createRealm, ShadowRealm) have no other owner.
+    // They go with it, each tearing down fully: there is no one left to inherit.
+    closing_ = true;
+    for (Engine* engine : std::vector<Engine*>(engines_)) delete engine;
     // A collection that is already half done would trace into what is about to go.
     if (Collector::major_in_progress()) Collector::collect();
     Collector::retire_heap(heap_);

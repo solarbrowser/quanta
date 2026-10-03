@@ -263,6 +263,9 @@ public:
     void set_exec_top_scope(class ExecContextScope* s) { exec_top_scope_ = s; }
 
     void add_survivor_context(Context* ctx);
+    // The realm is being destroyed while others share its Isolate: gives what
+    // still lingers of it to `heir`.
+    void retire_into(Engine& heir);
 
     // Same pattern for escaped Environments (see survivor_environments_).
     const std::vector<Environment*>& get_survivor_environments() const { return survivor_environments_; }

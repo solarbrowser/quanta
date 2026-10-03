@@ -35,6 +35,18 @@ public:
 
     Engine* engine() const { return engine_; }
 
+    // Set once the realm's Engine is gone but its global Context lingers because a
+    // live cell can still reach it (see Engine::retire_into).
+    bool dead() const { return dead_; }
+    void retire() {
+        dead_ = true;
+        engine_ = nullptr;
+        // Fast paths that trust these also trust the watch that clears them, and a
+        // dead realm's watches are no longer consulted.
+        regexp_proto_intact = false;
+        promise_species_intact = false;
+    }
+
     // ObjectFactory's prototypes, and the exact Function.prototype.call/apply a
     // call site may skip invoking (see ObjectFactory::set_pristine_function_call).
     Object* object_proto = nullptr;
@@ -90,6 +102,7 @@ public:
 
 private:
     Engine* engine_;
+    bool dead_ = false;
 };
 
 // The realm the running code belongs to. Null before any engine exists.

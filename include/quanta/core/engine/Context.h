@@ -7,6 +7,7 @@
 #ifndef QUANTA_CONTEXT_H
 #define QUANTA_CONTEXT_H
 
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/SmallMapPool.h"
@@ -122,6 +123,9 @@ private:
         // The realm this global Context is the record of; null on a context
         // that is not a realm's root.
         Realm* realm = nullptr;
+        // Set when the realm's Engine is gone and this Context stays on as the
+        // record the realm's remaining closures resolve through.
+        std::unique_ptr<Realm> owned_realm;
     };
     std::unique_ptr<BuiltinMaps> builtins_;
 
@@ -256,6 +260,15 @@ public:
     }
 
     Engine* get_engine() const { return engine_; }
+    // For a Context that outlives its Engine (a retired realm's): the Engine that
+    // took over its survivors.
+    void rebind_engine(Engine* engine) { engine_ = engine; }
+    // Takes ownership of the realm this global Context is the record of.
+    void adopt_realm(std::unique_ptr<Realm> realm) {
+        if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
+        builtins_->realm = realm.get();
+        builtins_->owned_realm = std::move(realm);
+    }
 
     // Microtask queue (Promise/async support): thin forwarders onto EventLoop::
     // instance(), the single job queue shared by every realm on this thread

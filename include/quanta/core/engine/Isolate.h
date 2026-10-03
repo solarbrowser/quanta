@@ -20,6 +20,11 @@ class Heap;
 // share every cell, so a reference from one into another needs nothing beyond
 // the ordinary trace.
 //
+// A realm destroyed while others remain (Engine::~Engine) hands what lingers of it --
+// its global Context, its Realm, the Contexts and Environments its closures
+// escaped into -- to a surviving realm's pools, where the collector frees each once
+// nothing alive can reach it.
+//
 // Destroying an Isolate retires its heap -- one full collection that does not let
 // stale stack words keep the heap's cells alive (Collector::retire_heap) -- which
 // is only right once no realm that anything still uses is left in it.
@@ -34,6 +39,8 @@ public:
 
     Heap* heap() const { return heap_; }
     const std::vector<Engine*>& engines() const { return engines_; }
+    // True while the Isolate is destroying the realms it still holds.
+    bool closing() const { return closing_; }
 
 private:
     friend class Engine;
@@ -42,6 +49,7 @@ private:
 
     Heap* heap_;
     std::vector<Engine*> engines_;
+    bool closing_ = false;
 };
 
 }

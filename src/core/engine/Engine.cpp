@@ -137,18 +137,55 @@ Engine::~Engine() {
     for (size_t i = 0; i < reg.size(); i++) {
         if (reg[i] == this) { reg[i] = reg.back(); reg.pop_back(); break; }
     }
-    if (isolate_) isolate_->remove_engine(this);
-    shutdown();
+    Engine* heir = nullptr;
+    if (isolate_) {
+        isolate_->remove_engine(this);
+        if (!isolate_->closing() && !isolate_->engines().empty()) heir = isolate_->engines().front();
+    }
+    Realm* dying = realm_.get();
+    if (heir) retire_into(*heir);
+    else shutdown();
     // The thread's current realm must never name one that is gone: hand it to a
     // realm that is still alive, if any.
-    if (g_current_realm == realm_.get()) {
-        g_current_realm = reg.empty() ? nullptr : reg.front()->realm();
+    if (g_current_realm == dying) {
+        g_current_realm = heir ? heir->realm() : (reg.empty() ? nullptr : reg.front()->realm());
     }
     Object::rebuild_protector_filter();
     if (reg.empty()) release_thread_realm_state();
-    if (Heap::active_or_null() == heap_) {
+    if (!heir && Heap::active_or_null() == heap_) {
         Heap::set_active(nullptr);
     }
+}
+
+// The realm goes while the heap and the other realms in it carry on. Closures it
+// made may be held by them, and each reaches the realm's global Context and the
+// Contexts between, so those stay until the collector finds nothing alive that
+// reaches them; the heir's pools are where it already does that.
+void Engine::retire_into(Engine& heir) {
+    if (!initialized_) return;
+    HeapScope heap_scope(heap_);
+    // A major cycle that is part way through has this realm's contexts queued to be
+    // traced; let it end while they are still there.
+    if (Collector::major_in_progress()) Collector::collect();
+
+    EventLoop::instance().drop_realm(realm_.get());
+
+    // Contexts that outlive the Engine must not name it.
+    for (Context* ctx : survivor_contexts_) ctx->rebind_engine(&heir);
+    global_context_->rebind_engine(&heir);
+
+    heir.survivor_contexts_.insert(heir.survivor_contexts_.end(),
+                                   survivor_contexts_.begin(), survivor_contexts_.end());
+    heir.survivor_environments_.insert(heir.survivor_environments_.end(),
+                                       survivor_environments_.begin(), survivor_environments_.end());
+    survivor_contexts_.clear();
+    survivor_environments_.clear();
+
+    realm_->retire();
+    Context* global = global_context_.release();
+    global->adopt_realm(std::move(realm_));
+    heir.add_survivor_context(global);
+    initialized_ = false;
 }
 
 void Engine::release_thread_realm_state() {

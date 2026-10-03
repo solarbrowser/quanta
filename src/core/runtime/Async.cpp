@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Async.h"
+#include <algorithm>
 #include <span>
 #include "quanta/core/runtime/FiberStackPool.h"
 #include <cstdio>
@@ -1645,6 +1646,29 @@ void EventLoop::clear() {
     microtask_queue_.clear();
     draining_queue_.clear();
     context_use_count_.clear();
+}
+
+void EventLoop::drop_realm(Realm* realm) {
+    auto belongs = [realm](const MicrotaskEntry& e) { return e.realm == realm; };
+    microtask_queue_.erase(std::remove_if(microtask_queue_.begin(), microtask_queue_.end(), belongs),
+                           microtask_queue_.end());
+    // A batch in flight is walked by index-stable iteration in drain_microtasks, so
+    // its entries are emptied rather than removed.
+    for (MicrotaskEntry& e : draining_queue_) {
+        if (belongs(e)) { e.task = nullptr; e.keep_alive.clear(); }
+    }
+    std::vector<TimerEntry> kept;
+    while (!timers_.empty()) {
+        TimerEntry entry = timers_.top();
+        timers_.pop();
+        if (&realm_of(entry.call_ctx) == realm) {
+            cancelled_ids_.erase(entry.id);
+            release_context(entry.call_ctx);
+        } else {
+            kept.push_back(std::move(entry));
+        }
+    }
+    for (TimerEntry& entry : kept) timers_.push(std::move(entry));
 }
 
 void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive, Realm* realm) {
