@@ -151,6 +151,7 @@ static Value array_buffer_copy_and_detach(Context& ctx, Object* this_obj, std::s
 void register_arraybuffer_builtins(Context& ctx) {
     auto arraybuffer_prototype = ObjectFactory::create_object();
     Object* arraybuffer_proto_ptr = arraybuffer_prototype.get();
+    current_realm().array_buffer_proto = arraybuffer_proto_ptr;
 
     auto arraybuffer_constructor = ObjectFactory::create_native_constructor_with_new_target("ArrayBuffer",
         [arraybuffer_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {

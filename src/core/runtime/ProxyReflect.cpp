@@ -30,6 +30,26 @@ static Value trap_key(const std::string& key) {
     return Value(key);
 }
 
+// A proxy's target may itself be a proxy, whose own object has no extensibility flag or own
+// properties of its own: ask it through its traps, as [[IsExtensible]] and [[GetOwnProperty]] do.
+static bool extensible_through_traps(Object* target) {
+    return target->get_type() == Object::ObjectType::Proxy
+        ? static_cast<Proxy*>(target)->is_extensible_trap() : target->is_extensible();
+}
+
+// [[GetOwnProperty]] of the target: whether it has the property, and if so its descriptor.
+static bool target_own_property(Object* target, const std::string& key, PropertyDescriptor* desc = nullptr) {
+    if (target->get_type() == Object::ObjectType::Proxy) {
+        PropertyDescriptor found = static_cast<Proxy*>(target)->get_own_property_descriptor_trap(trap_key(key));
+        if (desc) *desc = found;
+        return found.is_data_descriptor() || found.is_accessor_descriptor();
+    }
+    if (!target->has_own_property(key)) return false;
+    if (desc) *desc = target->get_property_descriptor(key);
+    return true;
+}
+
+
 
 
 void Proxy::trace(Visitor& v) {
@@ -268,15 +288,15 @@ bool Proxy::has_trap(const Value& key) {
         if (Object::current_context_ && Object::current_context_->has_exception()) return false;
         if (!result) {
             std::string key_str = to_prop_key(key);
-            if (target_->has_own_property(key_str)) {
-                PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+            PropertyDescriptor target_desc;
+            if (target_own_property(target_, key_str, &target_desc)) {
                 // Invariant: cannot hide non-configurable own property
                 if (!target_desc.is_configurable()) {
                     if (Object::current_context_) Object::current_context_->throw_type_error("'has' proxy invariant violated: non-configurable own property cannot be reported non-existent");
                     throw std::runtime_error("TypeError: 'has' proxy invariant violated: non-configurable own property cannot be reported non-existent");
                 }
                 // Invariant: cannot hide own property of non-extensible target
-                if (!target_->is_extensible()) {
+                if (!extensible_through_traps(target_)) {
                     if (Object::current_context_) Object::current_context_->throw_type_error("'has' proxy invariant violated: own property of non-extensible target cannot be reported non-existent");
                     throw std::runtime_error("TypeError: 'has' proxy invariant violated: own property of non-extensible target cannot be reported non-existent");
                 }
@@ -319,7 +339,7 @@ bool Proxy::delete_trap(const Value& key) {
                     throw std::runtime_error("TypeError: 'deleteProperty' proxy invariant violated: non-configurable property cannot be deleted");
                 }
                 bool target_extensible = target_->get_type() == ObjectType::Proxy
-                    ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+                    ? static_cast<Proxy*>(target_)->is_extensible_trap() : extensible_through_traps(target_);
                 if (Object::current_context_ && Object::current_context_->has_exception()) return false;
                 if (!target_extensible) {
                     if (Object::current_context_) Object::current_context_->throw_type_error("'deleteProperty' proxy invariant violated: cannot report success for existing property on non-extensible target");
@@ -389,7 +409,7 @@ std::vector<std::string> Proxy::own_keys_trap() {
             }
         }
         // Invariant: if target non-extensible, result must match exactly the target's own keys
-        if (!target_->is_extensible()) {
+        if (!extensible_through_traps(target_)) {
             for (const auto& rkey : result) {
                 bool found = std::find(target_keys.begin(), target_keys.end(), rkey) != target_keys.end();
                 if (!found) {
@@ -438,7 +458,7 @@ Value Proxy::get_prototype_of_trap() {
             }
         }
         // Invariant: if target is non-extensible, returned prototype must match target's prototype
-        if (!target_->is_extensible()) {
+        if (!extensible_through_traps(target_)) {
             Object* target_proto = target_->get_prototype();
             Object* result_proto = result.is_null() ? nullptr :
                 result.is_object() ? result.as_object() :
@@ -479,7 +499,7 @@ bool Proxy::set_prototype_of_trap(Object* proto) {
     if (!boolean_trap_result) return false;
 
     // IsExtensible(target) and target.[[GetPrototypeOf]]() must go through target's own trap if it's a Proxy.
-    bool extensible_target = target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+    bool extensible_target = extensible_through_traps(target_);
     if (ctx->has_exception()) return false;
     if (extensible_target) return true;
 
@@ -510,11 +530,11 @@ bool Proxy::is_extensible_trap() {
 
     if (trap_fn) {
         Context* ctx = Object::current_context_;
-        if (!ctx) return target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+        if (!ctx) return extensible_through_traps(target_);
         bool result = trap_fn->call(*ctx, {Value(target_)}, Value(handler_)).to_boolean();
         if (ctx->has_exception()) return false;
         // Invariant: must return same value as Object.isExtensible(target)
-        bool target_result = target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+        bool target_result = extensible_through_traps(target_);
         if (ctx->has_exception()) return false;
         if (result != target_result) {
             ctx->throw_type_error("'isExtensible' proxy invariant violated: must return same as target.isExtensible()");
@@ -523,7 +543,7 @@ bool Proxy::is_extensible_trap() {
         return result;
     }
 
-    return target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+    return extensible_through_traps(target_);
 }
 
 bool Proxy::prevent_extensions_trap() {
@@ -542,7 +562,7 @@ bool Proxy::prevent_extensions_trap() {
         bool result = trap_fn->call(*ctx, {Value(target_)}, Value(handler_)).to_boolean();
         if (ctx->has_exception()) return false;
         // Invariant: if result is true, target must be non-extensible
-        bool target_extensible = target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+        bool target_extensible = extensible_through_traps(target_);
         if (ctx->has_exception()) return false;
         if (result && target_extensible) {
             ctx->throw_type_error("'preventExtensions' proxy invariant violated: trap returned true but target is still extensible");
@@ -597,46 +617,56 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
             }
         }
         std::string key_str = to_prop_key(key);
-        bool result_exists = result.is_data_descriptor() || result.is_accessor_descriptor();
-        PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
-        bool target_has_own = target_->has_own_property(key_str);
-        bool target_configurable = target_has_own && target_desc.is_configurable();
+        auto violation = [](const char* what) {
+            std::string message = std::string("'getOwnPropertyDescriptor' proxy invariant violated: ") + what;
+            if (Object::current_context_) Object::current_context_->throw_type_error(message);
+            throw std::runtime_error("TypeError: " + message);
+        };
+        // 10.5.5 steps 9-17, in the order the spec makes the observable calls.
+        PropertyDescriptor target_desc;
+        const bool target_has_own = target_own_property(target_, key_str, &target_desc);
+        if (Object::current_context_ && Object::current_context_->has_exception()) return PropertyDescriptor();
+        const bool result_exists = result.is_data_descriptor() || result.is_accessor_descriptor();
 
         if (!result_exists) {
-            // Trap returned undefined: property reported non-existent
-            // Invariant: non-configurable own property cannot be reported non-existent
-            if (target_has_own && !target_configurable) {
-                if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: non-configurable property cannot be non-existent");
-                throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: non-configurable property cannot be non-existent");
+            if (!target_has_own) return result;
+            if (!target_desc.is_configurable()) violation("non-configurable property cannot be non-existent");
+            if (!extensible_through_traps(target_)) violation("non-extensible target, cannot hide existing property");
+            return result;
+        }
+
+        const bool extensible = extensible_through_traps(target_);
+        // CompletePropertyDescriptor: what the result leaves out is false or undefined.
+        const bool result_accessor = result.is_accessor_descriptor();
+        const bool result_configurable = result.has_configurable() && result.is_configurable();
+        const bool result_enumerable = result.has_enumerable() && result.is_enumerable();
+        const bool result_writable = !result_accessor && result.has_writable() && result.is_writable();
+
+        // IsCompatiblePropertyDescriptor(extensible, result, targetDesc)
+        if (!target_has_own) {
+            if (!extensible) violation("cannot report non-existent property on non-extensible target");
+        } else if (!target_desc.is_configurable()) {
+            const char* incompatible = "descriptor not compatible with non-configurable target property";
+            if (result_configurable) violation(incompatible);
+            if (result_enumerable != target_desc.is_enumerable()) violation(incompatible);
+            if (result_accessor != target_desc.is_accessor_descriptor()) violation(incompatible);
+            if (target_desc.is_accessor_descriptor()) {
+                Object* result_get = result.has_getter() ? result.get_getter() : nullptr;
+                Object* result_set = result.has_setter() ? result.get_setter() : nullptr;
+                if (result_get != target_desc.get_getter() || result_set != target_desc.get_setter()) violation(incompatible);
+            } else if (!target_desc.is_writable()) {
+                if (result_writable) violation(incompatible);
+                const Value result_value = result.has_value() ? result.get_value() : Value();
+                if (!result_value.same_value(target_desc.get_value())) violation(incompatible);
             }
-            // Invariant: if target is non-extensible and property exists, cannot report non-existent
-            if (!target_->is_extensible() && target_has_own) {
-                if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: non-extensible target, cannot hide existing property");
-                throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: non-extensible target, cannot hide existing property");
-            }
-        } else {
-            // Trap returned a descriptor
-            // Invariant: cannot report existent if non-extensible target doesn't have it
-            if (!target_->is_extensible() && !target_has_own) {
-                if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-existent property on non-extensible target");
-                throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-existent property on non-extensible target");
-            }
-            // Invariant: cannot report non-configurable if target property doesn't exist or is configurable
-            if (!result.is_configurable()) {
-                if (!target_has_own) {
-                    if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for non-existent property");
-                    throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for non-existent property");
-                }
-                if (target_configurable) {
-                    if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for configurable property");
-                    throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for configurable property");
-                }
-                // Invariant: a non-configurable, non-writable result needs a non-writable target too
-                if (result.is_data_descriptor() && result.has_writable() && !result.is_writable() &&
-                    target_desc.is_data_descriptor() && target_desc.is_writable()) {
-                    if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: non-configurable non-writable result requires non-writable target");
-                    throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: non-configurable non-writable result requires non-writable target");
-                }
+        }
+
+        if (!result_configurable) {
+            if (!target_has_own) violation("cannot report non-configurable for non-existent property");
+            if (target_desc.is_configurable()) violation("cannot report non-configurable for configurable property");
+            if (result.is_data_descriptor() && !result_writable && target_desc.is_data_descriptor() &&
+                target_desc.is_writable()) {
+                violation("non-configurable non-writable result requires non-writable target");
             }
         }
         return result;
@@ -678,8 +708,9 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
 
         // Invariant checks after trap returns true
         std::string key_str = to_prop_key(key);
-        bool target_extensible = target_->is_extensible();
-        bool target_has_own = target_->has_own_property(key_str);
+        bool target_extensible = extensible_through_traps(target_);
+        PropertyDescriptor probed_desc;
+        bool target_has_own = target_own_property(target_, key_str, &probed_desc);
         bool setting_config_false = desc.has_configurable() && !desc.is_configurable();
 
         if (!target_has_own) {
@@ -694,7 +725,7 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
                 throw std::runtime_error("TypeError: 'defineProperty' proxy invariant violated: cannot define non-configurable property absent from target");
             }
         } else {
-            PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+            PropertyDescriptor target_desc = probed_desc;
             if (!target_desc.is_configurable()) {
                 // IsCompatiblePropertyDescriptor against a non-configurable target property.
                 const char* msg = "'defineProperty' proxy invariant violated: descriptor not compatible with non-configurable target property";

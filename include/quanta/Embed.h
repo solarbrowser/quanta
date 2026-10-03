@@ -215,6 +215,11 @@ void DefineToStringTag(Object* proto, const char* tag);
 // enumerable). `ctx` is the realm's global context.
 void DefineGlobal(Context& ctx, const char* name, Object* constructor);
 
+// A global function (`atob`, `queueMicrotask`, `fetch`): made in the realm of `ctx` and
+// bound as a global there (writable, configurable, not enumerable). `fn` gets undefined
+// as newTarget, and calling it with `new` is a TypeError as for any built-in function.
+void DefineGlobalFunction(Context& ctx, const char* name, NativeFn fn, int length);
+
 // The prototype a constructor should give its new object: newTarget.prototype,
 // so `class X extends Base {}` constructs X's instances. Null when newTarget is
 // undefined or has no object-valued prototype; the caller then uses the class's

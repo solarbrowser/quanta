@@ -128,6 +128,7 @@ TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, size_t 
     // by refcount instead -- and once the collector swept the last TypedArray,
     // that owning ref would drop and free a buffer JS still reaches via .buffer.
     ArrayBuffer* ab = new ArrayBuffer(byte_length);
+    if (Object* proto = current_realm().array_buffer_proto) ab->initialize_prototype(proto);
     buffer_ = std::shared_ptr<ArrayBuffer>(ab, [](ArrayBuffer*) {});
 }
 

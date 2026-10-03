@@ -880,6 +880,46 @@ static void test_record_order() {
     CHECK(eval_in(*realm, "Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())) === Iterator.prototype").as_boolean());
 }
 
+static Value AddOne(Context& ctx, Value, Args args, Value newTarget) {
+    if (!IsUndefined(newTarget)) {
+        ThrowTypeError(ctx, "not a constructor");
+        return Undefined();
+    }
+    return Value(ToUint32(ctx, args.empty() ? Undefined() : args[0]) + 1.0);
+}
+
+// A global function belongs to the realm it was defined in; a typed array's own buffer is born
+// with that realm's ArrayBuffer.prototype; a Proxy over a Proxy answers the descriptor invariants
+// from the inner one.
+static void test_globals_buffers_nested_proxies() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    DefineGlobalFunction(a->GetContext(), "addOne", AddOne, 1);
+    CHECK(eval_in(*a, "addOne(41)").as_number() == 42);
+    CHECK(eval_in(*a, "typeof addOne + Object.getOwnPropertyDescriptor(globalThis, 'addOne').enumerable").to_string() == "functionfalse");
+    CHECK(eval_in(*a, "(() => { try { new addOne(1); } catch (e) { return e instanceof TypeError; } })()").as_boolean());
+    CHECK(eval_in(*b, "typeof addOne").to_string() == "undefined");
+
+    const uint8_t data[] = {1, 2, 3};
+    Value in_b = NewUint8Array(b->GetContext(), std::span<const uint8_t>(data, 3));
+    set_global(*b, "u8", in_b);
+    CHECK(eval_in(*b, "u8.buffer instanceof ArrayBuffer && Object.getPrototypeOf(u8.buffer) === ArrayBuffer.prototype").as_boolean());
+    set_global(*a, "bu8", in_b);
+    CHECK(eval_in(*a, "!(bu8.buffer instanceof ArrayBuffer) && Object.getPrototypeOf(bu8.buffer) !== ArrayBuffer.prototype").as_boolean());
+
+    CHECK(eval_in(*a,
+        "(() => { const t = {}; Object.defineProperty(t, 'x', { value: 1, configurable: false });"
+        "const lie = new Proxy(new Proxy(t, {}), { getOwnPropertyDescriptor() { return { value: 1, configurable: true }; } });"
+        "try { Object.getOwnPropertyDescriptor(lie, 'x'); return false; } catch (e) { return e instanceof TypeError; } })()").as_boolean());
+    CHECK(eval_in(*a,
+        "(() => { const t = Object.preventExtensions({});"
+        "const lie = new Proxy(new Proxy(t, {}), { getOwnPropertyDescriptor() { return { value: 1, configurable: true }; } });"
+        "try { Object.getOwnPropertyDescriptor(lie, 'x'); return false; } catch (e) { return e instanceof TypeError; } })()").as_boolean());
+    CHECK(eval_in(*a, "JSON.stringify(Object.getOwnPropertyDescriptor(new Proxy(new Proxy({ k: 1 }, {}), {}), 'k'))").to_string() ==
+          "{\"value\":1,\"writable\":true,\"enumerable\":true,\"configurable\":true}");
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -911,6 +951,7 @@ int main() {
     test_persistent();
     test_byte_buffers();
     test_record_order();
+    test_globals_buffers_nested_proxies();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

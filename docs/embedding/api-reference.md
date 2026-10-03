@@ -40,6 +40,7 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 | `DefineAccessor(proto, name, getter, setter)` | Enumerable, configurable accessor. A null `setter` makes it read-only. |
 | `DefineToStringTag(proto, tag)` | Overrides `@@toStringTag` (iterator classes use e.g. `"Foo Iterator"`). |
 | `DefineGlobal(ctx, name, ctor)` | Binds the interface object as a global (writable, configurable, not enumerable). |
+| `DefineGlobalFunction(ctx, name, fn, length)` | A global function of `ctx`'s realm (writable, configurable, not enumerable), for `atob`, `queueMicrotask`, `fetch` and the like. Not a constructor. |
 | `PrototypeFromNewTarget(ctx, newTarget)` | `newTarget.prototype` if it is an object, else null. Use it so subclasses construct their own instances. |
 
 Defining symbol-keyed members is not part of the surface. For an iterable class, install `[Symbol.iterator]` from script after defining the method (see `tests/embed/embed_test.cpp` for the pattern). Reading one is: see `GetIteratorMethod`.

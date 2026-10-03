@@ -34,6 +34,7 @@ void Realm::trace(Visitor& v) const {
     v.visit_object(weakmap_proto);
     v.visit_object(weakset_proto);
     v.visit_object(weakref_proto);
+    v.visit_object(array_buffer_proto);
     v.visit_object(finalization_registry_proto);
     v.visit_object(watched_array_iterator_proto);
     v.visit_object(watched_regexp_proto);

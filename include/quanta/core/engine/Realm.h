@@ -103,6 +103,8 @@ public:
     Object* weakmap_proto = nullptr;
     Object* weakset_proto = nullptr;
     Object* weakref_proto = nullptr;
+    // %ArrayBuffer.prototype%, which a typed array's own buffer is born with.
+    Object* array_buffer_proto = nullptr;
     Object* finalization_registry_proto = nullptr;
 
     // What an embedder keeps per realm (Embed::SetRealmData). Not cells: the embedder

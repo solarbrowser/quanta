@@ -348,6 +348,11 @@ void DefineGlobal(Context& ctx, const char* name, Object* constructor) {
     ctx.register_built_in_object(name, constructor);
 }
 
+void DefineGlobalFunction(Context& ctx, const char* name, NativeFn fn, int length) {
+    RealmScope realm_scope(ctx.realm());
+    ctx.register_built_in_object(name, make_native(name, fn, length).release());
+}
+
 Object* PrototypeFromNewTarget(Context& ctx, const Value& newTarget) {
     Object* target = newTarget.as_object_or_null();
     if (!target) return nullptr;
