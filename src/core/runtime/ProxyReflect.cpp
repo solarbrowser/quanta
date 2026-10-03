@@ -19,6 +19,19 @@
 
 namespace Quanta {
 
+// A property key as a trap sees it: a symbol is the Symbol, not the string it is stored under.
+static Value trap_key(const std::string& key) {
+    if (key.find("Symbol.") == 0) {
+        if (Symbol* sym = Symbol::get_well_known(key)) return Value(sym);
+    }
+    if (key.find("@@sym:") == 0) {
+        if (Symbol* sym = Symbol::find_by_property_key(key)) return Value(sym);
+    }
+    return Value(key);
+}
+
+
+
 void Proxy::trace(Visitor& v) {
     Object::trace_default(v);
     v.visit_object(target_);
@@ -887,15 +900,15 @@ Value Proxy::construct_trap(std::span<const Value> args, Object* new_target) {
 }
 
 bool Proxy::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
-    return set_trap(Value(key), value);
+    return set_trap(trap_key(key), value);
 }
 
 bool Proxy::has_property(const std::string& key) const {
-    return const_cast<Proxy*>(this)->has_trap(Value(key));
+    return const_cast<Proxy*>(this)->has_trap(trap_key(key));
 }
 
 bool Proxy::delete_property(const std::string& key) {
-    return delete_trap(Value(key));
+    return delete_trap(trap_key(key));
 }
 
 Value Proxy::get_element(uint32_t index) const {
@@ -1032,7 +1045,7 @@ Value Reflect::reflect_get(Context& ctx, std::span<const Value> args, Value rece
     Object* current = target;
     while (current) {
         if (current->get_type() == Object::ObjectType::Proxy) {
-            return static_cast<Proxy*>(current)->get_trap(Value(key), reflect_receiver);
+            return static_cast<Proxy*>(current)->get_trap(trap_key(key), reflect_receiver);
         }
         PropertyDescriptor desc = current->get_property_descriptor(key);
         if (desc.is_accessor_descriptor()) {
@@ -1080,7 +1093,7 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
             PropertyDescriptor existing;
             bool receiver_has_own = false;
             if (receiver->get_type() == Object::ObjectType::Proxy) {
-                existing = static_cast<Proxy*>(receiver)->get_own_property_descriptor_trap(Value(key));
+                existing = static_cast<Proxy*>(receiver)->get_own_property_descriptor_trap(trap_key(key));
                 if (ctx.has_exception()) return false;
                 receiver_has_own = existing.has_value() || existing.is_accessor_descriptor();
             } else {
@@ -1093,13 +1106,13 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
                 PropertyDescriptor value_desc;
                 value_desc.set_value(value);
                 if (receiver->get_type() == Object::ObjectType::Proxy) {
-                    return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), value_desc);
+                    return static_cast<Proxy*>(receiver)->define_property_trap(trap_key(key), value_desc);
                 }
                 return receiver->set_property_descriptor(key, value_desc);
             }
             PropertyDescriptor new_desc(value, PropertyAttributes::Default);
             if (receiver->get_type() == Object::ObjectType::Proxy) {
-                return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), new_desc);
+                return static_cast<Proxy*>(receiver)->define_property_trap(trap_key(key), new_desc);
             }
             return receiver->set_property_descriptor(key, new_desc);
         }
@@ -1107,7 +1120,7 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
 
     // O.[[Set]] on a Proxy means its actual [[Set]] (the "set" trap), not a manual OrdinarySet replay.
     if (O->get_type() == Object::ObjectType::Proxy) {
-        bool result = static_cast<Proxy*>(O)->set_trap(Value(key), value, Value(receiver));
+        bool result = static_cast<Proxy*>(O)->set_trap(trap_key(key), value, Value(receiver));
         return !ctx.has_exception() && result;
     }
 
@@ -1136,7 +1149,7 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
     PropertyDescriptor existing;
     bool receiver_has_own = false;
     if (receiver->get_type() == Object::ObjectType::Proxy) {
-        existing = static_cast<Proxy*>(receiver)->get_own_property_descriptor_trap(Value(key));
+        existing = static_cast<Proxy*>(receiver)->get_own_property_descriptor_trap(trap_key(key));
         if (ctx.has_exception()) return false;
         receiver_has_own = existing.has_value() || existing.is_accessor_descriptor();
     } else {
@@ -1152,14 +1165,14 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
         PropertyDescriptor value_desc;
         value_desc.set_value(value);
         if (receiver->get_type() == Object::ObjectType::Proxy) {
-            return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), value_desc);
+            return static_cast<Proxy*>(receiver)->define_property_trap(trap_key(key), value_desc);
         }
         return receiver->set_property_descriptor(key, value_desc);
     }
 
     PropertyDescriptor new_desc(value, PropertyAttributes::Default);
     if (receiver->get_type() == Object::ObjectType::Proxy) {
-        return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), new_desc);
+        return static_cast<Proxy*>(receiver)->define_property_trap(trap_key(key), new_desc);
     }
     return receiver->set_property_descriptor(key, new_desc);
 }
@@ -1185,7 +1198,7 @@ Value Reflect::reflect_set(Context& ctx, std::span<const Value> args, Value rece
 
     bool result;
     if (target->get_type() == Object::ObjectType::Proxy) {
-        result = static_cast<Proxy*>(target)->set_trap(Value(key), value, receiver_value);
+        result = static_cast<Proxy*>(target)->set_trap(trap_key(key), value, receiver_value);
         if (ctx.has_exception()) return Value();
     } else {
         result = ordinary_set_with_receiver(target, key, value, reflect_receiver, ctx);
@@ -1573,7 +1586,7 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const
     if (ctx.has_exception()) return Value();
 
     PropertyDescriptor desc = target->get_type() == Object::ObjectType::Proxy
-        ? static_cast<Proxy*>(target)->get_own_property_descriptor_trap(Value(key))
+        ? static_cast<Proxy*>(target)->get_own_property_descriptor_trap(trap_key(key))
         : target->get_property_descriptor(key);
     if (ctx.has_exception()) return Value();
 

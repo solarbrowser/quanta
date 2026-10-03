@@ -74,7 +74,30 @@ Strings are UTF-8 inside the engine; lone surrogates are stored as 3-byte sequen
 | `NewArray(ctx)`, `ArrayPush(ctx, array, element)` | |
 | `Get(ctx, object, name)` | Full `[[Get]]`: accessors, proxies, inherited properties. Non-object is a TypeError. |
 | `Set(ctx, object, name, value)` | Full `[[Set]]`. |
-| `OwnKeys(ctx, object)` | Own enumerable string keys, in property order (symbols excluded). |
+| `OwnKeys(ctx, object)` | Own enumerable string keys, in property order (symbols excluded). Does not run a Proxy's traps; for a WebIDL record conversion use the three below. |
+| `OwnPropertyKeys(ctx, object)` | `[[OwnPropertyKeys]]`: every own key, strings and symbols, as a `ValueList`. Fires a Proxy's `ownKeys` trap. |
+| `GetOwnEnumerable(ctx, object, key)` | `[[GetOwnProperty]]`: true when `key` (a string or symbol `Value`) is an own, enumerable property. Fires `getOwnPropertyDescriptor`. |
+| `Get(ctx, object, key)` | `[[Get]]` with a string or symbol `Value` key. Fires `get`. |
+
+A record conversion is `keys = OwnPropertyKeys(...)`, then for each key `GetOwnEnumerable` and, if true, `Get`: the traps fire in the order the spec gives them. An exception from any of them is pending afterwards, as everywhere.
+
+## Keeping values alive
+
+| | |
+|---|---|
+| `Persistent(ctx, value)` | Holds `value` and everything it reaches against collection, whichever realm made it: a `fetch` in flight keeps its promise and result objects here. Move-only. |
+| `Persistent::Get()` | The value; undefined once reset. |
+| `Persistent::Reset()`, `IsEmpty()` | Let it go / ask whether it holds one. Destroying a `Persistent` resets it. |
+| `ValueList` | A list of values the collector sees, for calls that return more than one cell (`OwnPropertyKeys`). `size()`, `operator[]`, range-for, `Append`. |
+
+A C++ member holding a cell is invisible to the collector; these are what to use when a `DOMObject`'s `Visit()` is not the owner. A `Persistent` belongs to the thread that made it and must be gone before the `Isolate` its value lives in.
+
+## Byte buffers
+
+| | |
+|---|---|
+| `NewUint8Array(ctx, bytes)` | A `Uint8Array` of `ctx`'s realm over a fresh `ArrayBuffer` holding a copy of `bytes`. |
+| `BytesOf(value)` | The bytes of an `ArrayBuffer` or `SharedArrayBuffer`, or the window of its buffer a typed array or `DataView` views; nothing for anything else, a detached buffer or an out-of-bounds view. The span points into the buffer, not a copy: good until script next runs (which can detach, resize or write it) and while the value is kept alive. |
 
 ## Calling script
 

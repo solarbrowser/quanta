@@ -635,7 +635,11 @@ void register_iterator_constructor(Context& ctx) {
             return Value(iterator_obj.release());
         });
 
-    auto iterator_prototype = ObjectFactory::create_object();
+    // %IteratorPrototype% is Iterator.prototype: the realm already made the object
+    // (with @@iterator and @@toStringTag) when it set up its iterators, and the helpers go on it.
+    auto iterator_prototype = Iterator::s_iterator_prototype_()
+        ? std::unique_ptr<Object>(Iterator::s_iterator_prototype_())
+        : ObjectFactory::create_object();
 
     auto iterator_next = ObjectFactory::create_native_function("next",
         [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
@@ -1334,16 +1338,9 @@ void register_iterator_constructor(Context& ctx) {
         Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
         if (iter_sym) {
             auto self_iter = ObjectFactory::create_native_function("[Symbol.iterator]",
-                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    (void)args;
-                    // Spec: return the raw this value.
-                    Value prim = receiver;
-                    if (prim.is_number() || prim.is_string() || prim.is_boolean() ||
-                        prim.is_bigint() || prim.is_symbol()) return prim;
-                    if (receiver.is_nullish()) return Value();
-                    try { return receiver; } catch (...) {}
-                    Object* self = receiver.as_object_or_null();
-                    return self ? Value(self) : Value();
+                [](Context&, std::span<const Value>, Value receiver) -> Value {
+                    // Spec: return the this value, whatever it is.
+                    return receiver;
                 });
             PropertyDescriptor sym_iter_desc(Value(self_iter.release()), PropertyAttributes::BuiltinFunction);
             iterator_prototype->set_property_descriptor(iter_sym->to_property_key(), sym_iter_desc);
@@ -1369,7 +1366,14 @@ void register_iterator_constructor(Context& ctx) {
                         return Value();
                     }
                     Value v = args.empty() ? Value() : args[0];
-                    self->set_property(tag_key, v);
+                    // SetterThatIgnoresPrototypeProperties: an own property is assigned to, anything
+                    // else (an inherited accessor included, this one) is shadowed by a new data property.
+                    if (self->has_own_property(tag_key)) {
+                        self->set_property(tag_key, v);
+                    } else {
+                        PropertyDescriptor d(v, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                        self->set_property_descriptor(tag_key, d);
+                    }
                     return Value();
                 }, 1);
             PropertyDescriptor tag_desc;
@@ -2029,9 +2033,7 @@ void register_iterator_constructor(Context& ctx) {
     }
     ctx.register_built_in_object("Iterator", iterator_constructor.release());
 
-    if (Iterator::s_iterator_prototype_() && Iterator::s_iterator_prototype_() != iter_proto_raw) {
-        Iterator::s_iterator_prototype_()->initialize_prototype(iter_proto_raw);
-    }
+    if (!Iterator::s_iterator_prototype_()) Iterator::s_iterator_prototype_() = iter_proto_raw;
 }
 
 } // namespace Quanta

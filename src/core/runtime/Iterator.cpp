@@ -173,20 +173,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (iter_sym) {
         auto self_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                (void)args;
-                // Spec: return the this value (primitives included, same as Symbol.prototype.valueOf).
-                Value prim = receiver;
-                if (prim.is_number() || prim.is_string() || prim.is_boolean() ||
-                    prim.is_bigint() || prim.is_symbol()) return prim;
-                if (receiver.is_nullish()) {
-                    try { Value v = receiver; if (v.is_null()) return Value::null(); } catch(...) {}
-                    return Value();
-                }
-                try { return receiver; } catch (...) {}
-                Object* self = receiver.as_object_or_null();
-                return self ? Value(self) : Value();
-            });
+            [](Context&, std::span<const Value>, Value receiver) -> Value { return receiver; });
         PropertyDescriptor sym_iter_d(Value(self_fn.release()), PropertyAttributes::BuiltinFunction);
         iter_proto->set_property_descriptor(iter_sym->to_property_key(), sym_iter_d);
     }

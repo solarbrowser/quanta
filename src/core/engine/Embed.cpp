@@ -9,15 +9,33 @@
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/ArrayBuffer.h"
+#include "quanta/core/runtime/DataView.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/Symbol.h"
 
 #include <cmath>
+#include <cstring>
 
 namespace Quanta::Embed {
 
 namespace {
 
 constexpr uint32_t kReplacement = 0xFFFD;
+
+// Engine code that has no Context in hand (resolving a promise with a thenable, making a
+// promise) reads the one running script's. A host entering from outside any script has none
+// yet, so the context it is calling through stands in for the duration.
+class RunningContext {
+public:
+    explicit RunningContext(Context& ctx) : previous_(Object::current_context_) { Object::current_context_ = &ctx; }
+    ~RunningContext() { Object::current_context_ = previous_; }
+    RunningContext(const RunningContext&) = delete;
+    RunningContext& operator=(const RunningContext&) = delete;
+private:
+    Context* previous_;
+};
 
 void append_utf8(std::string& out, uint32_t cp) {
     if (cp < 0x80) {
@@ -197,6 +215,8 @@ void Isolate::PerformMicrotaskCheckpoint() {
     // Each job runs in the realm that queued it; this is for the ones that did not
     // say, and for what runs after the last.
     RealmScope realm_scope(realms_.empty() ? nullptr : realms_.front()->engine_->realm());
+    std::optional<RunningContext> running;
+    if (!realms_.empty()) running.emplace(realms_.front()->GetContext());
     EventLoop::instance().drain_microtasks();
     Promise::report_unhandled_rejections();
 }
@@ -204,6 +224,8 @@ void Isolate::PerformMicrotaskCheckpoint() {
 bool Isolate::RunDueTimers() {
     HeapScope heap_scope(isolate_->heap());
     RealmScope realm_scope(realms_.empty() ? nullptr : realms_.front()->engine_->realm());
+    std::optional<RunningContext> running;
+    if (!realms_.empty()) running.emplace(realms_.front()->GetContext());
     return EventLoop::instance().run_due_timers();
 }
 
@@ -355,6 +377,89 @@ Value FromUtf8(Context&, std::string_view utf8) {
     return Value(to_scalar_values(utf8, /*wtf8=*/false));
 }
 
+// ---- Keeping values alive ---------------------------------------------------
+
+struct Persistent::Slot {
+    std::vector<Value> values;
+    ValueVectorRoot root;
+    explicit Slot(const Value& value) : values{value}, root(&values) {}
+};
+
+Persistent::Persistent(Context&, const Value& value) : slot_(std::make_unique<Slot>(value)) {}
+Persistent::Persistent() = default;
+Persistent::~Persistent() = default;
+Persistent::Persistent(Persistent&&) noexcept = default;
+Persistent& Persistent::operator=(Persistent&&) noexcept = default;
+
+Value Persistent::Get() const { return slot_ ? slot_->values[0] : Value(); }
+void Persistent::Reset() { slot_.reset(); }
+
+struct ValueList::Impl {
+    std::vector<Value> values;
+    ValueVectorRoot root;
+    Impl() : root(&values) {}
+};
+
+ValueList::ValueList() : impl_(std::make_unique<Impl>()) {}
+ValueList::~ValueList() = default;
+ValueList::ValueList(ValueList&&) noexcept = default;
+ValueList& ValueList::operator=(ValueList&&) noexcept = default;
+size_t ValueList::size() const { return impl_->values.size(); }
+const Value& ValueList::operator[](size_t index) const { return impl_->values[index]; }
+const Value* ValueList::begin() const { return impl_->values.data(); }
+const Value* ValueList::end() const { return impl_->values.data() + impl_->values.size(); }
+void ValueList::Append(const Value& value) { impl_->values.push_back(value); }
+
+// ---- Byte buffers ---------------------------------------------------------
+
+Value NewUint8Array(Context& ctx, std::span<const uint8_t> bytes) {
+    RealmScope realm_scope(ctx.realm());
+    Object* ctor_object = ctx.get_built_in_object("Uint8Array");
+    Function* ctor = ctor_object && ctor_object->get_type() == Object::ObjectType::Function
+                         ? static_cast<Function*>(ctor_object) : ctx.get_built_in_function("Uint8Array");
+    if (!ctor) {
+        ctx.throw_type_error("Uint8Array is not available");
+        return Value();
+    }
+    Value array = ctor->construct(ctx, std::vector<Value>{Value(static_cast<double>(bytes.size()))});
+    if (ctx.has_exception()) return Value();
+    if (!bytes.empty()) {
+        auto view = BytesOf(array);
+        if (!view) return Value();
+        std::memcpy(const_cast<uint8_t*>(view->data()), bytes.data(), bytes.size());
+    }
+    return array;
+}
+
+std::optional<std::span<const uint8_t>> BytesOf(const Value& value) {
+    Object* object = value.as_object_or_null();
+    if (!object) return std::nullopt;
+    if (object->is_array_buffer()) {
+        const ArrayBuffer* buffer = static_cast<const ArrayBuffer*>(object);
+        if (buffer->is_detached()) return std::nullopt;
+        return std::span<const uint8_t>(buffer->data(), buffer->byte_length());
+    }
+    const ArrayBuffer* buffer = nullptr;
+    size_t offset = 0, length = 0;
+    if (object->is_typed_array()) {
+        const TypedArrayBase* view = static_cast<const TypedArrayBase*>(object);
+        if (view->is_out_of_bounds()) return std::nullopt;
+        buffer = view->buffer();
+        offset = view->byte_offset();
+        length = view->byte_length();
+    } else if (object->is_data_view()) {
+        const DataView* view = static_cast<const DataView*>(object);
+        if (view->is_out_of_bounds()) return std::nullopt;
+        buffer = view->buffer();
+        offset = view->byte_offset();
+        length = view->current_byte_length();
+    } else {
+        return std::nullopt;
+    }
+    if (!buffer || buffer->is_detached()) return std::nullopt;
+    return std::span<const uint8_t>(buffer->data() + offset, length);
+}
+
 // ---- Arrays and properties ------------------------------------------------
 
 Value NewArray(Context& ctx) {
@@ -399,10 +504,53 @@ std::vector<std::string> OwnKeys(Context& ctx, const Value& object) {
     return keys;
 }
 
+ValueList OwnPropertyKeys(Context& ctx, const Value& object) {
+    ValueList keys;
+    if (!object.as_object_or_null()) {
+        ctx.throw_type_error("Cannot enumerate a non-object");
+        return keys;
+    }
+    RealmScope realm_scope(ctx.realm());
+    Value array = Reflect::reflect_own_keys(ctx, std::span<const Value>(&object, 1), Value());
+    if (ctx.has_exception()) return keys;
+    Object* list = array.as_object_or_null();
+    if (!list) return keys;
+    Value length = list->get_property("length");
+    for (uint32_t i = 0; i < static_cast<uint32_t>(length.to_number()); i++) {
+        keys.Append(list->get_property(std::to_string(i)));
+    }
+    return keys;
+}
+
+bool GetOwnEnumerable(Context& ctx, const Value& object, const Value& key) {
+    if (!object.as_object_or_null()) {
+        ctx.throw_type_error("Cannot read properties of a non-object");
+        return false;
+    }
+    RealmScope realm_scope(ctx.realm());
+    Value args[2] = {object, key};
+    Value desc = Reflect::reflect_get_own_property_descriptor(ctx, std::span<const Value>(args, 2), Value());
+    if (ctx.has_exception()) return false;
+    Object* descriptor = desc.as_object_or_null();
+    if (!descriptor) return false;
+    return descriptor->get_property("enumerable").to_boolean();
+}
+
+Value Get(Context& ctx, const Value& object, const Value& key) {
+    if (!object.as_object_or_null()) {
+        ctx.throw_type_error("Cannot read properties of a non-object");
+        return Value();
+    }
+    RealmScope realm_scope(ctx.realm());
+    Value args[2] = {object, key};
+    return Reflect::reflect_get(ctx, std::span<const Value>(args, 2), Value());
+}
+
 // ---- Calling back into script ---------------------------------------------
 
 Value Call(Context& ctx, const Value& callable, const Value& thisValue, Args args) {
     RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
     if (!callable.is_function()) {
         ctx.throw_type_error("Value is not callable");
         return Value();
@@ -456,6 +604,7 @@ Value MakeIterResult(Context& ctx, const Value& value, bool done) {
 
 PromiseCapability NewPromiseCapability(Context& ctx) {
     RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
     Object* promise_ctor = ctx.get_built_in_object("Promise");
     if (!promise_ctor) {
         ctx.throw_type_error("Promise is not available");

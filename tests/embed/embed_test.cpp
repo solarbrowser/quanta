@@ -754,6 +754,132 @@ static void test_destroyed_realm_class() {
     CHECK(eval_in(*a, "[1, 2, 3].map(x => x * 2).length").as_number() == 3);
 }
 
+// A Persistent keeps a pending promise and the objects it will be settled with alive
+// across collections the host does not control.
+static void test_persistent() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Context& ctx = realm->GetContext();
+
+    PromiseCapability cap = NewPromiseCapability(ctx);
+    Persistent promise(ctx, cap.promise);
+    Persistent resolve(ctx, cap.resolve);
+    Persistent payload;
+    {
+        realm->Evaluate("globalThis.__mk = { answer: [1, 2, 3].map(x => x * 14) };");
+        payload = Persistent(ctx, Get(ctx, Value(ctx.get_global_object()), "__mk"));
+        realm->Evaluate("delete globalThis.__mk;");
+    }
+    cap = PromiseCapability();
+    CHECK(!promise.IsEmpty());
+
+    // Churn: plenty of garbage and several full collections while only the Persistents hold them.
+    for (int i = 0; i < 4; i++) {
+        realm->Evaluate("for (let i = 0; i < 3000; i++) { ({ v: [i, 'x' + i] }); }");
+        isolate->CollectGarbage();
+    }
+
+    Value answer = Get(ctx, payload.Get(), "answer");
+    CHECK(Get(ctx, answer, "length").as_number() == 3);
+    CHECK(Get(ctx, answer, "2").as_number() == 42);
+    CHECK(!HasException(ctx));
+
+    set_global(*realm, "settled", Value(0.0));
+    set_global(*realm, "thePromise", promise.Get());
+    realm->Evaluate("thePromise.then(v => { globalThis.settled = v.answer[0]; });");
+    Value payload_value = payload.Get();
+    Call(ctx, resolve.Get(), Undefined(), Args(&payload_value, 1));
+    isolate->PerformMicrotaskCheckpoint();
+    CHECK(global_of(*realm, "settled").as_number() == 14);
+
+    promise.Reset();
+    CHECK(promise.IsEmpty());
+    CHECK(promise.Get().is_undefined());
+    resolve.Reset();
+    payload.Reset();
+    isolate->CollectGarbage();
+}
+
+static void test_byte_buffers() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Context& ctx = realm->GetContext();
+
+    const uint8_t data[] = {1, 2, 3, 250, 251};
+    Value array = NewUint8Array(ctx, std::span<const uint8_t>(data, 5));
+    CHECK(!HasException(ctx));
+    set_global(*realm, "u8", array);
+    CHECK(eval_in(*realm, "u8 instanceof Uint8Array && u8.length === 5 && u8[3] === 250").as_boolean());
+    auto bytes = BytesOf(array);
+    CHECK(bytes && bytes->size() == 5 && (*bytes)[4] == 251);
+
+    Value empty = NewUint8Array(ctx, {});
+    CHECK(BytesOf(empty) && BytesOf(empty)->size() == 0);
+
+    // Script writes are visible through the span, and a view's window is its own bytes.
+    realm->Evaluate("u8[0] = 9; globalThis.win = u8.subarray(1, 3); globalThis.dv = new DataView(u8.buffer, 2, 2);"
+                    "globalThis.buf = u8.buffer; globalThis.i16 = new Int16Array(new ArrayBuffer(8), 2, 2);");
+    CHECK((*BytesOf(array))[0] == 9);
+    auto win = BytesOf(global_of(*realm, "win"));
+    CHECK(win && win->size() == 2 && (*win)[0] == 2 && (*win)[1] == 3);
+    auto dv = BytesOf(global_of(*realm, "dv"));
+    CHECK(dv && dv->size() == 2 && (*dv)[0] == 3);
+    auto whole = BytesOf(global_of(*realm, "buf"));
+    CHECK(whole && whole->size() == 5);
+    auto i16 = BytesOf(global_of(*realm, "i16"));
+    CHECK(i16 && i16->size() == 4);
+
+    // Not bytes, or no longer any.
+    CHECK(!BytesOf(Value(1.0)));
+    CHECK(!BytesOf(eval_in(*realm, "({})")));
+    realm->Evaluate("globalThis.moved = buf.transfer();");
+    CHECK(!BytesOf(global_of(*realm, "buf")));
+    CHECK(!BytesOf(array));
+}
+
+// The order a record conversion observes on a Proxy: [[OwnPropertyKeys]], then for each key
+// [[GetOwnProperty]] and, if it is enumerable, [[Get]].
+static void test_record_order() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Context& ctx = realm->GetContext();
+
+    realm->Evaluate(
+        "globalThis.log = [];"
+        "const sym = Symbol('s');"
+        "const target = { a: 1, b: 2, [sym]: 3 };"
+        "Object.defineProperty(target, 'hidden', { value: 4, enumerable: false });"
+        "globalThis.sym = sym;"
+        "globalThis.proxy = new Proxy(target, {"
+        "  ownKeys(t) { log.push('ownKeys'); return Reflect.ownKeys(t); },"
+        "  getOwnPropertyDescriptor(t, k) { log.push('gopd:' + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); },"
+        "  get(t, k, r) { log.push('get:' + String(k)); return Reflect.get(t, k, r); } });");
+    Value proxy = global_of(*realm, "proxy");
+
+    ValueList keys = OwnPropertyKeys(ctx, proxy);
+    CHECK(!HasException(ctx));
+    CHECK(keys.size() == 4);
+    double sum = 0;
+    for (const Value& key : keys) {
+        if (!GetOwnEnumerable(ctx, proxy, key)) continue;
+        Value v = Get(ctx, proxy, key);
+        CHECK(!HasException(ctx));
+        sum += v.as_number();
+    }
+    CHECK(sum == 6);
+    CHECK(eval_in(*realm, "log.join()").to_string() ==
+          "ownKeys,gopd:a,get:a,gopd:b,get:b,gopd:hidden,gopd:Symbol(s),get:Symbol(s)");
+
+    // A trap that throws is reported through the flag.
+    realm->Evaluate("globalThis.bad = new Proxy({}, { ownKeys() { throw new RangeError('no'); } });");
+    ValueList none = OwnPropertyKeys(ctx, global_of(*realm, "bad"));
+    CHECK(HasException(ctx) && none.size() == 0);
+    ctx.clear_exception();
+
+    // The iterator prototype is Iterator.prototype.
+    CHECK(eval_in(*realm, "Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())) === Iterator.prototype").as_boolean());
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -782,6 +908,9 @@ int main() {
     test_realms();
     test_realm_data();
     test_destroyed_realm_class();
+    test_persistent();
+    test_byte_buffers();
+    test_record_order();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

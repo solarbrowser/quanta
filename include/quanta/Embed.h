@@ -251,6 +251,73 @@ std::string ToUsvUtf8(Context& ctx, const Value& v);
 // than stored, so the engine never holds invalid UTF-8.
 Value FromUtf8(Context& ctx, std::string_view utf8);
 
+// ---- Keeping values alive ---------------------------------------------------
+
+// A cell the host holds in a C++ member is invisible to the collector, which finds a
+// value only on the native stack or through a native object's Visit(). A Persistent
+// is the other way: while it holds a value, the value and everything it reaches stay
+// alive, whichever realm made it. What a host needs when it starts something that
+// finishes later (a fetch, a timer of its own) and must not lose the promise or the
+// objects it will settle it with.
+//
+// Reset it, or let it go out of scope, to let the value be collected. It belongs to
+// the thread that made it, and must be gone before the Isolate its value lives in.
+class Persistent {
+public:
+    Persistent();
+    // `ctx` is a context of the realm the value belongs to.
+    Persistent(Context& ctx, const Value& value);
+    ~Persistent();
+
+    Persistent(Persistent&&) noexcept;
+    Persistent& operator=(Persistent&&) noexcept;
+    Persistent(const Persistent&) = delete;
+    Persistent& operator=(const Persistent&) = delete;
+
+    // The held value; undefined once Reset (or if it never held one).
+    Value Get() const;
+    bool IsEmpty() const { return !slot_; }
+    void Reset();
+
+private:
+    struct Slot;
+    std::unique_ptr<Slot> slot_;
+};
+
+// A list of values the collector can see, for what a call hands back that is more than
+// one cell (a std::vector<Value> is not seen). Moves, does not copy.
+class ValueList {
+public:
+    ValueList();
+    ~ValueList();
+    ValueList(ValueList&&) noexcept;
+    ValueList& operator=(ValueList&&) noexcept;
+
+    size_t size() const;
+    const Value& operator[](size_t index) const;
+    const Value* begin() const;
+    const Value* end() const;
+
+    void Append(const Value& value);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// ---- Byte buffers ---------------------------------------------------------
+
+// A new Uint8Array of the realm of `ctx`, over a fresh ArrayBuffer holding a copy of
+// `bytes`. An exception may be pending on a undefined return.
+Value NewUint8Array(Context& ctx, std::span<const uint8_t> bytes);
+
+// The bytes an ArrayBuffer (or SharedArrayBuffer) holds, or the window of its buffer a
+// typed array or DataView views. Nothing if `value` is none of those, or the buffer is
+// detached or the view is out of bounds. The span points into the buffer itself, not a
+// copy: it is good until script next runs (which may detach, resize or write the
+// buffer) and for as long as the value is kept alive.
+std::optional<std::span<const uint8_t>> BytesOf(const Value& value);
+
 // ---- Arrays and properties ------------------------------------------------
 
 Value NewArray(Context& ctx);
@@ -263,6 +330,17 @@ Value Get(Context& ctx, const Value& object, std::string_view name);
 bool Set(Context& ctx, const Value& object, std::string_view name, const Value& value);
 // Own enumerable string-keyed properties, in property order.
 std::vector<std::string> OwnKeys(Context& ctx, const Value& object);
+
+// The operations a WebIDL record conversion makes, each as one observable step so a
+// Proxy's traps fire in the order the spec gives them:
+//   keys = OwnPropertyKeys(ctx, obj)            [[OwnPropertyKeys]]: strings and symbols
+//   for each key: if GetOwnEnumerable(ctx, obj, key) then Get(ctx, obj, key)
+// A key is a string or a symbol Value. An exception may be pending after any of them.
+ValueList OwnPropertyKeys(Context& ctx, const Value& object);
+// [[GetOwnProperty]]: true when the property is an own, enumerable one.
+bool GetOwnEnumerable(Context& ctx, const Value& object, const Value& key);
+// [[Get]] with a string or symbol key.
+Value Get(Context& ctx, const Value& object, const Value& key);
 
 // ---- Calling back into script ---------------------------------------------
 
