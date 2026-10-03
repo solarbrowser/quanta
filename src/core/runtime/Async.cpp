@@ -1609,6 +1609,7 @@ std::optional<std::chrono::milliseconds> EventLoop::next_timer_delay() const {
 }
 
 void EventLoop::fire_timer(TimerEntry entry) {
+    RealmScope realm_scope(&realm_of(entry.call_ctx));
     Value result = entry.callback->call(*entry.call_ctx, entry.bound_args);
     (void)result;
     if (entry.call_ctx->has_exception()) {
@@ -1646,8 +1647,8 @@ void EventLoop::clear() {
     context_use_count_.clear();
 }
 
-void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive) {
-    microtask_queue_.push_back({std::move(task), std::move(keep_alive)});
+void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive, Realm* realm) {
+    microtask_queue_.push_back({std::move(task), std::move(keep_alive), realm});
 }
 
 void EventLoop::drain_microtasks() {
@@ -1657,7 +1658,9 @@ void EventLoop::drain_microtasks() {
         draining_queue_ = std::move(microtask_queue_);
         microtask_queue_.clear();
         for (auto& entry : draining_queue_) {
-            if (entry.task) entry.task();
+            if (!entry.task) continue;
+            RealmScope realm_scope(entry.realm ? entry.realm : g_current_realm);
+            entry.task();
         }
         draining_queue_.clear();
         if (std::chrono::steady_clock::now() > deadline) break;

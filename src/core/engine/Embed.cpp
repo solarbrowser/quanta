@@ -165,6 +165,7 @@ void Runtime::CollectGarbage() {
 
 void Runtime::PerformMicrotaskCheckpoint() {
     HeapScope heap_scope(engine_->get_heap());
+    RealmScope realm_scope(engine_->realm());
     Context& ctx = GetContext();
     ctx.drain_microtasks();
     Promise::report_unhandled_rejections();
@@ -172,6 +173,7 @@ void Runtime::PerformMicrotaskCheckpoint() {
 
 bool Runtime::RunDueTimers() {
     HeapScope heap_scope(engine_->get_heap());
+    RealmScope realm_scope(engine_->realm());
     return EventLoop::instance().run_due_timers();
 }
 
@@ -184,6 +186,7 @@ std::optional<int64_t> Runtime::NextTimerDelayMs() {
 // ---- Exposing a class to script -------------------------------------------
 
 ClassRef DefineClass(Context& ctx, const char* name, NativeFn constructor, int length, Object* parentProto) {
+    RealmScope realm_scope(ctx.realm());
     auto proto = ObjectFactory::create_object(parentProto);
     Object* proto_ptr = proto.get();
 
@@ -233,6 +236,7 @@ void DefineToStringTag(Object* proto, const char* tag) {
 }
 
 void DefineGlobal(Context& ctx, const char* name, Object* constructor) {
+    RealmScope realm_scope(ctx.realm());
     ctx.register_built_in_object(name, constructor);
 }
 
@@ -267,7 +271,8 @@ Value FromUtf8(Context&, std::string_view utf8) {
 
 // ---- Arrays and properties ------------------------------------------------
 
-Value NewArray(Context&) {
+Value NewArray(Context& ctx) {
+    RealmScope realm_scope(ctx.realm());
     return Value(ObjectFactory::create_array(0).release());
 }
 
@@ -311,6 +316,7 @@ std::vector<std::string> OwnKeys(Context& ctx, const Value& object) {
 // ---- Calling back into script ---------------------------------------------
 
 Value Call(Context& ctx, const Value& callable, const Value& thisValue, Args args) {
+    RealmScope realm_scope(ctx.realm());
     if (!callable.is_function()) {
         ctx.throw_type_error("Value is not callable");
         return Value();
@@ -356,12 +362,14 @@ Value GetIteratorMethod(Context& ctx, const Value& object) {
 }
 
 Value MakeIterResult(Context& ctx, const Value& value, bool done) {
+    RealmScope realm_scope(ctx.realm());
     return Iterator::create_iterator_result(value, done, &ctx);
 }
 
 // ---- Promises -------------------------------------------------------------
 
 PromiseCapability NewPromiseCapability(Context& ctx) {
+    RealmScope realm_scope(ctx.realm());
     Object* promise_ctor = ctx.get_built_in_object("Promise");
     if (!promise_ctor) {
         ctx.throw_type_error("Promise is not available");

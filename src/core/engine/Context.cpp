@@ -717,7 +717,7 @@ Value Context::get_import_meta() {
 }
 
 void Context::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive) {
-    EventLoop::instance().queue_microtask(std::move(task), std::move(keep_alive));
+    EventLoop::instance().queue_microtask(std::move(task), std::move(keep_alive), realm());
 }
 
 void Context::drain_microtasks() {

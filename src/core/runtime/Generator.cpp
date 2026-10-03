@@ -154,6 +154,8 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     current_generator_ = this;
     {
         ensure_fiber();
+        // The body runs in the generator function's realm, whoever called next().
+        RealmScope realm_scope(&realm_of(generator_context_));
         FiberEnterScope enter_scope;
         quanta_fiber_resume(&fiber_);
     }
@@ -201,6 +203,8 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     current_generator_ = this;
     {
         ensure_fiber();
+        // The body runs in the generator function's realm, whoever called next().
+        RealmScope realm_scope(&realm_of(generator_context_));
         FiberEnterScope enter_scope;
         quanta_fiber_resume(&fiber_);
     }
@@ -253,6 +257,8 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     current_generator_ = this;
     {
         ensure_fiber();
+        // The body runs in the generator function's realm, whoever called next().
+        RealmScope realm_scope(&realm_of(generator_context_));
         FiberEnterScope enter_scope;
         quanta_fiber_resume(&fiber_);
     }

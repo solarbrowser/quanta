@@ -389,6 +389,7 @@ bool ModuleLoader::subgraph_has_top_level_await(Module* module) {
 
 Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path,
                                   const std::string& module_type) {
+    RealmScope realm_scope(engine_ ? engine_->realm() : g_current_realm);
     // Preparing reaches every module in the graph; only the request that
     // started it links and evaluates what it found. A request made while
     // preparing is one of those dependencies and is left to that walk. A

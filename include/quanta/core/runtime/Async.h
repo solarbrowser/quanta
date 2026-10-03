@@ -378,6 +378,8 @@ private:
     struct MicrotaskEntry {
         std::function<void()> task;
         std::vector<Value> keep_alive;
+        // The realm the job belongs to: it runs with that realm current.
+        Realm* realm = nullptr;
     };
     std::vector<MicrotaskEntry> microtask_queue_;
     std::vector<MicrotaskEntry> draining_queue_;  // batch in flight (traced too)
@@ -417,7 +419,7 @@ public:
     std::optional<std::chrono::milliseconds> next_timer_delay() const;
 
     // The single, shared job queue -- see microtask_queue_'s own doc comment.
-    void queue_microtask(std::function<void()> task, std::vector<Value> keep_alive);
+    void queue_microtask(std::function<void()> task, std::vector<Value> keep_alive, Realm* realm = nullptr);
     void drain_microtasks();
     bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
     // Drops every timer and queued job. For when the last realm on the thread is
