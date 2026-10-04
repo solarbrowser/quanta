@@ -1879,6 +1879,56 @@ static void test_inspect() {
     CHECK(eval_in(*quiet, "console.log()").to_string() == "mine");
 }
 
+// With tracking on a frame is placed at the call it is making; off, at where its function is declared.
+static void test_source_positions() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    const char* script =
+        "function inner() {\n"
+        "  var x = 1;\n"
+        "  throw new RangeError('deep');\n"
+        "}\n"
+        "function middle() {\n"
+        "  var y = 2;\n"
+        "  inner();\n"
+        "}\n"
+        "var obj = { run() {\n"
+        "  middle(); } };\n"
+        "obj.run();\n";
+
+    Embed::EvaluateResult off = r.Evaluate(script, "app.js");
+    CHECK(!off.ok && off.stack.size() >= 3 && off.stack[0].function == "inner" && off.stack[0].line == 1);
+
+    isolate->SetSourcePositionTracking(true);
+    Embed::EvaluateResult on = r.Evaluate(script, "app.js");
+    CHECK(!on.ok && on.stack.size() >= 4);
+    if (on.stack.size() >= 4) {
+        CHECK(on.stack[0].function == "inner" && on.stack[0].line == 3 && on.stack[0].column == 3 && on.stack[0].filename == "app.js");
+        CHECK(on.stack[1].function == "middle" && on.stack[1].line == 7 && on.stack[1].column == 3);
+        CHECK(on.stack[2].function == "run" && on.stack[2].line == 10);
+        CHECK(on.stack[3].function == "<anonymous>" && on.stack[3].line == 11 && on.stack[3].filename == "app.js");
+    }
+    CHECK(on.line == 3 && on.column == 3);
+
+    // Through a generator and an async function: no crash, and the frames outside are still placed.
+    Embed::EvaluateResult through_fibers = r.Evaluate(
+        "function* gen() { yield thrower(); }\n"
+        "function thrower() { return new Error('from gen').stack; }\n"
+        "globalThis.fromGenerator = gen().next().value;\n"
+        "(async function () { await null; globalThis.fromAsync = thrower(); })();\n",
+        "fibers.js");
+    CHECK(through_fibers.ok);
+    CHECK(eval_in(r, "fromGenerator.includes('at <anonymous> (fibers.js:3:')").as_boolean());
+    CHECK(eval_in(r, "typeof fromAsync").to_string() == "string");
+
+    // Switching it off again takes effect for the calls made after.
+    isolate->SetSourcePositionTracking(false);
+    Embed::EvaluateResult again = r.Evaluate(script, "app.js");
+    CHECK(!again.ok && again.stack[0].line == 1);
+    CHECK(eval_in(r, "1 + 1").as_number() == 2);
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -1922,6 +1972,7 @@ int main() {
     test_error_reporting();
     test_finalization_and_weak();
     test_inspect();
+    test_source_positions();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

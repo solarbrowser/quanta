@@ -7,6 +7,7 @@
 #ifndef QUANTA_VM_INTERPRETER_H
 #define QUANTA_VM_INTERPRETER_H
 
+#include "quanta/core/runtime/StackFloor.h"
 #include <span>
 #include "quanta/core/vm/Bytecode.h"
 
@@ -32,6 +33,44 @@ struct CallInfo {
     Environment* lexical_environment_ = nullptr;
     Environment* variable_environment_ = nullptr;
 };
+
+// The running bytecode frames of this thread, innermost first, for the one thing that wants to know
+// where each of them is: an error's stack trace. A frame is linked only while tracking is on, so with it
+// off a call pays one test of a flag and nothing else.
+struct FrameLink {
+    FrameLink* prev;
+    const BytecodeChunk* chunk;
+    const uint32_t* pc;     // the frame's instr_pc, read when a trace is made
+    Function* owner;        // null for a script's top level
+};
+extern constinit thread_local FrameLink* g_frame_links;
+extern constinit thread_local bool g_track_positions;
+
+class FrameLinkScope {
+public:
+    [[gnu::always_inline]] FrameLinkScope(const BytecodeChunk* chunk, const uint32_t* pc, Function* owner) {
+        // A frame on a fiber (a generator's or an async function's body) is left out: its stack
+        // comes and goes with the fiber, and a link into it would outlive the frame in the chain.
+        if (__builtin_expect(g_track_positions, 0) && !current_stack_floor()) {
+            link_ = {g_frame_links, chunk, pc, owner};
+            g_frame_links = &link_;
+            linked_ = true;
+        }
+    }
+    [[gnu::always_inline]] ~FrameLinkScope() {
+        if (__builtin_expect(linked_, 0)) g_frame_links = link_.prev;
+    }
+    FrameLinkScope(const FrameLinkScope&) = delete;
+    FrameLinkScope& operator=(const FrameLinkScope&) = delete;
+
+private:
+    FrameLink link_;
+    bool linked_ = false;
+};
+
+// Whether new calls record where they are (see FrameLink). Frames already running when it is
+// switched on are not in the chain, so a trace made then lacks their positions.
+void set_position_tracking(bool on);
 
 // Executes a chunk to completion. The register file lives on the C++ stack
 // so the conservative GC scan covers it for free (and generator fibers

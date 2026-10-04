@@ -7,6 +7,9 @@
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
+#include "quanta/core/vm/Interpreter.h"
+#include "quanta/core/vm/Bytecode.h"
+#include "quanta/core/engine/Context.h"
 #include <algorithm>
 
 namespace Quanta {
@@ -128,19 +131,51 @@ std::string CallStack::generate_stack_trace(size_t max_frames) const {
     return generate_stack_trace(max_frames, 0);
 }
 
+namespace {
+
+struct ResolvedPosition {
+    bool known = false;
+    uint32_t line = 0, column = 0;
+};
+
+// Where each frame of the stack is, from the bytecode frames running now, when tracking is on. A frame
+// of script code takes the innermost frame not yet taken that belongs to its function; a native has none.
+// What is left once the calls are matched is the script's own top level, if there is one.
+const VM::FrameLink* resolve_positions(const CallStack& stack, size_t depth, std::vector<ResolvedPosition>& out) {
+    out.assign(depth, ResolvedPosition{});
+    const VM::FrameLink* link = VM::g_frame_links;
+    if (!link) return nullptr;
+    for (size_t idx = depth; idx > 0; --idx) {
+        const CallStackFrame& frame = stack.at(idx - 1);
+        if (!frame.function_ptr || frame.function_ptr->is_native()) continue;
+        const VM::FrameLink* match = link;
+        while (match && match->owner != frame.function_ptr) match = match->prev;
+        if (!match) continue;
+        uint32_t line = 0, column = 0;
+        if (match->chunk->position_at(*match->pc, line, column)) out[idx - 1] = {true, line, column};
+        link = match->prev;
+    }
+    return link;
+}
+
+}
+
 std::string CallStack::generate_stack_trace(size_t max_frames, size_t skip_top) const {
-    if (depth_ <= skip_top) {
+    if (depth_ <= skip_top && !VM::g_frame_links) {
         return "";
     }
 
     std::string trace;
-    const size_t available = depth_ - skip_top;
+    std::vector<ResolvedPosition> resolved;
+    const VM::FrameLink* rest = resolve_positions(*this, depth_, resolved);
+    const size_t available = depth_ > skip_top ? depth_ - skip_top : 0;
     size_t frame_count = std::min(max_frames, available);
 
     for (size_t i = 0; i < frame_count; ++i) {
         size_t frame_idx = depth_ - 1 - skip_top - i;
         trace += "    ";
-        trace += format_frame(frames_[frame_idx], i);
+        Position actual(resolved[frame_idx].line, resolved[frame_idx].column, 0);
+        trace += format_frame(frames_[frame_idx], i, resolved[frame_idx].known ? &actual : nullptr);
         if (i < frame_count - 1) {
             trace += "\n";
         }
@@ -150,6 +185,18 @@ std::string CallStack::generate_stack_trace(size_t max_frames, size_t skip_top) 
         trace += "\n    ... and ";
         trace += std::to_string(available - max_frames);
         trace += " more frames";
+    } else if (rest && !rest->owner && frame_count < max_frames) {
+        // The script itself, outside every function.
+        uint32_t line = 0, column = 0;
+        if (rest->chunk->position_at(*rest->pc, line, column)) {
+            Context* ctx = Object::current_context_;
+            const std::string file = ctx ? ctx->get_current_filename() : std::string();
+            if (frame_count > 0) trace += "\n";
+            trace += "    at <anonymous>";
+            if (!file.empty()) {
+                trace += " (" + file + ":" + std::to_string(line) + ":" + std::to_string(column) + ")";
+            }
+        }
     }
 
     return trace;
@@ -186,9 +233,13 @@ bool CallStack::check_stack_overflow() {
 }
 
 std::string CallStack::format_frame(const CallStackFrame& frame, size_t index) const {
+    return format_frame(frame, index, nullptr);
+}
+
+std::string CallStack::format_frame(const CallStackFrame& frame, size_t index, const Position* actual) const {
     std::string out = "at ";
 
-    const Position frame_pos = frame.position();
+    const Position frame_pos = actual ? *actual : frame.position();
     out += frame.name().empty() ? "<anonymous>" : frame.name();
 
     if (frame.filename && !frame.filename->empty()) {

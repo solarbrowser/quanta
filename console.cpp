@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Generator.h"
@@ -384,6 +385,9 @@ static int run_console(int argc, char* argv[]) {
             } else if (arg == "--test262") {
                 expose_test262 = true;
                 continue;
+            } else if (arg == "--positions") {
+                Quanta::VM::set_position_tracking(true);
+                continue;
             } else if (arg == "--preload" && i + 1 < argc) {
                 preloads.push_back(argv[i + 1]);
                 i++;
@@ -401,6 +405,7 @@ static int run_console(int argc, char* argv[]) {
                           << "  -c <code>      Execute the given code and exit\n"
                           << "  --module       Force-load the file as an ES module\n"
                           << "  --test262      Expose the $262 test-harness API (createRealm, evalScript, gc, ...)\n"
+                          << "  --positions    Put the line and column of every call in an error's stack trace (a little slower)\n"
                           << "  --preload <f>  Run <f> as a script in the same realm first (repeatable)\n"
                           << "  -v, --version  Print the engine version and exit\n"
                           << "  -h, --help     Show this help message and exit\n\n"

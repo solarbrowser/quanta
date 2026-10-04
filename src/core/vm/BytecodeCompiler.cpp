@@ -5680,7 +5680,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
                 static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
         }
         compiler.fuse_store_pairs();
-        compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
+        compiler.chunk_->positions = compiler.encode_positions();
+    compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
         compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
         compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
         compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
@@ -5758,6 +5759,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
             static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
     }
     compiler.fuse_store_pairs();
+    compiler.chunk_->positions = compiler.encode_positions();
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
@@ -6080,6 +6082,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
             static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
     }
     compiler.fuse_store_pairs();
+    compiler.chunk_->positions = compiler.encode_positions();
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
@@ -6131,6 +6134,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_pattern_binder(const AS
             static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
     }
     compiler.fuse_store_pairs();
+    compiler.chunk_->positions = compiler.encode_positions();
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
@@ -6997,7 +7001,47 @@ void BytecodeCompiler::fuse_store_pairs() {
             if (e.genreturn_pc >= 0) e.genreturn_pc = static_cast<int32_t>(moved[e.genreturn_pc]);
         }
     }
+    for (PositionMark& m : positions_) m.pc = moved[m.pc];
     code_.swap(out);
+}
+
+void BytecodeCompiler::mark_position(const ASTNode* node) {
+    if (!node) return;
+    const Position start = node->get_start();
+    if (start.line == 0) return;
+    const uint32_t pc = static_cast<uint32_t>(code_.size());
+    if (!positions_.empty()) {
+        PositionMark& last = positions_.back();
+        if (last.line == start.line && last.column == start.column) return;
+        if (last.pc == pc) {
+            last = {pc, static_cast<uint32_t>(start.line), static_cast<uint32_t>(start.column)};
+            return;
+        }
+    }
+    positions_.push_back({pc, static_cast<uint32_t>(start.line), static_cast<uint32_t>(start.column)});
+}
+
+static void write_varint(std::vector<uint8_t>& out, uint32_t value) {
+    while (value >= 0x80) {
+        out.push_back(static_cast<uint8_t>(value | 0x80));
+        value >>= 7;
+    }
+    out.push_back(static_cast<uint8_t>(value));
+}
+
+FixedArray<uint8_t> BytecodeCompiler::encode_positions() {
+    std::vector<uint8_t> bytes;
+    uint32_t last_pc = 0;
+    int64_t last_line = 0;
+    for (const PositionMark& m : positions_) {
+        write_varint(bytes, m.pc - last_pc);
+        const int64_t step = static_cast<int64_t>(m.line) - last_line;
+        write_varint(bytes, step >= 0 ? static_cast<uint32_t>(step) << 1 : (static_cast<uint32_t>(-step) << 1) - 1);
+        write_varint(bytes, m.column);
+        last_pc = m.pc;
+        last_line = m.line;
+    }
+    return FixedArray<uint8_t>::from(std::move(bytes));
 }
 
 void BytecodeCompiler::emit(Op op) {
@@ -8655,6 +8699,7 @@ bool BytecodeCompiler::emit_jump_back(Op op, size_t target_pc) {
 
 bool BytecodeCompiler::compile_statement(const ASTNode* node) {
     if (!node || failed_) return false;
+    mark_position(node);
     switch (node->get_type()) {
         case ASTNode::Type::EMPTY_STATEMENT:
             return true;
@@ -10356,6 +10401,11 @@ bool BytecodeCompiler::tape_cannot_write_registers(TapeView tape, size_t index) 
 
 bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
     if (!node || failed_) return false;
+    // A call, a construction, or the first thing a chunk does (a concise arrow's body).
+    if (positions_.empty() || node->get_type() == ASTNode::Type::CALL_EXPRESSION ||
+        node->get_type() == ASTNode::Type::NEW_EXPRESSION) {
+        mark_position(node);
+    }
 
     // Optional chaining: once any link's base is nullish, skip the rest of
     // the chain and produce undefined (detected once per chain, then

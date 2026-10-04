@@ -62,8 +62,9 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 // it: the engine does not produce one for scripts (only eval has an observable
 // result), so a script that wants to hand something back sets a global, or calls a
 // function the embedder defined.
-// One line of a stack trace. The position is where the function is declared, not the point of
-// the call in it, until the engine records source positions (line and column are 0 when unknown).
+// One line of a stack trace. The position is the call the frame is making when
+// Isolate::SetSourcePositionTracking is on, and where its function is declared when it is not
+// (line and column are 0 when unknown).
 struct StackFrame {
     std::string function;
     std::string filename;
@@ -193,6 +194,14 @@ public:
     // empty", which is when a host performs a microtask checkpoint after running a callback. False
     // inside a native function, a script, a module or anything either one called.
     bool JsStackEmpty() const;
+
+    // Whether calls record where in the source they are, so that an error's stack trace has the line and
+    // column of every call in it (otherwise a frame is placed where its function is declared). Off by
+    // default: it costs a few percent on call-heavy code, which a host turns on while its developer tools
+    // are open and off after. Scripts are always compiled with the positions, so it takes effect for code
+    // already loaded; only calls made after it is switched on are placed. Frames of a generator's or an
+    // async function's body are not placed.
+    void SetSourcePositionTracking(bool on);
 
     // Full collection, now. Ordinary collections happen on their own at the
     // interpreter's safepoints.

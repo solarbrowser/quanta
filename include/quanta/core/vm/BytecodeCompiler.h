@@ -669,6 +669,12 @@ private:
     // FixedArray<T>::from() exactly once, at the very end of compile()/
     // compile_script() -- see those functions' final lines.
     std::vector<uint8_t> code_;
+    // Source positions as the code is emitted, in pc order: a statement or a call starts one. Their pcs
+    // are renumbered with the code when instructions fuse, and the table is encoded at the end.
+    struct PositionMark { uint32_t pc, line, column; };
+    std::vector<PositionMark> positions_;
+    void mark_position(const ASTNode* node);
+    FixedArray<uint8_t> encode_positions();
     std::vector<Value> constants_;
     std::vector<std::string> names_;
     // Where each name already sits, so add_name does not compare against every

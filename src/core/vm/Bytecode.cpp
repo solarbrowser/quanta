@@ -18,7 +18,8 @@ namespace Quanta {
 // carries prebuilt ClosureTemplates, while ast_nodes holds the nodes
 // Op::DefineClass reads as a description of itself.
 #if defined(__GLIBCXX__)
-static_assert(sizeof(BytecodeChunk) == 128);
+// 128 plus the position table (a FixedArray: pointer and count).
+static_assert(sizeof(BytecodeChunk) == 144);
 #else
 static_assert(sizeof(BytecodeChunk) <= 192);
 #endif
@@ -38,6 +39,43 @@ void BytecodeChunk::drop_feedback() const {
     if (ic_feedback) {
         for (auto& kfb : ic_feedback->keyed_feedback) kfb.reset();
     }
+}
+
+namespace {
+
+bool read_varint(const uint8_t*& p, const uint8_t* end, uint32_t& out) {
+    uint32_t value = 0;
+    int shift = 0;
+    while (p < end) {
+        uint8_t byte = *p++;
+        value |= static_cast<uint32_t>(byte & 0x7F) << shift;
+        if (!(byte & 0x80)) { out = value; return true; }
+        shift += 7;
+        if (shift > 28) return false;
+    }
+    return false;
+}
+
+}
+
+bool BytecodeChunk::position_at(uint32_t pc, uint32_t& line, uint32_t& column) const {
+    const uint8_t* p = positions.data();
+    const uint8_t* end = p + positions.size();
+    uint32_t entry_pc = 0, entry_line = 0;
+    bool found = false;
+    while (p < end) {
+        uint32_t pc_step, line_step, col;
+        if (!read_varint(p, end, pc_step) || !read_varint(p, end, line_step) || !read_varint(p, end, col)) break;
+        entry_pc += pc_step;
+        // zigzag: the line may step back (a loop's update clause is compiled after its body)
+        entry_line = static_cast<uint32_t>(static_cast<int64_t>(entry_line) +
+                     ((line_step & 1) ? -static_cast<int64_t>((line_step + 1) >> 1) : static_cast<int64_t>(line_step >> 1)));
+        if (entry_pc > pc) break;
+        found = true;
+        line = entry_line;
+        column = col;
+    }
+    return found;
 }
 
 void BytecodeChunk::trace(Visitor& v) const {

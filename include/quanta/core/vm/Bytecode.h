@@ -827,6 +827,12 @@ struct BytecodeChunk {
     // FixedArray::operator[] hands out a non-const T& even through a const
     // BytecodeChunk&, so (unlike the old std::vector) no `mutable` is needed.
     FixedArray<uint8_t> code;
+    // Where in the source each stretch of `code` came from: a statement or a call starts one. Entries
+    // ascend by pc and are stored as varints (pc and column as steps, line as a signed step), so a
+    // chunk pays a few bytes a statement; position_at() reads it back by walking it, which only an error's
+    // stack trace does.
+    FixedArray<uint8_t> positions;
+    bool position_at(uint32_t pc, uint32_t& line, uint32_t& column) const;
     FixedArray<Value> constants;   // GC-visible via Function::trace()
     // Identifier names carried by name-bearing opcodes. Interned once at
     // compile end (Shape::intern, the same pool Shape's slot tables and

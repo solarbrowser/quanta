@@ -15,6 +15,7 @@
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/engine/HostHooks.h"
+#include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/DataView.h"
@@ -293,6 +294,10 @@ void Isolate::SetPromiseRejectionHandler(PromiseRejectionHandler handler) {
         call(realm, Value(static_cast<Object*>(promise)), promise->get_value(),
              handled ? RejectionEvent::Handled : RejectionEvent::Unhandled);
     });
+}
+
+void Isolate::SetSourcePositionTracking(bool on) {
+    VM::set_position_tracking(on);
 }
 
 bool Isolate::JsStackEmpty() const {

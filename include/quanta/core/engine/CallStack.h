@@ -124,6 +124,8 @@ public:
     
 private:
     std::string format_frame(const CallStackFrame& frame, size_t index = 0) const;
+    // `actual`: where the frame really is, when that is known (else where its function is declared).
+    std::string format_frame(const CallStackFrame& frame, size_t index, const Position* actual) const;
 };
 
 /**

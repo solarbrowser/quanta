@@ -8850,6 +8850,7 @@ Value run_dispatch(Frame& f) {
                 lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
                 this_value, initial_acc ? *initial_acc : Value(), 0, 0, 0, this_resolved};
+    FrameLinkScope frame_link(&chunk, &frame.instr_pc, owner);
     frame.call_info = call_info;
     // Seeded even when call_info is null (frame_lexical_env/frame_variable_env
     // never read them in that case) -- keeping them accurate regardless costs
@@ -8963,6 +8964,11 @@ Value run_dispatch(Frame& f) {
     return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info,
                          spill_regs.data(), final_lexical_env);
 }
+
+constinit thread_local FrameLink* g_frame_links = nullptr;
+constinit thread_local bool g_track_positions = false;
+
+void set_position_tracking(bool on) { g_track_positions = on; }
 
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val, Function* owner, const Value* initial_acc,
