@@ -1175,6 +1175,32 @@ static void test_arrow_arguments() {
     CHECK(eval_in(r, "(function f() { return (() => { return typeof arguments; })(); })()").to_string() == "object");
 }
 
+// Redefining an accessor as a data property inside its own setter never runs that setter again,
+// whether the object is small or large enough to be in dictionary mode (the global object is).
+static void test_accessor_redefined_in_setter() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    r.Evaluate("globalThis.window = globalThis; for (let i = 0; i < 400; i++) globalThis['filler' + i] = i;");
+    CHECK(eval_in(r, "(() => { let calls = 0;"
+                     "Object.defineProperty(globalThis, 'log', { get() { return 'el'; }, enumerable: false, configurable: true,"
+                     "  set(v) { calls++; Object.defineProperty(globalThis, 'log', { value: v }); } });"
+                     "window.log = 'fn'; return window.log + calls; })()").to_string() == "fn1");
+    CHECK(eval_in(r, "(() => { Object.defineProperty(globalThis, 'full', { get() { return 1; }, configurable: true,"
+                     "  set(v) { Object.defineProperty(globalThis, 'full', { value: v, writable: true, enumerable: true, configurable: true }); } });"
+                     "full = 2; full = 3; return JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'full')); })()").to_string() ==
+          "{\"value\":3,\"writable\":true,\"enumerable\":true,\"configurable\":true}");
+    // The same result for a small object and a large one, including a conversion that fixes configurable.
+    CHECK(eval_in(r, "(() => { const results = [];"
+                     "for (const n of [5, 400]) { const o = {}; for (let i = 0; i < n; i++) o['k' + i] = i;"
+                     "  Object.defineProperty(o, 'a', { get() { return 1; }, configurable: true });"
+                     "  Object.defineProperty(o, 'a', { value: 9, configurable: false });"
+                     "  Object.defineProperty(o, 'b', { get() { return 1; }, configurable: true });"
+                     "  Object.defineProperty(o, 'b', { writable: true });"
+                     "  results.push(JSON.stringify([Object.getOwnPropertyDescriptor(o, 'a'), Object.getOwnPropertyDescriptor(o, 'b')])); }"
+                     "return results[0] === results[1]; })()").as_boolean());
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -1210,6 +1236,7 @@ int main() {
     test_legacy_platform_objects();
     test_lone_surrogates();
     test_arrow_arguments();
+    test_accessor_redefined_in_setter();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

@@ -2991,7 +2991,11 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
                     // A bare value write must not silently drop an explicit attribute
                     // change (e.g. defineProperty({value, configurable:true}) on a
                     // property whose attrs so far only lived implicitly/in shape defaults).
-                    if (desc.has_writable() || desc.has_enumerable() || desc.has_configurable()) {
+                    // An accessor turning into a data property is merged below, against the accessor it was.
+                    auto* accessor_entry = descs.find(key);
+                    const bool was_accessor = existed_before_this_call && accessor_entry &&
+                                              accessor_entry->is_accessor_descriptor();
+                    if (!was_accessor && (desc.has_writable() || desc.has_enumerable() || desc.has_configurable())) {
                         PropertyDescriptor merged = get_property_descriptor(key);
                         merged.set_value(coerced_value);
                         if (desc.has_writable())     merged.set_writable(desc.is_writable());
@@ -3000,7 +3004,14 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
                         note_descriptor_key(key); descs[key] = merged;
                     }
                 } else if (existed_before_this_call) {
-                    set_property(key, coerced_value, desc.get_attributes());
+                    auto* existing_entry = descs.find(key);
+                    if (existing_entry && existing_entry->is_accessor_descriptor()) {
+                        // An accessor turned into a data property: [[DefineOwnProperty]] stores the
+                        // value; calling set_property would run the very setter being replaced.
+                        store_in_overflow(key, coerced_value);
+                    } else {
+                        set_property(key, coerced_value, desc.get_attributes());
+                    }
                 } else {
                     // [[DefineOwnProperty]] creates own property directly, bypassing inherited setters
                     store_in_overflow(key, coerced_value);
@@ -3085,6 +3096,17 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
                     // makes it moot) -- either way this call is done.
                     return true;
                 }
+            }
+            if (desc.is_data_descriptor() && existing.is_accessor_descriptor()) {
+                // {writable: ...} makes it a data property, valued undefined, keeping what it
+                // was not told to change.
+                PropertyDescriptor data{Value(), PropertyAttributes::None};
+                data.set_writable(desc.is_writable());
+                data.set_enumerable(desc.has_enumerable() ? desc.is_enumerable() : existing.is_enumerable());
+                data.set_configurable(desc.has_configurable() ? desc.is_configurable() : existing.is_configurable());
+                store_in_overflow(key, Value());
+                note_descriptor_key(key); descs[key] = data;
+                return true;
             }
             if (desc.has_writable())     existing.set_writable(desc.is_writable());
             if (desc.has_enumerable())   existing.set_enumerable(desc.is_enumerable());
