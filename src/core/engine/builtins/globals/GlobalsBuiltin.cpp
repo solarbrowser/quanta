@@ -1769,7 +1769,8 @@ void register_global_builtins(Context& ctx) {
                         // `type` is the one attribute this host honours, and
                         // only for the kinds of module it can build.
                         if (key != "type" ||
-                            !ModuleLoader::is_supported_module_type(v.to_string())) {
+                            (!(ctx.get_engine() && ctx.get_engine()->module_host()) &&
+                             !ModuleLoader::is_supported_module_type(v.to_string()))) {
                             reject_type_error("import() does not support the attribute '" +
                                               key + "'");
                             return Value(promise_obj.release());
@@ -1787,6 +1788,14 @@ void register_global_builtins(Context& ctx) {
 
             Context* queue_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : &ctx;
             queue_ctx->queue_microtask([specifier, current_file, engine, promise_ptr, requested_type]() {
+                // A realm whose host names and fetches its modules gets the request first (a policy
+                // check, a different loader); what it leaves goes through the same machinery.
+                if (engine && engine->module_host() && engine->get_module_loader()) {
+                    Context* host_ctx = engine->get_global_context();
+                    if (engine->module_host()->dynamic_import(*host_ctx, specifier, current_file, requested_type, promise_ptr)) return;
+                    engine->get_module_loader()->import_specifier(specifier, current_file, requested_type, promise_ptr);
+                    return;
+                }
                 std::string resolved;
                 if ((specifier.length() >= 2 && specifier.substr(0, 2) == "./") ||
                     (specifier.length() >= 3 && specifier.substr(0, 3) == "../")) {

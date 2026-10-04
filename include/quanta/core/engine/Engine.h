@@ -83,6 +83,7 @@ private:
     std::unique_ptr<Realm> realm_;
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
+    std::shared_ptr<ModuleHost> module_host_;
 
     bool initialized_;
     uint64_t execution_count_;
@@ -304,6 +305,10 @@ public:
     void update_config(const Config& config);
 
     ModuleLoader* get_module_loader() { return module_loader_.get(); }
+    // How this realm's modules are named, fetched and decorated by the host (see ModuleHost). Null: the
+    // file system, as the CLI does.
+    void set_module_host(std::shared_ptr<ModuleHost> host) { module_host_ = std::move(host); }
+    ModuleHost* module_host() const { return module_host_.get(); }
     
     void register_default_export(const std::string& filename, const Value& value);
     Value get_default_export(const std::string& filename);

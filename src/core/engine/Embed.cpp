@@ -157,6 +157,108 @@ namespace {
 constinit thread_local bool g_isolate_live = false;
 }
 
+namespace {
+
+// The engine's ModuleHost, answered by the embedder's ModuleHooks.
+class EmbedModuleHost : public Quanta::ModuleHost, public std::enable_shared_from_this<EmbedModuleHost> {
+public:
+    EmbedModuleHost(Realm* realm, std::shared_ptr<const ModuleHooks> hooks) : realm_(realm), hooks_(std::move(hooks)) {}
+
+    bool resolve(Context&, const std::string& specifier, const std::string& referrer,
+                 std::string& resolved, std::string& error) override {
+        if (!hooks_->resolve) {
+            error = "Cannot resolve module '" + specifier + "'";
+            return false;
+        }
+        return hooks_->resolve(realm_, specifier, referrer, resolved, error);
+    }
+
+    void fetch(Context&, const std::string& url, const std::string& type, Completion done) override {
+        if (!hooks_->fetch) {
+            Quanta::ModuleContent failed;
+            failed.error = "Cannot fetch module '" + url + "'";
+            done(std::move(failed));
+            return;
+        }
+        std::weak_ptr<EmbedModuleHost> self = shared_from_this();
+        hooks_->fetch(realm_, url, type, [self, done = std::move(done)](ModuleSource source) {
+            auto host = self.lock();
+            if (!host) return;   // the realm is gone: nothing is waiting
+            // Called from wherever the host's fetch finished: the realm it continues in is this one.
+            host->realm_->Run([&] { done(to_content(std::move(source))); });
+        });
+    }
+
+    void init_import_meta(Context& ctx, Object* meta, const std::string& url) override {
+        if (hooks_->initImportMeta) hooks_->initImportMeta(realm_, Value(meta), url);
+        else meta->set_property("url", Value(url));
+        (void)ctx;
+    }
+
+    bool dynamic_import(Context& ctx, const std::string& specifier, const std::string& referrer,
+                        const std::string& type, Promise* result) override {
+        if (!hooks_->dynamicImport) return false;
+        std::optional<std::string> refusal = hooks_->dynamicImport(realm_, specifier, referrer, type);
+        if (!refusal) return false;
+        ctx.throw_type_error(*refusal);
+        Value error = ctx.get_exception();
+        ctx.clear_exception();
+        result->reject(error);
+        return true;
+    }
+
+private:
+    static Quanta::ModuleContent to_content(ModuleSource source) {
+        Quanta::ModuleContent out;
+        switch (source.kind) {
+            case ModuleSource::Kind::Script: out.kind = Quanta::ModuleContent::Kind::Script; break;
+            case ModuleSource::Kind::Json: out.kind = Quanta::ModuleContent::Kind::Json; break;
+            case ModuleSource::Kind::Text: out.kind = Quanta::ModuleContent::Kind::Text; break;
+            case ModuleSource::Kind::Bytes: out.kind = Quanta::ModuleContent::Kind::Bytes; break;
+            case ModuleSource::Kind::Value: out.kind = Quanta::ModuleContent::Kind::Default; break;
+            case ModuleSource::Kind::Failure: out.kind = Quanta::ModuleContent::Kind::Failure; break;
+        }
+        out.text = std::move(source.text);
+        out.bytes = std::move(source.bytes);
+        out.value = source.value;
+        out.error = std::move(source.error);
+        out.error_value = source.errorValue;
+        return out;
+    }
+
+    Realm* realm_;
+    std::shared_ptr<const ModuleHooks> hooks_;
+};
+
+}
+
+void Isolate::install_module_host(Realm& realm) {
+    if (module_hooks_) realm.engine_->set_module_host(std::make_shared<EmbedModuleHost>(&realm, module_hooks_));
+}
+
+void Isolate::SetModuleHooks(ModuleHooks hooks) {
+    module_hooks_ = std::make_shared<const ModuleHooks>(std::move(hooks));
+    for (Realm* realm : realms_) install_module_host(*realm);
+}
+
+Value Realm::EvaluateModule(std::string_view source, const std::string& url) {
+    Context& ctx = GetContext();
+    PromiseCapability capability = NewPromiseCapability(ctx);
+    if (ctx.has_exception()) return Value();
+    Promise* promise = static_cast<Promise*>(capability.promise.as_object());
+    Run([&] { engine_->get_module_loader()->import_source(url, std::string(source), promise); });
+    return capability.promise;
+}
+
+Value Realm::ImportModule(const std::string& specifier, const std::string& referrerUrl, const std::string& type) {
+    Context& ctx = GetContext();
+    PromiseCapability capability = NewPromiseCapability(ctx);
+    if (ctx.has_exception()) return Value();
+    Promise* promise = static_cast<Promise*>(capability.promise.as_object());
+    Run([&] { engine_->get_module_loader()->import_specifier(specifier, referrerUrl, type, promise); });
+    return capability.promise;
+}
+
 Realm::Realm(Isolate& isolate, std::unique_ptr<Engine> engine)
     : isolate_(&isolate), engine_(std::move(engine)) {}
 
@@ -263,6 +365,7 @@ std::unique_ptr<Realm> Isolate::CreateRealm(const RealmOptions& options) {
     std::unique_ptr<Realm> realm(new Realm(*this, std::move(engine)));
     realm->engine_->set_host_realm(realm.get());
     realms_.push_back(realm.get());
+    install_module_host(*realm);
     return realm;
 }
 
@@ -1472,6 +1575,11 @@ ErrorInfo InspectError(Context& ctx, const Value& thrown) {
         info.filename = info.frames.front().filename;
         info.line = info.frames.front().line;
         info.column = info.frames.front().column;
+    } else if (Error* err = as_error(object); err && err->get_line_number() > 0) {
+        // No stack, but it knows where it is from: an error a module's parse or link made.
+        info.filename = err->get_filename();
+        info.line = static_cast<uint32_t>(err->get_line_number());
+        info.column = static_cast<uint32_t>(err->get_column_number());
     }
     return info;
 }

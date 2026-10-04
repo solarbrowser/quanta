@@ -724,6 +724,13 @@ Value Context::get_import_meta() {
         auto meta_obj = ObjectFactory::create_object();
         // Null prototype, spec 13.3.12.1.
         meta_obj->initialize_prototype(nullptr);
+        if (engine_ && engine_->module_host()) {
+            // The host says what import.meta holds; the module's own URL is what it is told.
+            Object* meta = meta_obj.get();
+            import_meta_ = Value(meta_obj.release());
+            engine_->module_host()->init_import_meta(*this, meta, *current_filename_);
+            return import_meta_;
+        }
         meta_obj->set_property("url", Value(std::string("file://") + *current_filename_));
         import_meta_ = Value(meta_obj.release());
     }

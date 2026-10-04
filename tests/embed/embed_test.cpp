@@ -1929,6 +1929,181 @@ static void test_source_positions() {
     CHECK(eval_in(r, "1 + 1").as_number() == 2);
 }
 
+// ---- ES modules through the host -----------------------------------------------------
+
+namespace {
+struct ModuleWorld {
+    std::map<std::string, Embed::ModuleSource> files;
+    std::vector<std::string> fetched;
+    std::vector<std::pair<std::string, std::function<void(Embed::ModuleSource)>>> parked;   // answered later
+    bool park = false;
+    bool deny_dynamic = false;
+};
+
+static std::string join_url(const std::string& referrer, const std::string& specifier) {
+    if (specifier.rfind("http://", 0) == 0) return specifier;
+    std::string base = referrer.substr(0, referrer.rfind('/') + 1);
+    if (specifier.rfind("./", 0) == 0) return base + specifier.substr(2);
+    return "http://host/" + specifier;
+}
+
+static void install_module_world(Embed::Isolate& isolate, ModuleWorld& world) {
+    Embed::ModuleHooks hooks;
+    hooks.resolve = [](Embed::Realm*, const std::string& specifier, const std::string& referrer, std::string& out, std::string& error) {
+        if (specifier == "forbidden") { error = "no such package"; return false; }
+        out = join_url(referrer, specifier);
+        return true;
+    };
+    hooks.fetch = [&world](Embed::Realm*, const std::string& url, const std::string&, std::function<void(Embed::ModuleSource)> done) {
+        world.fetched.push_back(url);
+        auto it = world.files.find(url);
+        Embed::ModuleSource answer = it == world.files.end() ? Embed::ModuleSource::Failure("404 " + url) : it->second;
+        if (world.park) world.parked.emplace_back(url, [done, answer](Embed::ModuleSource) mutable { done(answer); });
+        else done(answer);
+    };
+    hooks.initImportMeta = [](Embed::Realm* realm, const Value& meta, const std::string& url) {
+        Context& ctx = realm->GetContext();
+        Embed::Set(ctx, meta, "url", Embed::FromUtf8(ctx, url));
+    };
+    hooks.dynamicImport = [&world](Embed::Realm*, const std::string& specifier, const std::string&, const std::string&) -> std::optional<std::string> {
+        if (world.deny_dynamic) return "blocked: " + specifier;
+        return std::nullopt;
+    };
+    isolate.SetModuleHooks(std::move(hooks));
+}
+
+// A promise's state and result, after the jobs have run.
+static Embed::ObjectInfo settled(Embed::Isolate& isolate, Embed::Realm& r, const Value& promise) {
+    isolate.PerformMicrotaskCheckpoint();
+    return Embed::Inspect(r.GetContext(), promise);
+}
+}
+
+static void test_modules() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    Context& ctx = r.GetContext();
+    ModuleWorld world;
+    install_module_world(*isolate, world);
+    using S = Embed::ModuleSource;
+    world.files["http://host/lib/a.js"] = S::Script("import { b } from './b.js'; export const a = 'a' + b; export function twice(f) { return f() + f(); }");
+    world.files["http://host/lib/b.js"] = S::Script("export const b = 'b'; export let count = 0; export function bump() { count++; }");
+    world.files["http://host/lib/data.json"] = S::Json("{\"k\": [1, 2]}");
+    world.files["http://host/lib/note.txt"] = S::Text("hello");
+    world.files["http://host/lib/blob.bin"] = S::Bytes({1, 2, 3});
+    world.files["http://host/lib/broken.js"] = S::Script("export const x = ;");
+    world.files["http://host/lib/throws.js"] = S::Script("\n\nthrow new Error('boom');");
+    world.files["http://host/lib/tla.js"] = S::Script("export const v = await Promise.resolve(42);");
+    world.files["http://host/lib/cycle1.js"] = S::Script("import { two } from './cycle2.js'; export function one() { return 1; } export const sum = () => one() + two();");
+    world.files["http://host/lib/cycle2.js"] = S::Script("import { one } from './cycle1.js'; export function two() { return 2; } export const back = () => one();");
+    world.files["http://host/lib/meta.js"] = S::Script("export default import.meta.url;");
+
+    // A graph of static imports, the namespace of the entry, live bindings.
+    Value p = r.EvaluateModule("import { a, twice } from './lib/a.js'; import { count, bump } from './lib/b.js';"
+                               "bump(); bump(); globalThis.out = [a, twice(() => 2), count].join(',');", "http://host/main.js");
+    Embed::ObjectInfo info = settled(*isolate, r, p);
+    CHECK(info.promise_state == Embed::PromiseState::Fulfilled);
+    CHECK(Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "out")) == "ab,4,2");
+    CHECK(world.fetched.size() == 2);
+
+    // The same URL is fetched once, however many modules ask.
+    size_t before = world.fetched.size();
+    p = r.EvaluateModule("import './lib/a.js'; import { b } from './lib/b.js'; globalThis.out2 = b;", "http://host/main2.js");
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Fulfilled);
+    CHECK(world.fetched.size() == before);
+
+    // Typed imports.
+    p = r.EvaluateModule("import j from './lib/data.json' with { type: 'json' };"
+                         "import t from './lib/note.txt' with { type: 'text' };"
+                         "import b from './lib/blob.bin' with { type: 'bytes' };"
+                         "globalThis.typed = JSON.stringify(j) + t + b.length;", "http://host/main3.js");
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Fulfilled);
+    CHECK(Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "typed")) == "{\"k\":[1,2]}hello3");
+
+    // A host-made value is the default export as it is.
+    world.files["http://host/lib/sheet.css"] = S::Default(Embed::NewString(ctx, "SHEET"));
+    p = r.EvaluateModule("import s from './lib/sheet.css' with { type: 'css' }; globalThis.sheet = s;", "http://host/main4.js");
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Fulfilled);
+    CHECK(Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "sheet")) == "SHEET");
+
+    // Cycles, top-level await, import.meta.
+    p = r.EvaluateModule("import { sum } from './lib/cycle1.js'; import { v } from './lib/tla.js';"
+                         "import m from './lib/meta.js'; globalThis.mix = [sum(), v, m].join(',');", "http://host/main5.js");
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Fulfilled);
+    CHECK(Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "mix")) == "3,42,http://host/lib/meta.js");
+
+    // Failures say which module and where.
+    p = r.EvaluateModule("import './lib/broken.js';", "http://host/e1.js");
+    info = settled(*isolate, r, p);
+    CHECK(info.promise_state == Embed::PromiseState::Rejected);
+    Embed::ErrorInfo err = Embed::InspectError(ctx, info.promise_result);
+    CHECK(err.name == "SyntaxError" && err.filename == "http://host/lib/broken.js" && err.line == 1);
+
+    isolate->SetSourcePositionTracking(true);
+    p = r.EvaluateModule("import './lib/throws.js';", "http://host/e2.js");
+    info = settled(*isolate, r, p);
+    err = Embed::InspectError(ctx, info.promise_result);
+    CHECK(info.promise_state == Embed::PromiseState::Rejected && err.message == "boom" && err.line == 3);
+
+    isolate->SetSourcePositionTracking(false);
+    p = r.EvaluateModule("import './lib/missing.js';", "http://host/e3.js");
+    info = settled(*isolate, r, p);
+    CHECK(info.promise_state == Embed::PromiseState::Rejected);
+    CHECK(Embed::InspectError(ctx, info.promise_result).message.find("404") != std::string::npos);
+    size_t fetches = world.fetched.size();
+    p = r.EvaluateModule("import './lib/missing.js';", "http://host/e4.js");
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Rejected);
+    CHECK(world.fetched.size() == fetches + 0);   // the failure is remembered
+
+    p = r.EvaluateModule("import 'forbidden';", "http://host/e5.js");
+    info = settled(*isolate, r, p);
+    CHECK(info.promise_state == Embed::PromiseState::Rejected);
+    CHECK(Embed::InspectError(ctx, info.promise_result).message == "no such package");
+
+    // import() from a module, and from the host; the hook can refuse it.
+    p = r.EvaluateModule("globalThis.dyn = import('./lib/b.js').then(m => m.b);", "http://host/d1.js");
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Fulfilled);
+    Embed::ObjectInfo dyn = settled(*isolate, r, Embed::Get(ctx, Value(ctx.get_global_object()), "dyn"));
+    CHECK(dyn.promise_state == Embed::PromiseState::Fulfilled && Embed::ToWtf8(ctx, dyn.promise_result) == "b");
+    world.deny_dynamic = true;
+    p = r.EvaluateModule("globalThis.dyn2 = import('./lib/a.js');", "http://host/d2.js");
+    settled(*isolate, r, p);
+    dyn = settled(*isolate, r, Embed::Get(ctx, Value(ctx.get_global_object()), "dyn2"));
+    CHECK(dyn.promise_state == Embed::PromiseState::Rejected);
+    CHECK(Embed::InspectError(ctx, dyn.promise_result).message == "blocked: ./lib/a.js");
+    world.deny_dynamic = false;
+    Value imported = r.ImportModule("./a.js", "http://host/lib/x.js");
+    Embed::ObjectInfo ns = settled(*isolate, r, imported);
+    CHECK(ns.promise_state == Embed::PromiseState::Fulfilled);
+    CHECK(Embed::ToWtf8(ctx, Embed::Get(ctx, ns.promise_result, "a")) == "ab");
+
+    // A fetch that finishes later: the graph waits for it.
+    world.files["http://host/lib/late.js"] = S::Script("export const late = 'L';");
+    world.park = true;
+    p = r.EvaluateModule("import { late } from './lib/late.js'; globalThis.got = late;", "http://host/l1.js");
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Pending);
+    CHECK(world.parked.size() == 1);
+    world.park = false;
+    auto parked = std::move(world.parked);
+    world.parked.clear();
+    for (auto& [url, done] : parked) done(S());
+    CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Fulfilled);
+    CHECK(Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "got")) == "L");
+
+    // A realm destroyed with a fetch still parked: answering it later is harmless.
+    world.files["http://host/lib/never.js"] = S::Script("export const n = 1;");
+    world.park = true;
+    p = r.EvaluateModule("import './lib/never.js';", "http://host/l2.js");
+    settled(*isolate, r, p);
+    world.park = false;
+    realm.reset();
+    parked = std::move(world.parked);
+    world.parked.clear();
+    for (auto& [url, done] : parked) done(S());
+    isolate->CollectGarbage();
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -1973,6 +2148,7 @@ int main() {
     test_finalization_and_weak();
     test_inspect();
     test_source_positions();
+    test_modules();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

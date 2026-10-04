@@ -138,6 +138,23 @@ A C++ member holding a cell is invisible to the collector; these are what to use
 |---|---|
 | `Call(ctx, callable, thisValue, args)` | Calls a function. Check `HasException(ctx)` afterwards. |
 
+## Modules
+
+A realm runs ES modules through `Isolate::SetModuleHooks`; without hooks it reads them from the file system, as the CLI does. The engine owns the module map and walks the graph (static imports, `export ... from`, cycles, top-level await, import attributes); the hooks only name, fetch and decorate. A URL is loaded once per realm, and a failed fetch is remembered too.
+
+| | |
+|---|---|
+| `ModuleHooks::resolve(realm, specifier, referrer, resolved, error)` | An absolute URL for `specifier` as written in the module at `referrer` (empty when the request has none), or false with the message the import fails with. Import maps, bare specifiers, `data:` and `blob:` are the host's. |
+| `ModuleHooks::fetch(realm, url, type, done)` | The content of `url`, as a `ModuleSource`: `Script` for an ES module, and for an import with `with { type }` one of `Json` (the engine parses it), `Text`, `Bytes` (an immutable `Uint8Array`) or `Value` (a value the host made, exported as the default as it is: a `CSSStyleSheet`). `Failure(message)` rejects the importers with a `TypeError`. `done` may be called at once or later, from the realm's thread; the graph walk goes on inside it. The host decides which types exist: the engine does not check `type` while hooks are set. |
+| `ModuleHooks::initImportMeta(realm, meta, url)` | `meta` is a new object without a prototype. Set `url`, `resolve`, whatever the host adds. Without it `import.meta.url` is the module's URL. |
+| `ModuleHooks::dynamicImport(realm, specifier, referrer, type)` | Called for each `import()`. Nothing lets it go on through `resolve` and `fetch`; a message rejects it with a `TypeError` of that message (a CSP that forbids it). |
+| `Realm::EvaluateModule(source, url)` | Runs `source` as the module at `url` and returns a promise: fulfilled with the namespace once it and everything it imports have run, rejected with what stopped it (a failed fetch, a `SyntaxError`, a thrown value). |
+| `Realm::ImportModule(specifier, referrerUrl, type)` | The same for a module the hooks fetch. |
+
+`InspectError` on a rejection places it in the module it came from: a `SyntaxError` has the file and the line of the parse error. An exception a module body throws has the file and line of the throw when `SetSourcePositionTracking(true)`, and otherwise only the message, as everywhere else. After fetching over the network call `PerformMicrotaskCheckpoint` as for any other promise job.
+
+A realm destroyed while modules are fetching drops them: answering `done` afterwards does nothing. The modules a destroyed realm loaded are kept for the life of the process (a closure or a namespace object another realm holds reaches them).
+
 ## Iterators
 
 | | |

@@ -16,6 +16,8 @@
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/modules/ModuleHost.h"
+#include <functional>
 
 namespace Quanta {
 
@@ -431,6 +433,9 @@ public:
     // separately visit each module's Context via get_context() below).
     void gc_trace(Visitor& v) const;
     const std::unordered_map<std::string, std::unique_ptr<Module>>& modules() const { return modules_; }
+    // The realm is going and the heap carries on: closures and namespace objects it made can be held by other
+    // realms, and they reach their Module and its Context. Both stay for good, named by `heir`.
+    void outlive_realm(Engine* heir);
 
     std::string resolve_module_path(const std::string& module_id, const std::string& from_path = "");
     void add_search_path(const std::string& path);
@@ -449,6 +454,57 @@ public:
     static Value build_module_namespace(Module* module);
 
     void register_builtin_module(const std::string& module_id, std::unique_ptr<Module> module);
+
+    // ---- Loading through the host (see ModuleHost) ----------------------------------------
+    //
+    // The graph is walked first, asynchronously: each module's content is fetched, parsed, and what it
+    // requests is resolved and fetched in turn, until every module in the graph is in hand. Only then
+    // does the ordinary preparation, linking and evaluation run, reading from what was fetched, so a
+    // module is parsed once, fetched once for each (URL, type) and a failure is remembered as the
+    // module's result. `result` is settled with the module's namespace once it has evaluated (after its
+    // top-level await, if any), or rejected with whatever stopped it.
+
+    // `source` is the module `url`: a script's own module code, with nothing to fetch for it.
+    void import_source(const std::string& url, const std::string& source, Promise* result);
+    // An absolute URL, to be fetched.
+    void import_url(const std::string& url, const std::string& type, Promise* result);
+    // As written in the module or script at `referrer`: resolved by the host first.
+    void import_specifier(const std::string& specifier, const std::string& referrer,
+                          const std::string& type, Promise* result);
+    ModuleHost* host() const;
+
+private:
+    struct HostRequest {
+        std::string specifier;
+        std::string type;
+    };
+    // What was fetched for one (URL, type), kept whether it worked or not.
+    struct FetchEntry {
+        bool started = false;
+        bool done = false;
+        ModuleContent content;
+        std::unique_ptr<ASTNode> ast;                  // a parsed script, taken when its module is prepared
+        std::vector<HostRequest> requests;             // what a script imports, in source order
+        std::unordered_map<std::string, std::string> resolved;     // specifier -> URL
+        std::unordered_map<std::string, Value> resolve_errors;     // specifier -> the error that failed it
+        Value failure;                                 // fetch or parse error, once it failed
+        std::vector<std::function<void()>> waiters;
+    };
+    std::unordered_map<std::string, FetchEntry> fetched_;
+    // Promises being settled, which nothing else may hold on to meanwhile.
+    std::vector<Value> pinned_;
+
+    static std::string fetch_key(const std::string& url, const std::string& type);
+    void ensure_fetched(const std::string& url, const std::string& type, std::function<void()> then);
+    void on_fetched(const std::string& url, const std::string& type, ModuleContent content);
+    void walk_graph(const std::string& url, const std::string& type, std::function<void()> done);
+    void complete_import(const std::string& url, const std::string& type, Promise* result);
+    void settle_import(Module* module, Promise* result);
+    void unpin(Promise* result);
+    Value make_error(const char* kind, const std::string& message, const std::string& file = std::string(),
+                     uint32_t line = 0, uint32_t column = 0);
+    bool resolve_hosted(const std::string& specifier, const std::string& referrer, std::string& url);
+    bool take_hosted_ast(const std::string& url, std::unique_ptr<ASTNode>& ast);
 
 private:
     std::unique_ptr<Module> create_module(const std::string& module_id, const std::string& filename);

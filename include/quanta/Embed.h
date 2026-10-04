@@ -120,6 +120,49 @@ enum class RejectionEvent { Unhandled, Handled };
 using PromiseRejectionHandler =
     std::function<void(Realm* realm, const Value& promise, const Value& reason, RejectionEvent event)>;
 
+// What a host answers a module fetch with. `type` is what the import asked for in its `with { type }`:
+// empty for a script module, "json", "css", and so on. A script module's answer is Script; a typed
+// module's is Json (the engine parses it), Text, Bytes or Value, whose default export is the result.
+struct ModuleSource {
+    enum class Kind { Script, Json, Text, Bytes, Value, Failure };
+    Kind kind = Kind::Failure;
+    std::string text;                  // Script, Json, Text
+    std::vector<uint8_t> bytes;        // Bytes: an immutable Uint8Array over them is the default export
+    Value value;                // Value: made by the host (a CSSStyleSheet, say), exported as it is
+    std::string error;                 // Failure: the message of the TypeError the import rejects with
+    Value errorValue;           // Failure: or exactly what to reject with, when the host has one
+
+    static ModuleSource Script(std::string source) { ModuleSource s; s.kind = Kind::Script; s.text = std::move(source); return s; }
+    static ModuleSource Json(std::string source) { ModuleSource s; s.kind = Kind::Json; s.text = std::move(source); return s; }
+    static ModuleSource Text(std::string text) { ModuleSource s; s.kind = Kind::Text; s.text = std::move(text); return s; }
+    static ModuleSource Bytes(std::vector<uint8_t> bytes) { ModuleSource s; s.kind = Kind::Bytes; s.bytes = std::move(bytes); return s; }
+    static ModuleSource Default(Value value) { ModuleSource s; s.kind = Kind::Value; s.value = value; return s; }
+    static ModuleSource Failure(std::string message) { ModuleSource s; s.kind = Kind::Failure; s.error = std::move(message); return s; }
+};
+
+// How modules reach the outside world: where the HTML and ECMAScript module machinery calls the host.
+// The engine keeps the module map (a URL is loaded once per realm, a failure is remembered too) and walks
+// the graph; the host names, fetches and decorates.
+struct ModuleHooks {
+    // An absolute URL for `specifier` as written in the module at `referrer` (empty for a request that
+    // has none), or false with the message the import fails with. Import maps, bare specifiers, data: and
+    // blob: are the host's.
+    std::function<bool(Realm* realm, const std::string& specifier, const std::string& referrer,
+                       std::string& resolved, std::string& error)> resolve;
+    // The content of `url`. `done` can be called at once or later, from the thread the realm lives on, and
+    // the graph walk goes on inside it; a host that fetches over the network calls it when the bytes are
+    // there, and then runs PerformMicrotaskCheckpoint.
+    std::function<void(Realm* realm, const std::string& url, const std::string& type,
+                       std::function<void(ModuleSource)> done)> fetch;
+    // import.meta of the module at `url` is `meta`, a new object without a prototype: set `url` and
+    // `resolve` on it, whatever the host adds.
+    std::function<void(Realm* realm, const Value& meta, const std::string& url)> initImportMeta;
+    // `import()` evaluated in the module or script at `referrer`: nothing to return lets it go on through
+    // resolve and fetch; a message fails the import with a TypeError of that message (a CSP that forbids it).
+    std::function<std::optional<std::string>(Realm* realm, const std::string& specifier,
+                                             const std::string& referrer, const std::string& type)> dynamicImport;
+};
+
 // One global environment: a document's, or a frame's. It has its own intrinsics
 // (its own Array.prototype, its own %ThrowTypeError%, ...), so an array made in one
 // is not `instanceof Array` in another, as between frames.
@@ -143,6 +186,16 @@ public:
     Context& GetContext();
 
     EvaluateResult Evaluate(std::string_view source, const std::string& filename = "<embed>");
+
+    // Loads and runs `source` as the module at `url`, with the imports it makes fetched through the
+    // Isolate's module hooks. The promise it returns is fulfilled with the module's namespace once it and
+    // everything it imports have run (waiting for any top-level await), and rejected with the error that
+    // stopped it: a failed fetch, a SyntaxError, an exception, each of them placed in the module it is
+    // from (InspectError tells which, and the line). Undefined, with an exception pending, if it could
+    // not start. A URL that has been loaded in this realm is not loaded again.
+    Value EvaluateModule(std::string_view source, const std::string& url);
+    // The same for a module the hooks fetch: `import(specifier)` from the module at `referrerUrl`.
+    Value ImportModule(const std::string& specifier, const std::string& referrerUrl = "", const std::string& type = "");
 
     // Runs host code inside this realm: it is the realm that is running, and its context the
     // one engine code that wants a running context finds. What a host that calls into script
@@ -187,6 +240,9 @@ public:
     // printed to stderr, as the CLI does; with one, the host decides (window.onerror, a console). A
     // script that fails in Evaluate is not reported through this: its result says so.
     void SetUncaughtExceptionHandler(UncaughtExceptionHandler handler);
+    // How this Isolate's realms load modules. Without hooks a realm reads them from the file system, as
+    // the CLI does. Takes effect for the realms that exist and the ones made after.
+    void SetModuleHooks(ModuleHooks hooks);
     // With a handler set the engine no longer prints unhandled rejections either.
     void SetPromiseRejectionHandler(PromiseRejectionHandler handler);
 
@@ -235,6 +291,8 @@ private:
     std::vector<Realm*> realms_;
     UncaughtExceptionHandler uncaught_;
     PromiseRejectionHandler rejection_;
+    std::shared_ptr<const ModuleHooks> module_hooks_;
+    void install_module_host(Realm& realm);
 };
 
 // An Isolate with one Realm in it, for a host that has no use for more than one.

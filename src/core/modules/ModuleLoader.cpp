@@ -287,13 +287,32 @@ ModuleLoader::ModuleLoader(Engine* engine) : engine_(engine) {
 void ModuleLoader::gc_trace(Visitor& v) const {
     for (const auto& kv : modules_) kv.second->gc_trace(v);
     v.visit(last_module_exception_);
+    for (const auto& kv : fetched_) {
+        v.visit(kv.second.content.value);
+        v.visit(kv.second.content.error_value);
+        v.visit(kv.second.failure);
+        for (const auto& e : kv.second.resolve_errors) v.visit(e.second);
+    }
+    for (const Value& p : pinned_) v.visit(p);
 }
 
 Module* ModuleLoader::prepare_module(const std::string& module_id, const std::string& from_path,
                                      const std::string& module_type) {
     last_module_exception_ = Value();
-    std::string resolved_path = resolve_module_path(module_id, from_path);
-    std::string normalized_id = normalize_module_id(module_id, from_path);
+    std::string resolved_path;
+    std::string normalized_id;
+    if (host()) {
+        // The host names the module: what it answers is the URL, and the URL is the module's id.
+        if (from_path.empty()) {
+            resolved_path = module_id;
+        } else if (!resolve_hosted(module_id, from_path, resolved_path)) {
+            return nullptr;
+        }
+        normalized_id = resolved_path;
+    } else {
+        resolved_path = resolve_module_path(module_id, from_path);
+        normalized_id = normalize_module_id(module_id, from_path);
+    }
     // One file asked for as two kinds is two modules; asked for twice as the
     // same kind it is one, which is what makes a JSON import idempotent.
     if (!module_type.empty()) normalized_id += "\x01" + module_type;
@@ -749,7 +768,7 @@ static bool load_requested_modules(Module* module, const Program* program,
             request = static_cast<const ExportStatement*>(stmt.get())->get_source_module();
         }
         if (request.empty()) continue;
-        if (!ModuleLoader::is_supported_module_type(request_type)) {
+        if (!loader->host() && !ModuleLoader::is_supported_module_type(request_type)) {
             auto err = Error::create_type_error(
                 "Import attribute type '" + request_type + "' is not supported");
             module->set_thrown_exception(Value(err.release()));
@@ -1087,6 +1106,61 @@ std::unique_ptr<Module> ModuleLoader::create_module(const std::string& module_id
 // the moment it is prepared.
 bool ModuleLoader::prepare_typed_module(Module* module, const std::string& filename,
                                         const std::string& module_type) {
+    if (host()) {
+        auto it = fetched_.find(fetch_key(filename, module_type));
+        if (it == fetched_.end() || !it->second.done) {
+            last_module_exception_ = make_error("TypeError", "Failed to fetch imported module '" + filename + "'");
+            return false;
+        }
+        const ModuleContent& content = it->second.content;
+        if (content.kind == ModuleContent::Kind::Failure) {
+            last_module_exception_ = !content.error_value.is_undefined()
+                ? content.error_value
+                : make_error("TypeError", content.error.empty() ? "Failed to fetch imported module '" + filename + "'"
+                                                                : content.error);
+            return false;
+        }
+        Value exported;
+        switch (content.kind) {
+            case ModuleContent::Kind::Json:
+                try {
+                    exported = JSON::parse(content.text);
+                } catch (...) {
+                    module->set_thrown_exception(make_error("SyntaxError", "Invalid JSON module '" + filename + "'"));
+                    module->declare_export("default", std::string());
+                    module->mark_evaluated();
+                    return true;
+                }
+                break;
+            case ModuleContent::Kind::Text: exported = Value(content.text); break;
+            case ModuleContent::Kind::Bytes: {
+                auto buffer = std::make_unique<ArrayBuffer>(content.bytes.data(), content.bytes.size());
+                ArrayBuffer* raw = buffer.release();
+                raw->set_immutable(true);
+                auto view = TypedArrayFactory::create_uint8_array_from_buffer(raw);
+                if (Context* realm = engine_ ? engine_->get_global_context() : nullptr) {
+                    if (Object* ctor = realm->get_built_in_object("Uint8Array")) {
+                        Value proto = ctor->get_property("prototype");
+                        if (proto.is_object()) view->initialize_prototype(proto.as_object());
+                    }
+                    if (Object* ctor = realm->get_built_in_object("ArrayBuffer")) {
+                        Value proto = ctor->get_property("prototype");
+                        if (proto.is_object()) raw->initialize_prototype(proto.as_object());
+                    }
+                }
+                exported = Value(view.release());
+                break;
+            }
+            case ModuleContent::Kind::Default: exported = content.value; break;
+            default:
+                last_module_exception_ = make_error("TypeError", "The module '" + filename + "' is not of type '" + module_type + "'");
+                return false;
+        }
+        module->declare_export("default", std::string());
+        module->add_export("default", exported, std::string());
+        module->mark_evaluated();
+        return true;
+    }
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
         auto err = Error::create_type_error("Failed to fetch imported module '" + filename + "'");
@@ -1142,13 +1216,21 @@ bool ModuleLoader::prepare_typed_module(Module* module, const std::string& filen
 }
 
 bool ModuleLoader::prepare_module_file(Module* module, const std::string& filename) {
-    std::string source = read_file(filename);
-    if (source.empty()) {
-        auto err = Error::create_type_error("Failed to fetch dynamically imported module '" + filename + "'");
-        last_module_exception_ = Value(err.release());
-        return false;
+    std::string source;
+    std::unique_ptr<Program> hosted_ast;
+    if (host()) {
+        std::unique_ptr<ASTNode> node;
+        if (!take_hosted_ast(filename, node)) return false;
+        hosted_ast.reset(static_cast<Program*>(node.release()));
+    } else {
+        source = read_file(filename);
+        if (source.empty()) {
+            auto err = Error::create_type_error("Failed to fetch dynamically imported module '" + filename + "'");
+            last_module_exception_ = Value(err.release());
+            return false;
+        }
     }
-    
+
     try {
         // A module is not its own realm. A fresh Global context would stand up
         // a second set of intrinsics, so `Error` inside the module and `Error`
@@ -1183,23 +1265,28 @@ bool ModuleLoader::prepare_module_file(Module* module, const std::string& filena
         module_context->create_binding("__filename", Value(filename));
         module_context->create_binding("__dirname", Value(std::filesystem::path(filename).parent_path().string()));
         
-        Lexer::LexerOptions lex_opts;
-        lex_opts.source_type_module = true;
-        Lexer lexer(source, lex_opts);
-        TokenSequence token_sequence = lexer.tokenize();
-        Parser::ParseOptions parse_opts;
-        parse_opts.source_type_module = true;
-        parse_opts.strict_mode = true;
-        Parser parser{std::move(token_sequence), parse_opts};
-        auto ast = parser.parse_program();
-        if (!ast || parser.has_errors()) {
-            const auto& errs = parser.get_errors();
-            std::string msg = errs.empty() ? "Failed to parse module" : errs[0].message;
-            // Strip "SyntaxError: " prefix if present -- Error::create_syntax_error adds it
-            if (msg.substr(0, 13) == "SyntaxError: ") msg = msg.substr(13);
-            auto err = Error::create_syntax_error(msg);
-            last_module_exception_ = Value(err.release());
-            return false;
+        std::unique_ptr<Program> ast;
+        if (hosted_ast) {
+            ast = std::move(hosted_ast);
+        } else {
+            Lexer::LexerOptions lex_opts;
+            lex_opts.source_type_module = true;
+            Lexer lexer(source, lex_opts);
+            TokenSequence token_sequence = lexer.tokenize();
+            Parser::ParseOptions parse_opts;
+            parse_opts.source_type_module = true;
+            parse_opts.strict_mode = true;
+            Parser parser{std::move(token_sequence), parse_opts};
+            ast = parser.parse_program();
+            if (!ast || parser.has_errors()) {
+                const auto& errs = parser.get_errors();
+                std::string msg = errs.empty() ? "Failed to parse module" : errs[0].message;
+                // Strip "SyntaxError: " prefix if present -- Error::create_syntax_error adds it
+                if (msg.substr(0, 13) == "SyntaxError: ") msg = msg.substr(13);
+                auto err = Error::create_syntax_error(msg);
+                last_module_exception_ = Value(err.release());
+                return false;
+            }
         }
         
         module->set_context(std::move(module_context));
@@ -1345,6 +1432,326 @@ std::string ModuleLoader::read_file(const std::string& filename) {
     }
     
     return content;
+}
+
+
+// ---- Loading through the host ----------------------------------------------------
+
+ModuleHost* ModuleLoader::host() const {
+    return engine_ ? engine_->module_host() : nullptr;
+}
+
+void ModuleLoader::outlive_realm(Engine* heir) {
+    for (auto& entry : modules_) {
+        if (Context* ctx = entry.second->get_context()) ctx->rebind_engine(heir);
+    }
+}
+
+std::string ModuleLoader::fetch_key(const std::string& url, const std::string& type) {
+    return type.empty() ? url : url + "\x01" + type;
+}
+
+Value ModuleLoader::make_error(const char* kind, const std::string& message, const std::string& file,
+                               uint32_t line, uint32_t column) {
+    Context* ctx = engine_ ? engine_->get_global_context() : nullptr;
+    if (!ctx) return Value(std::string(kind) + ": " + message);
+    RealmScope realm_scope(engine_->realm());
+    if (std::string(kind) == "SyntaxError") ctx->throw_syntax_error(message);
+    else ctx->throw_type_error(message);
+    Value error = ctx->get_exception();
+    ctx->clear_exception();
+    if (line > 0) {
+        if (Error* e = as_error(error.as_object_or_null())) e->set_location(file, static_cast<int>(line), static_cast<int>(column));
+    }
+    return error;
+}
+
+// What a module requests, in source order, without evaluating anything: the static imports and the
+// `export ... from` sources.
+static void collect_requests(const Program* program, std::vector<std::pair<std::string, std::string>>& out) {
+    if (!program) return;
+    auto add = [&out](const std::string& specifier, const std::string& type) {
+        for (const auto& r : out) if (r.first == specifier && r.second == type) return;
+        out.emplace_back(specifier, type);
+    };
+    for (const auto& stmt : program->get_statements()) {
+        if (!stmt) continue;
+        if (stmt->get_type() == ASTNode::Type::IMPORT_STATEMENT) {
+            const auto* im = static_cast<const ImportStatement*>(stmt.get());
+            if (!im->get_module_source().empty()) add(im->get_module_source(), im->get_module_type());
+        } else if (stmt->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            const auto* ex = static_cast<const ExportStatement*>(stmt.get());
+            if (!ex->get_source_module().empty()) add(ex->get_source_module(), std::string());
+        }
+    }
+}
+
+void ModuleLoader::ensure_fetched(const std::string& url, const std::string& type, std::function<void()> then) {
+    const std::string key = fetch_key(url, type);
+    FetchEntry& entry = fetched_[key];
+    if (entry.done) {
+        then();
+        return;
+    }
+    entry.waiters.push_back(std::move(then));
+    if (entry.started) return;
+    entry.started = true;
+    ModuleHost* h = host();
+    Context* ctx = engine_->get_global_context();
+    h->fetch(*ctx, url, type, [this, url, type](ModuleContent content) {
+        on_fetched(url, type, std::move(content));
+    });
+}
+
+void ModuleLoader::on_fetched(const std::string& url, const std::string& type, ModuleContent content) {
+    const std::string key = fetch_key(url, type);
+    RealmScope realm_scope(engine_->realm());
+    {
+        FetchEntry& entry = fetched_[key];
+        if (entry.done) return;   // a host that answers twice is heard once
+        entry.content = std::move(content);
+        if (entry.content.kind == ModuleContent::Kind::Failure) {
+            entry.failure = !entry.content.error_value.is_undefined()
+                ? entry.content.error_value
+                : make_error("TypeError", entry.content.error.empty() ? "Failed to fetch module '" + url + "'"
+                                                                      : entry.content.error);
+        } else if (type.empty() && entry.content.kind != ModuleContent::Kind::Script) {
+            entry.failure = make_error("TypeError", "The module '" + url + "' is not JavaScript");
+        } else if (!type.empty() && entry.content.kind == ModuleContent::Kind::Script) {
+            entry.failure = make_error("TypeError", "The module '" + url + "' is not of type '" + type + "'");
+        }
+    }
+    // A script is parsed once, here, which is also how its requests are known.
+    ModuleContent::Kind kind = fetched_[key].content.kind;
+    if (fetched_[key].failure.is_undefined() && kind == ModuleContent::Kind::Script) {
+        Lexer::LexerOptions lex_opts;
+        lex_opts.source_type_module = true;
+        Lexer lexer(fetched_[key].content.text, lex_opts);
+        TokenSequence token_sequence = lexer.tokenize();
+        Parser::ParseOptions parse_opts;
+        parse_opts.source_type_module = true;
+        parse_opts.strict_mode = true;
+        Parser parser{std::move(token_sequence), parse_opts};
+        std::unique_ptr<Program> ast = parser.parse_program();
+        if (!ast || parser.has_errors()) {
+            const auto& errs = parser.get_errors();
+            std::string msg = errs.empty() ? "Failed to parse module" : errs[0].message;
+            if (msg.substr(0, 13) == "SyntaxError: ") msg = msg.substr(13);
+            uint32_t line = errs.empty() ? 0 : static_cast<uint32_t>(errs[0].position.line);
+            uint32_t column = errs.empty() ? 0 : static_cast<uint32_t>(errs[0].position.column);
+            Value error = make_error("SyntaxError", msg, url, line, column);
+            fetched_[key].failure = error;
+        } else {
+            std::vector<std::pair<std::string, std::string>> requests;
+            collect_requests(ast.get(), requests);
+            ModuleHost* h = host();
+            Context* ctx = engine_->get_global_context();
+            std::vector<HostRequest> kept;
+            std::unordered_map<std::string, std::string> resolved;
+            std::unordered_map<std::string, Value> errors;
+            for (const auto& [specifier, request_type] : requests) {
+                std::string target, message;
+                if (h->resolve(*ctx, specifier, url, target, message)) {
+                    resolved[specifier] = target;
+                } else {
+                    errors[specifier] = make_error("TypeError", message.empty()
+                        ? "Failed to resolve module specifier '" + specifier + "'" : message);
+                }
+                kept.push_back({specifier, request_type});
+            }
+            FetchEntry& entry = fetched_[key];
+            entry.ast.reset(ast.release());
+            entry.requests = std::move(kept);
+            entry.resolved = std::move(resolved);
+            entry.resolve_errors = std::move(errors);
+        }
+    }
+    std::vector<std::function<void()>> waiters;
+    {
+        FetchEntry& entry = fetched_[key];
+        entry.done = true;
+        waiters.swap(entry.waiters);
+    }
+    for (auto& w : waiters) w();
+}
+
+bool ModuleLoader::resolve_hosted(const std::string& specifier, const std::string& referrer, std::string& url) {
+    // Resolved already while the graph was walked: the same answer, and no second call to the host.
+    auto referrer_entry = fetched_.find(fetch_key(referrer, std::string()));
+    if (referrer_entry != fetched_.end()) {
+        auto ok = referrer_entry->second.resolved.find(specifier);
+        if (ok != referrer_entry->second.resolved.end()) {
+            url = ok->second;
+            return true;
+        }
+        auto bad = referrer_entry->second.resolve_errors.find(specifier);
+        if (bad != referrer_entry->second.resolve_errors.end()) {
+            last_module_exception_ = bad->second;
+            return false;
+        }
+    }
+    std::string message;
+    if (host()->resolve(*engine_->get_global_context(), specifier, referrer, url, message)) return true;
+    last_module_exception_ = make_error("TypeError", message.empty()
+        ? "Failed to resolve module specifier '" + specifier + "'" : message);
+    return false;
+}
+
+bool ModuleLoader::take_hosted_ast(const std::string& url, std::unique_ptr<ASTNode>& ast) {
+    auto it = fetched_.find(fetch_key(url, std::string()));
+    if (it == fetched_.end() || !it->second.done) {
+        last_module_exception_ = make_error("TypeError", "Failed to fetch imported module '" + url + "'");
+        return false;
+    }
+    FetchEntry& entry = it->second;
+    if (!entry.failure.is_undefined()) {
+        last_module_exception_ = entry.failure;
+        return false;
+    }
+    if (!entry.ast) {
+        // Taken by an earlier preparation of the same URL: the module map answers for it, so this is
+        // only reached by a request that raced the first.
+        last_module_exception_ = make_error("TypeError", "The module '" + url + "' was already prepared");
+        return false;
+    }
+    ast = std::move(entry.ast);
+    return true;
+}
+
+void ModuleLoader::walk_graph(const std::string& url, const std::string& type, std::function<void()> done) {
+    struct Walk {
+        int pending = 0;
+        bool fired = false;
+        std::unordered_set<std::string> seen;
+        std::function<void()> done;
+    };
+    auto walk = std::make_shared<Walk>();
+    walk->done = std::move(done);
+    auto visit = std::make_shared<std::function<void(std::string, std::string)>>();
+    *visit = [this, walk, visit](std::string u, std::string t) {
+        const std::string key = fetch_key(u, t);
+        if (!walk->seen.insert(key).second) return;
+        walk->pending++;
+        ensure_fetched(u, t, [this, walk, visit, key]() {
+            auto it = fetched_.find(key);
+            if (it != fetched_.end() && it->second.failure.is_undefined() && it->second.ast) {
+                // Copied: the visits below can fetch, and fetching grows the map.
+                std::vector<HostRequest> requests = it->second.requests;
+                std::unordered_map<std::string, std::string> resolved = it->second.resolved;
+                for (const HostRequest& r : requests) {
+                    auto target = resolved.find(r.specifier);
+                    if (target != resolved.end()) (*visit)(target->second, r.type);
+                }
+            }
+            if (--walk->pending == 0 && !walk->fired) {
+                walk->fired = true;
+                std::function<void()> finished = std::move(walk->done);
+                *visit = nullptr;
+                finished();
+            }
+        });
+    };
+    (*visit)(url, type);
+}
+
+void ModuleLoader::unpin(Promise* result) {
+    for (size_t i = 0; i < pinned_.size(); i++) {
+        if (pinned_[i].as_object_or_null() == static_cast<Object*>(result)) {
+            pinned_.erase(pinned_.begin() + static_cast<std::ptrdiff_t>(i));
+            return;
+        }
+    }
+}
+
+// What import() answers with once the module has run: its namespace, after its top-level await if it
+// has one, or the error that stopped it.
+void ModuleLoader::settle_import(Module* mod, Promise* result) {
+    if (!mod) {
+        result->reject(has_last_module_exception() ? last_module_exception_ : make_error("TypeError", "Failed to load module"));
+        unpin(result);
+        return;
+    }
+    if (mod->has_thrown_exception()) {
+        result->reject(mod->get_thrown_exception());
+        unpin(result);
+        return;
+    }
+    Promise* pending = nullptr;
+    if (mod->is_async_evaluating()) {
+        if (!AsyncUtils::is_promise(mod->completion())) {
+            auto own = ObjectFactory::create_promise(engine_->get_global_context());
+            mod->set_completion(Value(own.release()));
+        }
+        pending = static_cast<Promise*>(mod->completion().as_object());
+    }
+    if (pending && pending->get_state() == PromiseState::PENDING) {
+        ModuleLoader* self = this;
+        auto on_done = ObjectFactory::create_native_function("",
+            [self, result, mod](Context&, std::span<const Value>, Value) -> Value {
+                result->fulfill(ModuleLoader::build_module_namespace(mod));
+                self->unpin(result);
+                return Value();
+            }, 1);
+        auto on_fail = ObjectFactory::create_native_function("",
+            [self, result](Context&, std::span<const Value> a, Value) -> Value {
+                result->reject(a.empty() ? Value() : a[0]);
+                self->unpin(result);
+                return Value();
+            }, 1);
+        // The closures hold the promise as a raw pointer, which the collector cannot see: it is also
+        // pinned on the loader until it settles.
+        on_done->set_internal_slot("__import_owner__", Value(static_cast<Object*>(result)));
+        on_fail->set_internal_slot("__import_owner__", Value(static_cast<Object*>(result)));
+        pending->then(on_done.release(), on_fail.release());
+        return;
+    }
+    result->fulfill(ModuleLoader::build_module_namespace(mod));
+    unpin(result);
+}
+
+// The graph is in hand: prepare, link and evaluate it, reading what was fetched.
+void ModuleLoader::complete_import(const std::string& url, const std::string& type, Promise* result) {
+    RealmScope realm_scope(engine_->realm());
+    auto entry = fetched_.find(fetch_key(url, type));
+    if (entry != fetched_.end() && !entry->second.failure.is_undefined() && !modules_.count(fetch_key(url, type))) {
+        result->reject(entry->second.failure);
+        unpin(result);
+        return;
+    }
+    Module* mod = load_module(url, std::string(), type);
+    settle_import(mod, result);
+}
+
+void ModuleLoader::import_url(const std::string& url, const std::string& type, Promise* result) {
+    pinned_.push_back(Value(static_cast<Object*>(result)));
+    walk_graph(url, type, [this, url, type, result]() { complete_import(url, type, result); });
+}
+
+void ModuleLoader::import_source(const std::string& url, const std::string& source, Promise* result) {
+    pinned_.push_back(Value(static_cast<Object*>(result)));
+    // The content is the host's already: nothing is fetched for it. Parsing, and finding what it requests,
+    // are what a fetch's arrival would have done.
+    const std::string key = fetch_key(url, std::string());
+    if (!fetched_[key].started) {
+        FetchEntry& entry = fetched_[key];
+        entry.started = true;
+        ModuleContent content;
+        content.kind = ModuleContent::Kind::Script;
+        content.text = source;
+        on_fetched(url, std::string(), std::move(content));
+    }
+    walk_graph(url, std::string(), [this, url, result]() { complete_import(url, std::string(), result); });
+}
+
+void ModuleLoader::import_specifier(const std::string& specifier, const std::string& referrer,
+                                    const std::string& type, Promise* result) {
+    std::string url, message;
+    RealmScope realm_scope(engine_->realm());
+    if (!host()->resolve(*engine_->get_global_context(), specifier, referrer, url, message)) {
+        result->reject(make_error("TypeError", message.empty() ? "Failed to resolve module specifier '" + specifier + "'" : message));
+        return;
+    }
+    import_url(url, type, result);
 }
 
 }

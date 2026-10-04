@@ -198,6 +198,13 @@ void Engine::retire_into(Engine& heir) {
     survivor_contexts_.clear();
     survivor_environments_.clear();
 
+    // A module a live realm can still reach (through a closure, or a namespace object) is not freed with the
+    // loader that made it: the loader and its modules are left, as the heap's cells are, to the process.
+    if (module_loader_) {
+        module_loader_->outlive_realm(&heir);
+        (void)module_loader_.release();
+    }
+
     realm_->retire();
     Context* global = global_context_.release();
     global->adopt_realm(std::move(realm_));
@@ -268,6 +275,11 @@ void Engine::shutdown() {
     // is collected after this Engine is gone, so the Isolate keeps it (and the Realm
     // it adopts) until then.
     if (isolate_ && global_context_) {
+        // Its modules go the same way, for the same reason (see retire_into).
+        if (module_loader_ && !isolate_->closing()) {
+            module_loader_->outlive_realm(nullptr);
+            (void)module_loader_.release();
+        }
         realm_->retire();
         global_context_->adopt_realm(std::move(realm_));
         isolate_->retired_contexts_.push_back(std::move(global_context_));
