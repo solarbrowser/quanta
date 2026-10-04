@@ -39,6 +39,7 @@
 #include "quanta/core/runtime/Value.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -92,6 +93,16 @@ public:
     Context& GetContext();
 
     EvaluateResult Evaluate(std::string_view source, const std::string& filename = "<embed>");
+
+    // Runs host code inside this realm: it is the realm that is running, and its context the
+    // one engine code that wants a running context finds. What a host that calls into script
+    // (or makes values) from outside any native function needs, so that what it makes belongs
+    // to this realm and not to whichever was entered last.
+    void Run(const std::function<void()>& body);
+
+    // The Realm a context belongs to; null for a realm that was not made through an Isolate
+    // (one script made with $262.createRealm, say) or that has been destroyed.
+    static Realm* FromContext(Context& ctx);
 
 private:
     friend class Isolate;
@@ -226,6 +237,15 @@ void DefineGlobalFunction(Context& ctx, const char* name, NativeFn fn, int lengt
 // own prototype (ClassRef::prototype). An exception may be pending on a null
 // return.
 Object* PrototypeFromNewTarget(Context& ctx, const Value& newTarget);
+// The same, but when newTarget.prototype is not an object the answer is the default of
+// newTarget's own realm (GetPrototypeFromConstructor's fallback, which is what makes a class
+// from one realm extend a constructor of another correctly): the pointer that realm kept
+// under `fallbackKey` with SetRealmData, which a host sets to the class's prototype.
+Object* PrototypeFromNewTarget(Context& ctx, const Value& newTarget, const void* fallbackKey);
+// GetFunctionRealm: the Realm a function belongs to (through a Proxy's target or a bound
+// function's), or null if it is none of an Isolate's (see Realm::FromContext). A revoked
+// Proxy is a TypeError, pending.
+Realm* GetFunctionRealm(Context& ctx, const Value& function);
 
 // ---- Values ---------------------------------------------------------------
 
@@ -255,6 +275,88 @@ std::string ToUsvUtf8(Context& ctx, const Value& v);
 // A string value from UTF-8. Malformed input is replaced with U+FFFD rather
 // than stored, so the engine never holds invalid UTF-8.
 Value FromUtf8(Context& ctx, std::string_view utf8);
+
+// ---- Values, conversions and objects ---------------------------------------
+
+inline bool IsString(const Value& v) { return v.is_string(); }
+inline bool IsNumber(const Value& v) { return v.is_number(); }
+inline bool IsBoolean(const Value& v) { return v.is_boolean(); }
+inline bool IsSymbol(const Value& v) { return v.is_symbol(); }
+inline bool IsBigInt(const Value& v) { return v.is_bigint(); }
+inline bool IsNullish(const Value& v) { return v.is_nullish(); }
+inline Value FromNumber(double d) { return Value(d); }
+inline Value FromInt32(int32_t n) { return Value(static_cast<double>(n)); }
+inline double AsNumber(const Value& v) { return v.as_number(); }
+inline bool AsBoolean(const Value& v) { return v.as_boolean(); }
+
+// The abstract operations, with their spec semantics: each may run script, and an exception it
+// raises is pending afterwards (the return value is then meaningless).
+bool ToBoolean(const Value& v);
+double ToNumber(Context& ctx, const Value& v);
+// ToString, as a string value.
+Value ToString(Context& ctx, const Value& v);
+// ToPropertyKey: a symbol stays itself, anything else becomes a string. What GetOwnProperty,
+// Get and the rest take as a key.
+Value ToPropertyKey(Context& ctx, const Value& v);
+bool SameValue(const Value& a, const Value& b);
+// `v instanceof ctor`, including ctor[Symbol.hasInstance].
+bool InstanceOf(Context& ctx, const Value& v, const Value& ctor);
+// Array.isArray: sees through Proxies, and throws for a revoked one.
+bool IsArray(Context& ctx, const Value& v);
+// IsConstructor: a function that can be `new`ed, a Proxy of one included.
+bool IsConstructor(const Value& v);
+
+// Objects, in the realm of `ctx`.
+Value NewObject(Context& ctx);
+Value NewArray(Context& ctx, Args elements);
+Value NewString(Context& ctx, std::string_view utf8);
+Value NewString(Context& ctx, std::u16string_view utf16);
+
+// [[Construct]]: `new ctor(...args)`, with `newTarget` for Reflect.construct's third argument
+// (ctor itself when undefined). A Proxy's construct trap fires. Undefined with an exception
+// pending when ctor is not a constructor.
+Value Construct(Context& ctx, const Value& ctor, Args args = {}, const Value& newTarget = Value());
+
+// A native function made from a closure. Where NativeFn is a bare pointer, this carries state:
+//     NewFunction(ctx, "resolve", 1, [handle](Context& c, Value, Args a, Value) { ... });
+// The closure is destroyed with the function, once the collector sweeps it. A cell it captures
+// is not seen by the collector: hold it in a Persistent captured by value (which then lives as
+// long as the function does), and do not capture the function itself in such a way, or the two
+// keep each other alive. `newTarget` is undefined unless the function is called with `new`
+// (it is not a constructor: that is a TypeError before the closure runs).
+using NativeClosure = std::function<Value(Context& ctx, Value thisValue, Args args, Value newTarget)>;
+Value NewFunction(Context& ctx, std::string_view name, int length, NativeClosure closure);
+
+// A property descriptor, in the form of Object.defineProperty's argument: a field is present
+// when its has_ flag says so. The Values are not seen by the collector from here: keep a
+// Descriptor on the native stack, not in a member.
+struct Descriptor {
+    Value value, get, set;
+    bool has_value = false, has_get = false, has_set = false;
+    bool has_writable = false, writable = false;
+    bool has_enumerable = false, enumerable = false;
+    bool has_configurable = false, configurable = false;
+};
+
+// The object internal methods, each as the spec's, so that a Proxy's traps fire and a legacy
+// platform object answers for itself. `key` is a string or symbol Value (see ToPropertyKey);
+// the string_view forms are for a name known in advance. `object` must be an object.
+Value GetIndex(Context& ctx, const Value& object, uint32_t index);
+bool HasProperty(Context& ctx, const Value& object, const Value& key);
+bool HasProperty(Context& ctx, const Value& object, std::string_view name);
+bool DeleteProperty(Context& ctx, const Value& object, const Value& key);
+bool DeleteProperty(Context& ctx, const Value& object, std::string_view name);
+// [[GetOwnProperty]]: the descriptor, or nothing when there is no such own property.
+std::optional<Descriptor> GetOwnProperty(Context& ctx, const Value& object, const Value& key);
+std::optional<Descriptor> GetOwnProperty(Context& ctx, const Value& object, std::string_view name);
+// [[DefineOwnProperty]]: false when it was refused (no exception is raised for that).
+bool DefineProperty(Context& ctx, const Value& object, const Value& key, const Descriptor& descriptor);
+bool DefineProperty(Context& ctx, const Value& object, std::string_view name, const Descriptor& descriptor);
+// null (Embed::Null()) for no prototype.
+Value GetPrototypeOf(Context& ctx, const Value& object);
+bool SetPrototypeOf(Context& ctx, const Value& object, const Value& prototype);
+bool IsExtensible(Context& ctx, const Value& object);
+bool PreventExtensions(Context& ctx, const Value& object);
 
 // ---- Keeping values alive ---------------------------------------------------
 
@@ -311,6 +413,28 @@ private:
 };
 
 // ---- Byte buffers ---------------------------------------------------------
+
+// An ArrayBuffer over memory the host owns, without a copy. `release(data, user)` is called when
+// the buffer is gone (swept, or detached and unreferenced), from the thread that owns the Isolate
+// and while the heap is being swept: it must free the memory and do nothing else with the engine.
+// The size is reported to the collector as memory held outside its heap.
+Value NewArrayBuffer(Context& ctx, void* data, size_t size, void (*release)(void* data, void* user), void* user);
+// A zero-filled one of `size` bytes.
+Value NewArrayBuffer(Context& ctx, size_t size);
+// A SharedArrayBuffer, which any number of Isolates on different threads may hold the same store of.
+Value NewSharedArrayBuffer(Context& ctx, size_t size);
+// A Uint8Array viewing `buffer` from `offset`, `length` elements long (a view the buffer's
+// realm does not matter to: it is made in the realm of `ctx`).
+Value NewUint8Array(Context& ctx, const Value& buffer, size_t offset, size_t length);
+bool IsDetached(const Value& bufferOrView);
+bool IsSharedArrayBuffer(const Value& v);
+// DetachArrayBuffer: true on success; a SharedArrayBuffer cannot be, and the views it had see
+// a length of zero.
+bool DetachArrayBuffer(Context& ctx, const Value& buffer);
+// ArrayBuffer.prototype.transfer(): a new buffer holding the bytes, the old one detached.
+Value TransferArrayBuffer(Context& ctx, const Value& buffer);
+// BytesOf, writable. The same lifetime rule: good until script next runs.
+std::optional<std::span<uint8_t>> MutableBytesOf(const Value& value);
 
 // A new Uint8Array of the realm of `ctx`, over a fresh ArrayBuffer holding a copy of
 // `bytes`. An exception may be pending on a undefined return.
@@ -412,6 +536,16 @@ void ReportExternalAllocation(size_t bytes);
 // ---- Errors ---------------------------------------------------------------
 
 void ThrowTypeError(Context& ctx, const std::string& message);
+void ThrowRangeError(Context& ctx, const std::string& message);
+void ThrowSyntaxError(Context& ctx, const std::string& message);
+void ThrowReferenceError(Context& ctx, const std::string& message);
+// An error object of the realm of `ctx`: `kind` is the name of the global error class
+// ("Error", "TypeError", "RangeError", ...), so a host that has defined its own (DOMException)
+// can make one the same way. Null-valued with an exception pending if there is no such class.
+Value NewError(Context& ctx, std::string_view kind, std::string_view message);
+// Throws that class, or any value at all.
+void ThrowError(Context& ctx, std::string_view kind, std::string_view message);
+void Throw(Context& ctx, const Value& exception);
 
 }
 

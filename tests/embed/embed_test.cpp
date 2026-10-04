@@ -1253,6 +1253,307 @@ static void test_proxy_get_and_construct_reads() {
                      ".every(o => Object.getPrototypeOf(o) === NT.prototype); })()").as_boolean());
 }
 
+// ---- The foundation of the embedding API ----------------------------------------
+
+static int g_closures_alive = 0;
+struct ClosureToken {
+    ClosureToken() { g_closures_alive++; }
+    ~ClosureToken() { g_closures_alive--; }
+};
+
+static Value make_counting_function(Context& ctx, std::shared_ptr<int> calls) {
+    auto token = std::make_shared<ClosureToken>();
+    return NewFunction(ctx, "counter", 1, [calls, token](Context& c, Value thisValue, Args args, Value newTarget) -> Value {
+        ++*calls;
+        if (!IsUndefined(newTarget)) return Undefined();
+        return Value(ToNumber(c, args.empty() ? Undefined() : args[0]) + 1);
+    });
+}
+
+// Kept out of line so that the Values it makes die with its frame, and the collections after it
+// have only what the realm itself holds to go by.
+[[gnu::noinline]] static void use_counting_closure(Embed::Isolate& isolate, Embed::Realm& r) {
+    Context& ctx = r.GetContext();
+    std::shared_ptr<int> calls = std::make_shared<int>(0);
+    Persistent counter;
+    {
+        Value fn = make_counting_function(ctx, calls);
+        counter = Persistent(ctx, fn);
+    }
+    CHECK(g_closures_alive == 1);
+    Value arg = Value(41.0);
+    CHECK(Call(ctx, counter.Get(), Undefined(), Args(&arg, 1)).as_number() == 42 && *calls == 1);
+    set_global(r, "counter", counter.Get());
+    CHECK(eval_in(r, "counter(1) + counter(2)").as_number() == 5 && *calls == 3);
+    CHECK(eval_in(r, "(() => { try { new counter(); } catch (e) { return e instanceof TypeError; } })()").as_boolean());
+    CHECK(eval_in(r, "counter.name + counter.length").to_string() == "counter1");
+    for (int i = 0; i < 3; i++) { isolate.CollectGarbage(); CHECK(g_closures_alive == 1); }
+    counter.Reset();
+    r.Evaluate("counter = undefined;");
+}
+
+static void test_objects_and_conversions() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    Context& ctx = r.GetContext();
+    auto js_bool = [&](const char* e) { return eval_in(r, e).as_boolean(); };
+
+    // Conversions.
+    CHECK(ToBoolean(Value(0.0)) == false && ToBoolean(FromUtf8(ctx, "x")) == true);
+    r.Evaluate("globalThis.num = { valueOf() { return 41; } }; globalThis.thrower = { valueOf() { throw new RangeError('no'); } };"
+               "globalThis.sym = Symbol('k');");
+    CHECK(ToNumber(ctx, global_of(r, "num")) == 41);
+    CHECK(std::isnan(ToNumber(ctx, global_of(r, "thrower"))) && HasException(ctx));
+    ctx.clear_exception();
+    CHECK(ToString(ctx, Value(12.5)).to_string() == "12.5");
+    CHECK(IsSymbol(ToPropertyKey(ctx, global_of(r, "sym"))));
+    CHECK(ToPropertyKey(ctx, Value(7.0)).to_string() == "7");
+    CHECK(SameValue(Value(std::nan("")), Value(std::nan(""))) && !SameValue(Value(0.0), Value(-0.0)));
+    CHECK(IsNumber(Value(1.0)) && IsString(FromUtf8(ctx, "s")) && IsBoolean(Value(true)) && IsNullish(Null()) && IsNullish(Undefined()));
+
+    // Making values.
+    Value object = NewObject(ctx);
+    CHECK(IsObject(object) && eval_in(r, "Object.getPrototypeOf({}) === Object.prototype").as_boolean());
+    Value items[3] = {Value(1.0), FromUtf8(ctx, "two"), Null()};
+    Value array = NewArray(ctx, Args(items, 3));
+    set_global(r, "made", array);
+    CHECK(js_bool("Array.isArray(made) && made.length === 3 && made[1] === 'two' && made[2] === null"));
+    set_global(r, "text", NewString(ctx, std::u16string_view(u"h\xe9llo \xD83D\xDE00")));
+    CHECK(eval_in(r, "text.length").as_number() == 8);
+    CHECK(NewString(ctx, "caf\xC3\xA9").to_string() == "caf\xC3\xA9");
+
+    // IsArray, IsConstructor, InstanceOf.
+    r.Evaluate("globalThis.arr = []; globalThis.pa = new Proxy([], {}); globalThis.rev = Proxy.revocable({}, {}); rev.revoke();"
+               "globalThis.Klass = class Klass {}; globalThis.arrow = () => 1; globalThis.pk = new Proxy(Klass, {});"
+               "globalThis.Even = { [Symbol.hasInstance](v) { return v % 2 === 0; } };");
+    CHECK(IsArray(ctx, global_of(r, "arr")) && IsArray(ctx, global_of(r, "pa")) && !IsArray(ctx, global_of(r, "Klass")));
+    CHECK(!HasException(ctx));
+    CHECK(IsConstructor(global_of(r, "Klass")) && IsConstructor(global_of(r, "pk")) && !IsConstructor(global_of(r, "arrow")) &&
+          !IsConstructor(Value(1.0)));
+    CHECK(InstanceOf(ctx, object, global_of(r, "Object")) && !InstanceOf(ctx, Value(3.0), global_of(r, "Even")) &&
+          InstanceOf(ctx, Value(4.0), global_of(r, "Even")));
+    CHECK(!InstanceOf(ctx, object, Value(1.0)) && HasException(ctx));
+    ctx.clear_exception();
+
+    // Construct, with newTarget and through a Proxy's trap.
+    Value instance = Construct(ctx, global_of(r, "Klass"));
+    set_global(r, "instance", instance);
+    CHECK(js_bool("instance instanceof Klass"));
+    r.Evaluate("globalThis.Other = function Other() {}; Other.prototype = { marker: 1 };");
+    Value made_with_target = Construct(ctx, global_of(r, "Klass"), {}, global_of(r, "Other"));
+    set_global(r, "viaTarget", made_with_target);
+    CHECK(js_bool("Object.getPrototypeOf(viaTarget) === Other.prototype"));
+    r.Evaluate("globalThis.log = []; globalThis.trapped = new Proxy(Klass, { construct(t, args, nt) { log.push(args.length); return Reflect.construct(t, args, nt); } });");
+    Value two[2] = {Value(1.0), Value(2.0)};
+    Construct(ctx, global_of(r, "trapped"), Args(two, 2));
+    CHECK(eval_in(r, "log.join()").to_string() == "2");
+    Construct(ctx, global_of(r, "arrow"));
+    CHECK(HasException(ctx));
+    ctx.clear_exception();
+
+    // The internal methods, with a Proxy's traps in the order the spec gives them.
+    r.Evaluate("globalThis.trace = []; globalThis.target = { a: 1 }; Object.defineProperty(target, 'fixed', { value: 2, configurable: false });"
+               "globalThis.prox = new Proxy(target, {"
+               "  has(t, k) { trace.push('has:' + String(k)); return Reflect.has(t, k); },"
+               "  deleteProperty(t, k) { trace.push('delete:' + String(k)); return Reflect.deleteProperty(t, k); },"
+               "  getOwnPropertyDescriptor(t, k) { trace.push('gopd:' + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); },"
+               "  defineProperty(t, k, d) { trace.push('define:' + String(k)); return Reflect.defineProperty(t, k, d); },"
+               "  getPrototypeOf(t) { trace.push('getProto'); return Reflect.getPrototypeOf(t); },"
+               "  setPrototypeOf(t, p) { trace.push('setProto'); return Reflect.setPrototypeOf(t, p); },"
+               "  isExtensible(t) { trace.push('isExt'); return Reflect.isExtensible(t); },"
+               "  preventExtensions(t) { trace.push('prevent'); return Reflect.preventExtensions(t); } });");
+    Value prox = global_of(r, "prox");
+    CHECK(HasProperty(ctx, prox, "a") && !HasProperty(ctx, prox, FromUtf8(ctx, "zz")));
+    std::optional<Descriptor> d = GetOwnProperty(ctx, prox, "fixed");
+    CHECK(d && d->has_value && d->value.as_number() == 2 && d->has_configurable && !d->configurable && d->has_writable && !d->writable);
+    CHECK(!GetOwnProperty(ctx, prox, "nothing").has_value());
+    Descriptor define;
+    define.has_value = true; define.value = Value(9.0);
+    define.has_writable = define.has_enumerable = define.has_configurable = true;
+    define.writable = define.enumerable = define.configurable = true;
+    CHECK(DefineProperty(ctx, prox, "b", define));
+    CHECK(!DefineProperty(ctx, prox, "fixed", define));      // refused, no exception
+    CHECK(!HasException(ctx));
+    CHECK(DeleteProperty(ctx, prox, "b") && !DeleteProperty(ctx, prox, "fixed"));
+    CHECK(GetPrototypeOf(ctx, prox).as_object() == global_of(r, "Object").as_object()->get_property("prototype").as_object());
+    CHECK(SetPrototypeOf(ctx, prox, Null()) && IsNullish(GetPrototypeOf(ctx, prox)));
+    CHECK(IsExtensible(ctx, prox) && PreventExtensions(ctx, prox) && !IsExtensible(ctx, prox));
+    CHECK(eval_in(r, "trace.join()").to_string() ==
+          "has:a,has:zz,gopd:fixed,gopd:nothing,define:b,define:fixed,delete:b,delete:fixed,getProto,setProto,getProto,isExt,prevent,isExt");
+    Value elements = NewArray(ctx, Args(items, 3));
+    CHECK(GetIndex(ctx, elements, 1).to_string() == "two");
+
+    // A closure: carries its state, is not a constructor, and is destroyed with the function.
+    use_counting_closure(*isolate, r);
+    scrub_stack();
+    isolate->CollectGarbage();
+    isolate->CollectGarbage();
+    CHECK(g_closures_alive == 0);
+
+    // Errors of the realm, and a host class of the same shape.
+    r.Evaluate("globalThis.DOMException = class DOMException extends Error { constructor(m, n) { super(m); this.name = n; } };");
+    Value range = NewError(ctx, "RangeError", "too far");
+    set_global(r, "range", range);
+    CHECK(js_bool("range instanceof RangeError && range.message === 'too far'"));
+    ThrowError(ctx, "SyntaxError", "bad");
+    CHECK(HasException(ctx) && ctx.get_exception().is_object());
+    ctx.clear_exception();
+    ThrowRangeError(ctx, "r");
+    CHECK(HasException(ctx));
+    ctx.clear_exception();
+    ThrowSyntaxError(ctx, "s");
+    ThrowReferenceError(ctx, "x");
+    ctx.clear_exception();
+    ThrowError(ctx, "DOMException", "gone");
+    set_global(r, "thrown", ctx.get_exception());
+    ctx.clear_exception();
+    CHECK(js_bool("thrown instanceof DOMException && thrown instanceof Error && thrown.message === 'gone'"));
+    NewError(ctx, "NotAClass", "x");
+    CHECK(HasException(ctx));
+    ctx.clear_exception();
+    Throw(ctx, FromUtf8(ctx, "just a string"));
+    CHECK(HasException(ctx) && ctx.get_exception().to_string() == "just a string");
+    ctx.clear_exception();
+}
+
+static int g_released = 0;
+static void release_buffer(void* data, void* user) {
+    g_released++;
+    std::free(data);
+    (void)user;
+}
+
+static Value make_external_buffer(Context& ctx, size_t size) {
+    uint8_t* memory = static_cast<uint8_t*>(std::malloc(size));
+    for (size_t i = 0; i < size; i++) memory[i] = static_cast<uint8_t>(i);
+    return NewArrayBuffer(ctx, memory, size, release_buffer, nullptr);
+}
+
+[[gnu::noinline]] static void make_global_external(Embed::Realm& realm, const char* name, size_t size) {
+    set_global(realm, name, make_external_buffer(realm.GetContext(), size));
+}
+
+[[gnu::noinline]] static void use_buffers(Embed::Realm& r) {
+    Context& ctx = r.GetContext();
+    {
+        Value buffer = make_external_buffer(ctx, 16);
+        set_global(r, "ext", buffer);
+        CHECK(eval_in(r, "ext instanceof ArrayBuffer && ext.byteLength === 16 && new Uint8Array(ext)[5] === 5").as_boolean());
+        // The same bytes: script writes show through the span and the host's show in script.
+        r.Evaluate("new Uint8Array(ext)[0] = 99;");
+        auto bytes = MutableBytesOf(buffer);
+        CHECK(bytes && bytes->size() == 16 && (*bytes)[0] == 99);
+        (*bytes)[1] = 77;
+        CHECK(eval_in(r, "new Uint8Array(ext)[1]").as_number() == 77);
+    }
+    Value zeroed = NewArrayBuffer(ctx, 8);
+    set_global(r, "zeroed", zeroed);
+    CHECK(eval_in(r, "zeroed.byteLength === 8 && new Uint8Array(zeroed).every(b => b === 0)").as_boolean());
+    Value window = NewUint8Array(ctx, global_of(r, "ext"), 4, 3);
+    set_global(r, "win", window);
+    CHECK(eval_in(r, "win.length === 3 && win.byteOffset === 4 && win[0] === 4 && win.buffer === ext").as_boolean());
+
+    // Shared, detach, transfer.
+    Value shared = NewSharedArrayBuffer(ctx, 4);
+    CHECK(IsSharedArrayBuffer(shared) && !IsSharedArrayBuffer(zeroed) && !HasException(ctx));
+    CHECK(!DetachArrayBuffer(ctx, shared) && HasException(ctx));
+    ctx.clear_exception();
+    CHECK(!IsDetached(zeroed));
+    Value moved = TransferArrayBuffer(ctx, zeroed);
+    CHECK(IsDetached(zeroed) && !IsDetached(moved) && BytesOf(moved) && BytesOf(moved)->size() == 8 && !BytesOf(zeroed));
+    set_global(r, "tail", window);
+    CHECK(DetachArrayBuffer(ctx, global_of(r, "ext")) && IsDetached(global_of(r, "ext")) && IsDetached(window));
+    CHECK(eval_in(r, "win.length === 0").as_boolean());
+
+}
+
+static void test_buffers_zero_copy() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    Context& ctx = r.GetContext();
+
+    use_buffers(r);
+
+    // The host's memory is given back once nothing holds the buffer.
+    r.Evaluate("ext = win = tail = undefined;");
+    scrub_stack();
+    for (int i = 0; i < 3; i++) isolate->CollectGarbage();
+    CHECK(g_released == 1);
+    make_global_external(r, "kept", 4);
+    isolate->CollectGarbage();
+    CHECK(g_released == 1);
+    r.Evaluate("kept = undefined;");
+    scrub_stack();
+    for (int i = 0; i < 3; i++) isolate->CollectGarbage();
+    CHECK(g_released == 2);
+}
+
+static int g_default_marker;
+static Value ConstructMarked(Context& ctx, Value, Args, Value newTarget) {
+    if (IsUndefined(newTarget)) {
+        ThrowTypeError(ctx, "new");
+        return Undefined();
+    }
+    Object* proto = PrototypeFromNewTarget(ctx, newTarget, &g_default_marker);
+    if (HasException(ctx)) return Undefined();
+    Elem* e = Heap::Allocate<Elem>();
+    e->initialize_prototype(proto);
+    return FromObject(e);
+}
+
+static void test_realm_helpers() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    for (Embed::Realm* realm : {a.get(), b.get()}) {
+        Context& ctx = realm->GetContext();
+        ClassRef k = DefineClass(ctx, "Marked", ConstructMarked, 0);
+        SetRealmData(ctx, &g_default_marker, k.prototype);
+        DefineGlobal(ctx, "Marked", k.constructor);
+    }
+
+    // Which realm a context and a function belong to.
+    CHECK(Embed::Realm::FromContext(a->GetContext()) == a.get() && Embed::Realm::FromContext(b->GetContext()) == b.get());
+    b->Evaluate("globalThis.bFn = function () {}; globalThis.bArrow = () => 1; globalThis.bBound = bFn.bind(null);"
+                "globalThis.bProxy = new Proxy(bFn, {}); globalThis.bRevoked = Proxy.revocable(function () {}, {});");
+    set_global(*a, "bFn", global_of(*b, "bFn"));
+    set_global(*a, "bArrow", global_of(*b, "bArrow"));
+    set_global(*a, "bBound", global_of(*b, "bBound"));
+    set_global(*a, "bProxy", global_of(*b, "bProxy"));
+    a->Evaluate("globalThis.aFn = function () {};");
+    Context& ca = a->GetContext();
+    CHECK(GetFunctionRealm(ca, global_of(*a, "aFn")) == a.get());
+    CHECK(GetFunctionRealm(ca, global_of(*a, "bFn")) == b.get());
+    CHECK(GetFunctionRealm(ca, global_of(*a, "bArrow")) == b.get());
+    CHECK(GetFunctionRealm(ca, global_of(*a, "bBound")) == b.get());
+    CHECK(GetFunctionRealm(ca, global_of(*a, "bProxy")) == b.get());
+    CHECK(GetFunctionRealm(ca, global_of(*a, "Marked")) == a.get());
+
+    // Cross-realm subclassing: newTarget without a prototype object gets the default of ITS realm.
+    a->Evaluate("globalThis.NT = function () {}; NT.prototype = null;");
+    b->Evaluate("globalThis.NT = function () {}; NT.prototype = null;");
+    set_global(*a, "bNT", global_of(*b, "NT"));
+    set_global(*a, "BMarked", global_of(*b, "Marked"));
+    CHECK(eval_in(*a, "(() => { const o = Reflect.construct(Marked, [], bNT); return Object.getPrototypeOf(o) === BMarked.prototype; })()").as_boolean());
+    CHECK(eval_in(*a, "(() => { const o = Reflect.construct(Marked, [], NT); return Object.getPrototypeOf(o) === Marked.prototype; })()").as_boolean());
+    CHECK(eval_in(*a, "(() => { const o = Reflect.construct(Marked, [], bProxy); return Object.getPrototypeOf(o) !== Marked.prototype; })()").as_boolean());
+
+    // Run: host code inside a realm. What it makes belongs to that realm.
+    Value made_in_b;
+    b->Run([&] {
+        Context& cb = b->GetContext();
+        made_in_b = NewArray(cb, {});
+        set_global(*b, "viaRun", made_in_b);
+        Value fn = global_of(*b, "bFn");
+        CHECK(Embed::Realm::FromContext(cb) == b.get());
+    });
+    set_global(*a, "viaRun", made_in_b);
+    CHECK(eval_in(*a, "Array.isArray(viaRun) && !(viaRun instanceof Array)").as_boolean());
+    CHECK(eval_in(*b, "viaRun instanceof Array").as_boolean());
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -1290,6 +1591,9 @@ int main() {
     test_arrow_arguments();
     test_accessor_redefined_in_setter();
     test_proxy_get_and_construct_reads();
+    test_objects_and_conversions();
+    test_buffers_zero_copy();
+    test_realm_helpers();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

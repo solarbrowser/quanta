@@ -74,6 +74,7 @@ private:
     // metadata must stay valid until process exit. The collector's shutdown
     // protocol will make heaps destructible.
     Isolate* isolate_;
+    void* host_realm_ = nullptr;
     Heap* heap_;
     // This engine's intrinsics; see Realm.
     std::unique_ptr<Realm> realm_;
@@ -279,6 +280,9 @@ public:
     size_t get_heap_size() const;
     void force_gc();
     Heap* get_heap() const { return heap_; }
+    // What the embedder keeps to find its own object for this realm (Embed::Realm).
+    void* host_realm() const { return host_realm_; }
+    void set_host_realm(void* host_realm) { host_realm_ = host_realm; }
     Isolate* isolate() const { return isolate_; }
     Realm* realm() const { return realm_.get(); }
     

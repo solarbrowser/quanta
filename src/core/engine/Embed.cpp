@@ -155,6 +155,7 @@ Realm::Realm(Isolate& isolate, std::unique_ptr<Engine> engine)
 
 Realm::~Realm() {
     if (!engine_) return;
+    engine_->set_host_realm(nullptr);
     if (isolate_) {
         std::erase(isolate_->realms_, this);
     }
@@ -167,6 +168,19 @@ Realm::~Realm() {
 
 Context& Realm::GetContext() {
     return *engine_->get_global_context();
+}
+
+void Realm::Run(const std::function<void()>& body) {
+    HeapScope heap_scope(engine_->get_heap());
+    RealmScope realm_scope(engine_->realm());
+    RunningContext running(GetContext());
+    body();
+}
+
+Realm* Realm::FromContext(Context& ctx) {
+    Quanta::Realm* realm = ctx.realm();
+    Engine* engine = realm ? realm->engine() : nullptr;
+    return engine ? static_cast<Realm*>(engine->host_realm()) : nullptr;
 }
 
 EvaluateResult Realm::Evaluate(std::string_view source, const std::string& filename) {
@@ -192,6 +206,7 @@ Isolate::~Isolate() {
     // empty and have nothing to free.
     for (Realm* realm : std::vector<Realm*>(realms_)) {
         if (Collector::major_in_progress()) Collector::collect();
+        realm->engine_->set_host_realm(nullptr);
         realm->engine_.reset();
         realm->isolate_ = nullptr;
     }
@@ -206,6 +221,7 @@ std::unique_ptr<Realm> Isolate::CreateRealm() {
     auto engine = std::make_unique<Engine>(*isolate_, config);
     if (!engine->initialize()) return nullptr;
     std::unique_ptr<Realm> realm(new Realm(*this, std::move(engine)));
+    realm->engine_->set_host_realm(realm.get());
     realms_.push_back(realm.get());
     return realm;
 }
@@ -366,6 +382,51 @@ Object* PrototypeFromNewTarget(Context& ctx, const Value& newTarget) {
     return proto.as_object_or_null();
 }
 
+// GetFunctionRealm (7.3.24): through a Proxy's target and a bound function's, to the realm the
+// function was made in.
+static Quanta::Realm* function_realm(Context& ctx, Object* fn) {
+    for (int depth = 0; fn && depth < 1000; depth++) {
+        if (fn->get_type() == Object::ObjectType::Proxy) {
+            Proxy* proxy = static_cast<Proxy*>(fn);
+            if (proxy->is_revoked()) {
+                ctx.throw_type_error("Cannot perform 'GetFunctionRealm' on a proxy that has been revoked");
+                return nullptr;
+            }
+            fn = proxy->get_proxy_target();
+            continue;
+        }
+        if (fn->get_type() != Object::ObjectType::Function) return nullptr;
+        if (fn->has_internal_slot("__bound_target__")) {
+            Value target = fn->get_internal_slot("__bound_target__");
+            fn = target.as_object_or_null();
+            continue;
+        }
+        Context* home = static_cast<Function*>(fn)->get_closure_context();
+        return home ? home->realm() : nullptr;
+    }
+    return nullptr;
+}
+
+Object* PrototypeFromNewTarget(Context& ctx, const Value& newTarget, const void* fallbackKey) {
+    Object* target = newTarget.as_object_or_null();
+    if (!target) return nullptr;
+    Value proto = target->get_property("prototype");
+    if (ctx.has_exception()) return nullptr;
+    if (Object* p = proto.as_object_or_null()) return p;
+    Quanta::Realm* realm = function_realm(ctx, target);
+    if (ctx.has_exception()) return nullptr;
+    if (!realm) realm = ctx.realm();
+    if (!realm) return nullptr;
+    auto it = realm->embedder_data.find(fallbackKey);
+    return it != realm->embedder_data.end() ? static_cast<Object*>(it->second) : nullptr;
+}
+
+Realm* GetFunctionRealm(Context& ctx, const Value& function) {
+    Quanta::Realm* realm = function_realm(ctx, function.as_object_or_null());
+    Engine* engine = realm ? realm->engine() : nullptr;
+    return engine ? static_cast<Realm*>(engine->host_realm()) : nullptr;
+}
+
 // ---- Values ---------------------------------------------------------------
 
 uint32_t ToUint32(Context& ctx, const Value& v) {
@@ -385,6 +446,249 @@ std::string ToUsvUtf8(Context& ctx, const Value& v) {
 
 Value FromUtf8(Context&, std::string_view utf8) {
     return Value(to_scalar_values(utf8, /*wtf8=*/false));
+}
+
+// ---- Values, conversions and objects ---------------------------------------
+
+bool ToBoolean(const Value& v) { return v.to_boolean(); }
+
+double ToNumber(Context& ctx, const Value& v) {
+    double d = std::nan("");
+    v.to_number_checked(ctx, d);
+    return d;
+}
+
+Value ToString(Context& ctx, const Value& v) {
+    std::string s;
+    if (!v.to_string_checked(ctx, s)) return Value();
+    return Value(std::move(s));
+}
+
+Value ToPropertyKey(Context& ctx, const Value& v) {
+    if (v.is_symbol()) return v;
+    if (v.is_string()) return v;
+    return ToString(ctx, v);
+}
+
+bool SameValue(const Value& a, const Value& b) { return a.same_value(b); }
+
+bool InstanceOf(Context& ctx, const Value& v, const Value& ctor) {
+    RealmScope realm_scope(ctx.realm());
+    Object* rhs = ctor.as_object_or_null();
+    if (!rhs) {
+        ctx.throw_type_error("Right-hand side of 'instanceof' is not an object");
+        return false;
+    }
+    Value has_instance = rhs->get_property("Symbol.hasInstance");
+    if (ctx.has_exception()) return false;
+    if (has_instance.is_function()) {
+        Value args[1] = {v};
+        Value result = has_instance.as_function()->call(ctx, std::vector<Value>(args, args + 1), ctor);
+        return !ctx.has_exception() && result.to_boolean();
+    }
+    if (!ctor.is_function()) {
+        ctx.throw_type_error("Right-hand side of 'instanceof' is not callable");
+        return false;
+    }
+    bool result = ordinary_has_instance(ctx, ctor, v);
+    return !ctx.has_exception() && result;
+}
+
+bool IsArray(Context& ctx, const Value& v) {
+    Object* o = v.as_object_or_null();
+    for (int depth = 0; o && depth < 1000; depth++) {
+        if (o->get_type() != Object::ObjectType::Proxy) return o->is_array();
+        Proxy* proxy = static_cast<Proxy*>(o);
+        if (proxy->is_revoked()) {
+            ctx.throw_type_error("Cannot perform 'IsArray' on a proxy that has been revoked");
+            return false;
+        }
+        o = proxy->get_proxy_target();
+    }
+    return false;
+}
+
+bool IsConstructor(const Value& v) {
+    Object* o = v.as_object_or_null();
+    for (int depth = 0; o && depth < 1000; depth++) {
+        if (o->get_type() == Object::ObjectType::Proxy) {
+            o = static_cast<Proxy*>(o)->get_proxy_target();
+            continue;
+        }
+        return o->get_type() == Object::ObjectType::Function && static_cast<Function*>(o)->is_constructor();
+    }
+    return false;
+}
+
+Value NewObject(Context& ctx) {
+    RealmScope realm_scope(ctx.realm());
+    return Value(ObjectFactory::create_object().release());
+}
+
+Value NewArray(Context& ctx, Args elements) {
+    RealmScope realm_scope(ctx.realm());
+    Value array(ObjectFactory::create_array(0).release());
+    for (const Value& element : elements) array.as_object()->push(element);
+    return array;
+}
+
+Value NewString(Context&, std::string_view utf8) {
+    return Value(to_scalar_values(utf8, /*wtf8=*/false));
+}
+
+Value NewString(Context& ctx, std::u16string_view utf16) {
+    return FromUtf16(ctx, utf16);
+}
+
+Value Construct(Context& ctx, const Value& ctor, Args args, const Value& newTarget) {
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    if (!IsConstructor(ctor)) {
+        ctx.throw_type_error("Value is not a constructor");
+        return Value();
+    }
+    const Value& target = newTarget.is_undefined() ? ctor : newTarget;
+    if (!IsConstructor(target)) {
+        ctx.throw_type_error("newTarget is not a constructor");
+        return Value();
+    }
+    Value argv[3] = {ctor, NewArray(ctx, args), target};
+    return Reflect::reflect_construct(ctx, std::span<const Value>(argv, 3), Value());
+}
+
+Value NewFunction(Context& ctx, std::string_view name, int length, NativeClosure closure) {
+    RealmScope realm_scope(ctx.realm());
+    auto fn = ObjectFactory::create_native_function_with_new_target(std::string(name),
+        [closure = std::move(closure)](Context& c, std::span<const Value> args, Value receiver,
+                                        bool is_construct, Value new_target) -> Value {
+            if (is_construct) {
+                c.throw_type_error("Function is not a constructor");
+                return Value();
+            }
+            return closure(c, receiver, args, Value());
+        },
+        static_cast<uint32_t>(length));
+    return Value(fn.release());
+}
+
+// The internal methods go through the Reflect functions, which dispatch on the kind of object
+// (a Proxy's trap, a legacy platform object's hooks) as the spec's [[...]] methods do.
+static bool require_object(Context& ctx, const Value& object) {
+    if (object.as_object_or_null()) return true;
+    ctx.throw_type_error("Value is not an object");
+    return false;
+}
+
+Value GetIndex(Context& ctx, const Value& object, uint32_t index) {
+    return Get(ctx, object, std::to_string(index));
+}
+
+bool HasProperty(Context& ctx, const Value& object, const Value& key) {
+    if (!require_object(ctx, object)) return false;
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    Value args[2] = {object, key};
+    Value result = Reflect::reflect_has(ctx, std::span<const Value>(args, 2), Value());
+    return !ctx.has_exception() && result.to_boolean();
+}
+
+bool HasProperty(Context& ctx, const Value& object, std::string_view name) {
+    return HasProperty(ctx, object, Value(std::string(name)));
+}
+
+bool DeleteProperty(Context& ctx, const Value& object, const Value& key) {
+    if (!require_object(ctx, object)) return false;
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    Value args[2] = {object, key};
+    Value result = Reflect::reflect_delete_property(ctx, std::span<const Value>(args, 2), Value());
+    return !ctx.has_exception() && result.to_boolean();
+}
+
+bool DeleteProperty(Context& ctx, const Value& object, std::string_view name) {
+    return DeleteProperty(ctx, object, Value(std::string(name)));
+}
+
+std::optional<Descriptor> GetOwnProperty(Context& ctx, const Value& object, const Value& key) {
+    if (!require_object(ctx, object)) return std::nullopt;
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    Value args[2] = {object, key};
+    Value result = Reflect::reflect_get_own_property_descriptor(ctx, std::span<const Value>(args, 2), Value());
+    if (ctx.has_exception()) return std::nullopt;
+    Object* d = result.as_object_or_null();
+    if (!d) return std::nullopt;
+    Descriptor out;
+    auto field = [&](const char* name, bool& has, Value& slot) {
+        if ((has = d->has_own_property(name))) slot = d->get_property(name);
+    };
+    auto flag = [&](const char* name, bool& has, bool& slot) {
+        if ((has = d->has_own_property(name))) slot = d->get_property(name).to_boolean();
+    };
+    field("value", out.has_value, out.value);
+    field("get", out.has_get, out.get);
+    field("set", out.has_set, out.set);
+    flag("writable", out.has_writable, out.writable);
+    flag("enumerable", out.has_enumerable, out.enumerable);
+    flag("configurable", out.has_configurable, out.configurable);
+    return out;
+}
+
+std::optional<Descriptor> GetOwnProperty(Context& ctx, const Value& object, std::string_view name) {
+    return GetOwnProperty(ctx, object, Value(std::string(name)));
+}
+
+bool DefineProperty(Context& ctx, const Value& object, const Value& key, const Descriptor& descriptor) {
+    if (!require_object(ctx, object)) return false;
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    Value desc = NewObject(ctx);
+    Object* d = desc.as_object();
+    if (descriptor.has_value) d->set_property("value", descriptor.value);
+    if (descriptor.has_get) d->set_property("get", descriptor.get);
+    if (descriptor.has_set) d->set_property("set", descriptor.set);
+    if (descriptor.has_writable) d->set_property("writable", Value(descriptor.writable));
+    if (descriptor.has_enumerable) d->set_property("enumerable", Value(descriptor.enumerable));
+    if (descriptor.has_configurable) d->set_property("configurable", Value(descriptor.configurable));
+    Value args[3] = {object, key, desc};
+    Value result = Reflect::reflect_define_property(ctx, std::span<const Value>(args, 3), Value());
+    return !ctx.has_exception() && result.to_boolean();
+}
+
+bool DefineProperty(Context& ctx, const Value& object, std::string_view name, const Descriptor& descriptor) {
+    return DefineProperty(ctx, object, Value(std::string(name)), descriptor);
+}
+
+Value GetPrototypeOf(Context& ctx, const Value& object) {
+    if (!require_object(ctx, object)) return Value();
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    return Reflect::reflect_get_prototype_of(ctx, std::span<const Value>(&object, 1), Value());
+}
+
+bool SetPrototypeOf(Context& ctx, const Value& object, const Value& prototype) {
+    if (!require_object(ctx, object)) return false;
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    Value args[2] = {object, prototype};
+    Value result = Reflect::reflect_set_prototype_of(ctx, std::span<const Value>(args, 2), Value());
+    return !ctx.has_exception() && result.to_boolean();
+}
+
+bool IsExtensible(Context& ctx, const Value& object) {
+    if (!require_object(ctx, object)) return false;
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    Value result = Reflect::reflect_is_extensible(ctx, std::span<const Value>(&object, 1), Value());
+    return !ctx.has_exception() && result.to_boolean();
+}
+
+bool PreventExtensions(Context& ctx, const Value& object) {
+    if (!require_object(ctx, object)) return false;
+    RealmScope realm_scope(ctx.realm());
+    RunningContext running(ctx);
+    Value result = Reflect::reflect_prevent_extensions(ctx, std::span<const Value>(&object, 1), Value());
+    return !ctx.has_exception() && result.to_boolean();
 }
 
 // ---- Keeping values alive ---------------------------------------------------
@@ -441,24 +745,24 @@ Value NewUint8Array(Context& ctx, std::span<const uint8_t> bytes) {
     return array;
 }
 
-std::optional<std::span<const uint8_t>> BytesOf(const Value& value) {
+std::optional<std::span<uint8_t>> MutableBytesOf(const Value& value) {
     Object* object = value.as_object_or_null();
     if (!object) return std::nullopt;
     if (object->is_array_buffer()) {
-        const ArrayBuffer* buffer = static_cast<const ArrayBuffer*>(object);
+        ArrayBuffer* buffer = static_cast<ArrayBuffer*>(object);
         if (buffer->is_detached()) return std::nullopt;
-        return std::span<const uint8_t>(buffer->data(), buffer->byte_length());
+        return std::span<uint8_t>(buffer->data(), buffer->byte_length());
     }
-    const ArrayBuffer* buffer = nullptr;
+    ArrayBuffer* buffer = nullptr;
     size_t offset = 0, length = 0;
     if (object->is_typed_array()) {
-        const TypedArrayBase* view = static_cast<const TypedArrayBase*>(object);
+        TypedArrayBase* view = static_cast<TypedArrayBase*>(object);
         if (view->is_out_of_bounds()) return std::nullopt;
         buffer = view->buffer();
         offset = view->byte_offset();
         length = view->byte_length();
     } else if (object->is_data_view()) {
-        const DataView* view = static_cast<const DataView*>(object);
+        DataView* view = static_cast<DataView*>(object);
         if (view->is_out_of_bounds()) return std::nullopt;
         buffer = view->buffer();
         offset = view->byte_offset();
@@ -467,7 +771,96 @@ std::optional<std::span<const uint8_t>> BytesOf(const Value& value) {
         return std::nullopt;
     }
     if (!buffer || buffer->is_detached()) return std::nullopt;
-    return std::span<const uint8_t>(buffer->data() + offset, length);
+    return std::span<uint8_t>(buffer->data() + offset, length);
+}
+
+std::optional<std::span<const uint8_t>> BytesOf(const Value& value) {
+    if (auto bytes = MutableBytesOf(value)) return std::span<const uint8_t>(bytes->data(), bytes->size());
+    return std::nullopt;
+}
+
+Value NewArrayBuffer(Context& ctx, void* data, size_t size, void (*release)(void*, void*), void* user) {
+    RealmScope realm_scope(ctx.realm());
+    if (!data && size > 0) {
+        ctx.throw_type_error("NewArrayBuffer: no data for a non-empty buffer");
+        return Value();
+    }
+    auto store = std::make_shared<ArrayBuffer::BackingStore>();
+    store->data = static_cast<uint8_t*>(data);
+    store->byte_length.store(size, std::memory_order_relaxed);
+    store->max_byte_length = size;
+    store->external_release = release;
+    store->external_user = user;
+    ArrayBuffer* buffer = new ArrayBuffer(std::move(store));
+    if (Object* proto = current_realm().array_buffer_proto) buffer->initialize_prototype(proto);
+    if (size > 0) Heap::note_offheap_bytes(size);
+    return Value(static_cast<Object*>(buffer));
+}
+
+static Value construct_builtin(Context& ctx, const char* name, std::vector<Value> args) {
+    RealmScope realm_scope(ctx.realm());
+    Object* ctor = ctx.get_built_in_object(name);
+    if (!ctor || ctor->get_type() != Object::ObjectType::Function) {
+        ctx.throw_type_error(std::string(name) + " is not available");
+        return Value();
+    }
+    return Construct(ctx, Value(static_cast<Function*>(ctor)), Args(args.data(), args.size()));
+}
+
+Value NewArrayBuffer(Context& ctx, size_t size) {
+    Value buffer = construct_builtin(ctx, "ArrayBuffer", {Value(static_cast<double>(size))});
+    if (!ctx.has_exception() && size > 0) Heap::note_offheap_bytes(size);
+    return buffer;
+}
+
+Value NewSharedArrayBuffer(Context& ctx, size_t size) {
+    return construct_builtin(ctx, "SharedArrayBuffer", {Value(static_cast<double>(size))});
+}
+
+Value NewUint8Array(Context& ctx, const Value& buffer, size_t offset, size_t length) {
+    return construct_builtin(ctx, "Uint8Array",
+        {buffer, Value(static_cast<double>(offset)), Value(static_cast<double>(length))});
+}
+
+bool IsDetached(const Value& v) {
+    Object* object = v.as_object_or_null();
+    if (!object) return false;
+    if (object->is_array_buffer()) return static_cast<ArrayBuffer*>(object)->is_detached();
+    if (object->is_typed_array()) {
+        ArrayBuffer* buffer = static_cast<TypedArrayBase*>(object)->buffer();
+        return buffer && buffer->is_detached();
+    }
+    if (object->is_data_view()) {
+        ArrayBuffer* buffer = static_cast<DataView*>(object)->buffer();
+        return buffer && buffer->is_detached();
+    }
+    return false;
+}
+
+bool IsSharedArrayBuffer(const Value& v) {
+    Object* object = v.as_object_or_null();
+    return object && object->is_array_buffer() && object->is_shared_array_buffer();
+}
+
+bool DetachArrayBuffer(Context& ctx, const Value& v) {
+    Object* object = v.as_object_or_null();
+    if (!object || !object->is_array_buffer() || object->is_shared_array_buffer()) {
+        ctx.throw_type_error("DetachArrayBuffer: not an ArrayBuffer");
+        return false;
+    }
+    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(object);
+    if (buffer->is_immutable()) {
+        ctx.throw_type_error("DetachArrayBuffer: the buffer is immutable");
+        return false;
+    }
+    buffer->detach();
+    return true;
+}
+
+Value TransferArrayBuffer(Context& ctx, const Value& buffer) {
+    Value transfer = Get(ctx, buffer, "transfer");
+    if (ctx.has_exception()) return Value();
+    return Call(ctx, transfer, buffer);
 }
 
 Value FromWtf8(Context&, std::string_view wtf8) {
@@ -696,6 +1089,34 @@ void ReportExternalAllocation(size_t bytes) {
 
 void ThrowTypeError(Context& ctx, const std::string& message) {
     ctx.throw_type_error(message);
+}
+
+void ThrowRangeError(Context& ctx, const std::string& message) { ctx.throw_range_error(message); }
+void ThrowSyntaxError(Context& ctx, const std::string& message) { ctx.throw_syntax_error(message); }
+void ThrowReferenceError(Context& ctx, const std::string& message) { ctx.throw_reference_error(message); }
+
+Value NewError(Context& ctx, std::string_view kind, std::string_view message) {
+    Object* ctor = ctx.get_built_in_object(std::string(kind));
+    if (!ctor) {
+        // A class script defined, or a host bound with DefineGlobal and script then replaced.
+        Object* global = ctx.get_global_object();
+        ctor = global ? global->get_property(std::string(kind)).as_object_or_null() : nullptr;
+    }
+    if (!ctor || ctor->get_type() != Object::ObjectType::Function) {
+        ctx.throw_type_error(std::string(kind) + " is not an error class");
+        return Value();
+    }
+    Value text{std::string(message)};
+    return Construct(ctx, Value(static_cast<Function*>(ctor)), Args(&text, 1));
+}
+
+void ThrowError(Context& ctx, std::string_view kind, std::string_view message) {
+    Value error = NewError(ctx, kind, message);
+    if (!ctx.has_exception()) Throw(ctx, error);
+}
+
+void Throw(Context& ctx, const Value& exception) {
+    ctx.throw_exception(exception, /*raw=*/true);
 }
 
 }

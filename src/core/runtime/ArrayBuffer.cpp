@@ -42,7 +42,8 @@ namespace Quanta {
 
 
 ArrayBuffer::BackingStore::~BackingStore() {
-    ArrayBuffer::deallocate_aligned(data);
+    if (external_release) external_release(data, external_user);
+    else ArrayBuffer::deallocate_aligned(data);
 }
 
 ArrayBuffer::ArrayBuffer(size_t byte_length)

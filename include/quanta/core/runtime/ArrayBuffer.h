@@ -40,6 +40,10 @@ public:
         std::atomic<size_t> byte_length{0};
         size_t max_byte_length = 0;
         bool growable = false;
+        // Memory the embedder owns: handed back through this when the last reference goes,
+        // instead of being freed here.
+        void (*external_release)(void* data, void* user) = nullptr;
+        void* external_user = nullptr;
         ~BackingStore();
     };
 
