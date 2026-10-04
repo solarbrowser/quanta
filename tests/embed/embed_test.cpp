@@ -12,6 +12,7 @@
 #include "quanta/core/gc/Collector.h"
 
 #include <chrono>
+#include <map>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -920,6 +921,248 @@ static void test_globals_buffers_nested_proxies() {
           "{\"value\":1,\"writable\":true,\"enumerable\":true,\"configurable\":true}");
 }
 
+// ---- Legacy platform objects ----------------------------------------------
+
+static int g_items_key;
+static int g_readonly_key;
+static int g_overriding_key;
+
+// Indexed and named properties, both writable, names not enumerable.
+struct Items : DOMObject {
+    std::vector<std::string> values;
+    std::map<std::string, std::string> named;
+
+    static bool IndexedGetter(Context& ctx, Items& t, uint32_t i, Value& out) {
+        if (i >= t.values.size()) return false;
+        out = FromUtf8(ctx, t.values[i]);
+        return true;
+    }
+    static void IndexedSetter(Context& ctx, Items& t, uint32_t i, const Value& v) {
+        std::string text = ToUsvUtf8(ctx, v);
+        if (i < t.values.size()) t.values[i] = text;
+        else if (i == t.values.size()) t.values.push_back(text);
+    }
+    static bool IndexedDeleter(Context&, Items& t, uint32_t i) {
+        if (i + 1 != t.values.size()) return false;
+        t.values.pop_back();
+        return true;
+    }
+    static uint32_t IndexedLength(Context&, Items& t) { return static_cast<uint32_t>(t.values.size()); }
+    static bool NamedGetter(Context& ctx, Items& t, const std::string& name, Value& out) {
+        auto it = t.named.find(name);
+        if (it == t.named.end()) return false;
+        out = FromUtf8(ctx, it->second);
+        return true;
+    }
+    static void NamedSetter(Context& ctx, Items& t, const std::string& name, const Value& v) {
+        t.named[name] = ToUsvUtf8(ctx, v);
+    }
+    static bool NamedDeleter(Context&, Items& t, const std::string& name) { return t.named.erase(name) != 0; }
+    static std::vector<std::string> NamedKeys(Context&, Items& t) {
+        std::vector<std::string> names;
+        for (auto& [name, value] : t.named) names.push_back(name);
+        return names;
+    }
+    static constexpr bool LegacyUnenumerableNamedProperties = true;
+};
+
+// Getters only: what NodeList and HTMLCollection are.
+struct ReadOnlyList : DOMObject {
+    std::vector<std::string> values{"x", "y"};
+    static bool IndexedGetter(Context& ctx, ReadOnlyList& t, uint32_t i, Value& out) {
+        if (i >= t.values.size()) return false;
+        out = FromUtf8(ctx, t.values[i]);
+        return true;
+    }
+    static uint32_t IndexedLength(Context&, ReadOnlyList& t) { return static_cast<uint32_t>(t.values.size()); }
+    static bool NamedGetter(Context& ctx, ReadOnlyList&, const std::string& name, Value& out) {
+        if (name != "id" && name != "forEach") return false;
+        out = FromUtf8(ctx, "named:" + name);
+        return true;
+    }
+    static std::vector<std::string> NamedKeys(Context&, ReadOnlyList&) { return {"id", "forEach"}; }
+};
+
+struct Overriding : DOMObject {
+    static bool NamedGetter(Context& ctx, Overriding&, const std::string& name, Value& out) {
+        if (name != "toString" && name != "plain") return false;
+        out = FromUtf8(ctx, "named:" + name);
+        return true;
+    }
+    static constexpr bool LegacyOverrideBuiltIns = true;
+};
+
+template <class T>
+static Value make_legacy(Context& ctx, const void* key) {
+    T* object = Heap::Allocate<T>();
+    if (Object* proto = static_cast<Object*>(GetRealmData(ctx, key))) object->initialize_prototype(proto);
+    return FromObject(object);
+}
+
+static Value ItemsLength(Context&, Value thisValue, Args, Value) {
+    Items* items = DOMObject::Cast<Items>(thisValue);
+    return Value(items ? static_cast<double>(items->values.size()) : 0.0);
+}
+static Value ReadOnlyLength(Context&, Value thisValue, Args, Value) {
+    ReadOnlyList* list = DOMObject::Cast<ReadOnlyList>(thisValue);
+    return Value(list ? static_cast<double>(list->values.size()) : 0.0);
+}
+
+static void define_legacy(Embed::Realm& realm) {
+    Context& ctx = realm.GetContext();
+    auto noop = [](Context&, Value, Args, Value) { return Undefined(); };
+    ClassRef items = DefineClass(ctx, "Items", noop, 0);
+    DefineAccessor(items.prototype, "length", ItemsLength, nullptr);
+    SetRealmData(ctx, &g_items_key, items.prototype);
+    DefineGlobal(ctx, "Items", items.constructor);
+    ClassRef readonly = DefineClass(ctx, "ReadOnlyList", noop, 0);
+    DefineAccessor(readonly.prototype, "length", ReadOnlyLength, nullptr);
+    SetRealmData(ctx, &g_readonly_key, readonly.prototype);
+    DefineGlobal(ctx, "ReadOnlyList", readonly.constructor);
+    ClassRef overriding = DefineClass(ctx, "Overriding", noop, 0);
+    SetRealmData(ctx, &g_overriding_key, overriding.prototype);
+    DefineGlobalFunction(ctx, "makeItems", [](Context& c, Value, Args, Value) {
+        Value v = make_legacy<Items>(c, &g_items_key);
+        Items* items = DOMObject::Cast<Items>(v);
+        items->values = {"a", "b", "c"};
+        items->named = {{"id", "x"}, {"title", "t"}};
+        return v;
+    }, 0);
+    DefineGlobalFunction(ctx, "makeReadOnly", [](Context& c, Value, Args, Value) { return make_legacy<ReadOnlyList>(c, &g_readonly_key); }, 0);
+    DefineGlobalFunction(ctx, "makeOverriding", [](Context& c, Value, Args, Value) { return make_legacy<Overriding>(c, &g_overriding_key); }, 0);
+    DefineGlobalFunction(ctx, "addNamed", [](Context& c, Value, Args args, Value) {
+        Items* items = DOMObject::Cast<Items>(args[0]);
+        if (items) items->named[ToUsvUtf8(c, args[1])] = ToUsvUtf8(c, args[2]);
+        return Undefined();
+    }, 3);
+}
+
+static void test_legacy_platform_objects() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    define_legacy(*realm);
+    Embed::Realm& r = *realm;
+    auto js_str = [&](const char* expr) { return eval_in(r, expr).to_string(); };
+    auto js_true = [&](const char* expr) { return eval_in(r, expr).as_boolean(); };
+
+    r.Evaluate("globalThis.items = makeItems(); globalThis.ro = makeReadOnly(); globalThis.ov = makeOverriding();");
+
+    // Reading.
+    CHECK(js_str("items[0] + items[1] + items['2']") == "abc");
+    CHECK(js_true("items[3] === undefined && items['01'] === undefined && items[-1] === undefined"));
+    CHECK(js_str("items.id + items.title") == "xt");
+    CHECK(js_true("items.length === 3 && items.nope === undefined"));
+    CHECK(js_true("('1' in items) && (0 in items) && !(3 in items) && ('id' in items) && !('nope' in items)"));
+    CHECK(js_true("Object.hasOwn(items, 2) && !Object.hasOwn(items, 3) && Object.hasOwn(items, 'id')"));
+
+    // Descriptors: indices enumerable, names not; writable only where there is a setter.
+    CHECK(js_str("JSON.stringify(Object.getOwnPropertyDescriptor(items, 1))") ==
+          "{\"value\":\"b\",\"writable\":true,\"enumerable\":true,\"configurable\":true}");
+    CHECK(js_str("JSON.stringify(Object.getOwnPropertyDescriptor(items, 'id'))") ==
+          "{\"value\":\"x\",\"writable\":true,\"enumerable\":false,\"configurable\":true}");
+    CHECK(js_str("JSON.stringify(Object.getOwnPropertyDescriptor(ro, 0))") ==
+          "{\"value\":\"x\",\"writable\":false,\"enumerable\":true,\"configurable\":true}");
+
+    // Keys: indices ascending, then names; enumerable ones for keys/for-in.
+    CHECK(js_str("JSON.stringify(Object.keys(items))") == "[\"0\",\"1\",\"2\"]");
+    CHECK(js_str("JSON.stringify(Object.getOwnPropertyNames(items))") == "[\"0\",\"1\",\"2\",\"id\",\"title\"]");
+    CHECK(js_str("JSON.stringify(Object.keys(ro))") == "[\"0\",\"1\",\"id\",\"forEach\"]");
+    CHECK(js_str("(() => { const seen = []; for (const k in items) seen.push(k); return seen.join(); })()") == "0,1,2,length");  // WebIDL attributes are enumerable
+    CHECK(js_str("JSON.stringify(Reflect.ownKeys(items))") == "[\"0\",\"1\",\"2\",\"id\",\"title\"]");
+
+    // Writing goes through the setters.
+    r.Evaluate("items[1] = 'B'; items[3] = 'D'; items.id = 'y'; items.fresh = 'f';");
+    CHECK(js_str("[...Array(4).keys()].map(i => items[i]).join('')") == "aBcD");
+    CHECK(js_str("items.id + items.fresh") == "yf");
+    CHECK(js_str("JSON.stringify(Object.getOwnPropertyNames(items).slice(-3))") == "[\"fresh\",\"id\",\"title\"]");
+    CHECK(js_true("Reflect.defineProperty(items, 0, { value: 'Z' }) && items[0] === 'Z'"));
+    CHECK(js_true("!Reflect.defineProperty(items, 0, { get() { return 1; } })"));
+    CHECK(js_true("Reflect.set(items, 'id', 'w') && items.id === 'w'"));
+    CHECK(js_true("delete items[3] && items[3] === undefined && items.length === 3"));
+    CHECK(js_true("!Reflect.deleteProperty(items, 0) && items[0] === 'Z'"));
+    CHECK(js_true("delete items.fresh && items.fresh === undefined && delete items.nope"));
+
+    // No setters: sloppy writes fail quietly, strict ones throw, defineProperty reports false.
+    r.Evaluate("ro[0] = 'changed'; ro[7] = 'new'; ro.id = 'changed';");
+    CHECK(js_true("ro[0] === 'x' && ro[7] === undefined && ro.id === 'named:id'"));
+    CHECK(js_true("(() => { 'use strict'; try { ro[0] = 1; } catch (e) { return e instanceof TypeError; } })()"));
+    CHECK(js_true("(() => { 'use strict'; try { ro.id = 1; } catch (e) { return e instanceof TypeError; } })()"));
+    CHECK(js_true("(() => { 'use strict'; try { delete ro[0]; } catch (e) { return e instanceof TypeError; } })()"));
+    CHECK(js_true("!Reflect.defineProperty(ro, 0, { value: 1 }) && !Reflect.defineProperty(ro, 'id', { value: 1 })"));
+    CHECK(js_true("delete ro[9] && !Reflect.deleteProperty(ro, 'id')"));
+    CHECK(js_true("(() => { try { Object.defineProperty(ro, 0, { value: 1 }); } catch (e) { return e instanceof TypeError; } })()"));
+
+    // A name a prototype already has is the prototype's, unless [LegacyOverrideBuiltIns].
+    CHECK(js_true("typeof ro.forEach === 'string'"));  // ReadOnlyList.prototype has no forEach yet: the name shows
+    r.Evaluate("ReadOnlyList.prototype.forEach = Array.prototype.forEach;");
+    CHECK(js_true("typeof ro.forEach === 'function' && !Object.hasOwn(ro, 'forEach')"));
+    CHECK(js_true("typeof ov.toString === 'string' && ov.toString === 'named:toString' && ov.plain === 'named:plain'"));
+    CHECK(js_true("Object.hasOwn(ov, 'toString') && !Object.hasOwn(ov, 'valueOf')"));
+    CHECK(js_true("typeof ov.valueOf === 'function'"));
+
+    // Names that appear later are seen, whatever an earlier miss left in a cache.
+    CHECK(js_str("(() => { const seen = []; for (let i = 0; i < 4; i++) { seen.push(String(items.late)); if (i === 1) addNamed(items, 'late', 'here'); } return seen.join(); })()") ==
+          "undefined,undefined,here,here");
+
+    // The array-like surface script gets from Array.prototype.
+    r.Evaluate("Items.prototype[Symbol.iterator] = Array.prototype[Symbol.iterator];"
+               "Items.prototype.forEach = Array.prototype.forEach; Items.prototype.map = Array.prototype.map;");
+    CHECK(js_str("[...items].join('')") == "ZBc");
+    CHECK(js_str("(() => { const out = []; items.forEach((v, i) => out.push(i + v)); return out.join(); })()") == "0Z,1B,2c");
+    CHECK(js_str("Array.from(items).join('')") == "ZBc");
+    CHECK(js_str("(() => { let n = 0; for (const v of items) n += v.length; return n; })()") == "3");
+    CHECK(js_str("items.map(v => v + '!').join('')") == "Z!B!c!");
+    CHECK(js_str("Array.prototype.slice.call(items, 1).join('')") == "Bc");
+    CHECK(!HasException(realm->GetContext()));
+
+    // Survives collection while script and host hold it.
+    for (int i = 0; i < 3; i++) {
+        isolate->CollectGarbage();
+        CHECK(js_str("items[0] + items.id") == "Zw");
+    }
+}
+
+// DOMString data keeps a lone surrogate; the USVString forms still replace it.
+static void test_lone_surrogates() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Context& ctx = realm->GetContext();
+    Embed::Realm& r = *realm;
+
+    // Into script: lone high, lone low, a real pair, and a high directly before an ASCII.
+    const char16_t units[] = {u'a', 0xD800, u'b', 0xDC00, u'c', 0xD83D, 0xDE00, 0xD801, u'd'};
+    set_global(r, "s", FromUtf16(ctx, std::u16string_view(units, 9)));
+    CHECK(eval_in(r, "s.length").as_number() == 9);
+    CHECK(eval_in(r, "[...s].map(c => c.codePointAt(0).toString(16)).join()").to_string() == "61,d800,62,dc00,63,1f600,d801,64");
+    CHECK(eval_in(r, "s.isWellFormed()").as_boolean() == false);
+
+    // And back out, unchanged.
+    std::u16string back = ToUtf16(ctx, global_of(r, "s"));
+    CHECK(back == std::u16string(units, 9));
+    std::string wtf8 = ToWtf8(ctx, global_of(r, "s"));
+    CHECK(wtf8.find("\xED\xA0\x80") != std::string::npos);                    // lone U+D800, 3 bytes
+    CHECK(wtf8.find("\xF0\x9F\x98\x80") != std::string::npos);                // the pair, 4 bytes
+    Value again = FromWtf8(ctx, wtf8);
+    set_global(r, "again", again);
+    CHECK(eval_in(r, "again === s").as_boolean());
+
+    // WTF-8 pieces that spell a pair are the pair; a script-made surrogate pair survives a round trip.
+    Value pair = FromWtf8(ctx, "\xED\xA0\xBD\xED\xB8\x80");
+    set_global(r, "pair", pair);
+    CHECK(eval_in(r, "pair === '\\u{1F600}' && pair.length === 2").as_boolean());
+    r.Evaluate("globalThis.made = 'x' + String.fromCharCode(0xDFFF) + String.fromCharCode(0xD800) + 'y';");
+    std::u16string made = ToUtf16(ctx, global_of(r, "made"));
+    CHECK(made == std::u16string({u'x', 0xDFFF, 0xD800, u'y'}));
+    CHECK(eval_in(r, "made.charCodeAt(1) === 0xDFFF && made.charCodeAt(2) === 0xD800").as_boolean() &&
+          FromUtf16(ctx, made).to_string() == global_of(r, "made").to_string());
+
+    // The scalar-value forms are unchanged.
+    CHECK(ToUsvUtf8(ctx, global_of(r, "s")).find("\xEF\xBF\xBD") != std::string::npos);
+    CHECK(FromUtf8(ctx, "a\xED\xA0\x80z").to_string() == "a\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBDz");
+    CHECK(ToUtf16(ctx, FromUtf8(ctx, "h\xC3\xA9llo \xF0\x9F\x98\x80")) == u"héllo \U0001F600");
+    CHECK(!HasException(ctx));
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -952,6 +1195,8 @@ int main() {
     test_byte_buffers();
     test_record_order();
     test_globals_buffers_nested_proxies();
+    test_legacy_platform_objects();
+    test_lone_surrogates();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

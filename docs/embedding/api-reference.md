@@ -66,7 +66,12 @@ See [native-objects.md](native-objects.md).
 | `ToUsvUtf8(ctx, v)` | Web IDL `USVString`: ToString, with every lone surrogate replaced by U+FFFD. Empty with an exception pending if ToString throws. |
 | `FromUtf8(ctx, utf8)` | A string value. Malformed UTF-8 is replaced with U+FFFD, so the engine never holds invalid UTF-8. |
 
-Strings are UTF-8 inside the engine; lone surrogates are stored as 3-byte sequences, which is why `ToUsvUtf8` exists.
+| `FromWtf8(ctx, wtf8)` | A string value from WTF-8: a lone surrogate (3-byte sequence) is kept, and a high one directly followed by a low one is the pair it was. Other malformed input becomes U+FFFD. |
+| `FromUtf16(ctx, units)` | A string value from UTF-16 code units, unpaired surrogates kept. |
+| `ToWtf8(ctx, v)` | ToString as the engine holds it, lone surrogates kept. |
+| `ToUtf16(ctx, v)` | ToString as UTF-16 code units, lone surrogates kept. |
+
+Strings are UTF-8 inside the engine; lone surrogates are stored as 3-byte sequences. A Web IDL `DOMString` may carry one and a `USVString` may not: use the first four where character data has to come back out exactly as it went in, `ToUsvUtf8` and `FromUtf8` where the spec says to replace.
 
 ## Arrays and properties
 

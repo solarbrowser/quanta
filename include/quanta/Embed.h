@@ -323,6 +323,24 @@ Value NewUint8Array(Context& ctx, std::span<const uint8_t> bytes);
 // buffer) and for as long as the value is kept alive.
 std::optional<std::span<const uint8_t>> BytesOf(const Value& value);
 
+// A DOMString is a sequence of 16-bit code units and may hold a lone surrogate; a USVString
+// may not. The engine stores strings as WTF-8 (UTF-8, with a lone surrogate as the 3-byte
+// sequence its code point would have), so these four keep a lone surrogate where the
+// functions above would turn it into U+FFFD. Use them for character data that must come back
+// out of script exactly as it went in.
+//
+// `wtf8` is accepted as the engine writes it: well-formed UTF-8, plus surrogates as 3-byte
+// sequences. A high surrogate directly followed by a low one is the pair it was; anything
+// malformed otherwise becomes U+FFFD.
+Value FromWtf8(Context& ctx, std::string_view wtf8);
+// From UTF-16 code units, unpaired ones included.
+Value FromUtf16(Context& ctx, std::u16string_view units);
+// ToString, as the engine holds it (WTF-8, lone surrogates kept). Empty with an exception
+// pending if ToString throws.
+std::string ToWtf8(Context& ctx, const Value& v);
+// ToString as UTF-16 code units, lone surrogates kept.
+std::u16string ToUtf16(Context& ctx, const Value& v);
+
 // ---- Arrays and properties ------------------------------------------------
 
 Value NewArray(Context& ctx);

@@ -2041,6 +2041,11 @@ Value Object::get_element(uint32_t index) const {
     if (get_type() == ObjectType::Proxy) {
         return static_cast<const Proxy*>(this)->get_element(index);
     }
+    // A legacy platform object answers its indices itself.
+    if (get_type() == ObjectType::Custom &&
+        static_cast<const CustomObjectBase*>(this)->get_custom_kind() == CustomObjectBase::CustomKind::Host) {
+        return static_cast<const DOMObject*>(this)->legacy_get_property(std::to_string(index));
+    }
     // TypedArrayBase::get_element(size_t) is a different signature, not a virtual
     // override of this uint32_t one -- dispatch explicitly so generic Array.prototype
     // methods invoked via .call()/.apply() on a typed array read real backing-store data.
@@ -2139,6 +2144,10 @@ void Object::copy_elements_reversed_from(const Object& src, uint32_t count) {
 
 bool Object::set_element(uint32_t index, const Value& value) {
     Collector::write_barrier_value(this, value);
+    if (get_type() == ObjectType::Custom &&
+        static_cast<const CustomObjectBase*>(this)->get_custom_kind() == CustomObjectBase::CustomKind::Host) {
+        return static_cast<DOMObject*>(this)->legacy_set_property(std::to_string(index), value, PropertyAttributes::Default);
+    }
     // Same dispatch problem as get_element: TypedArrayBase::set_element(size_t) doesn't
     // override this uint32_t signature, so generic Array.prototype methods called via
     // .call()/.apply() on a typed array must be routed there explicitly.
@@ -2261,6 +2270,10 @@ bool Object::store_dense_element(uint32_t index, const Value& value) {
 }
 
 bool Object::delete_element(uint32_t index) {
+    if (get_type() == ObjectType::Custom &&
+        static_cast<const CustomObjectBase*>(this)->get_custom_kind() == CustomObjectBase::CustomKind::Host) {
+        return static_cast<DOMObject*>(this)->legacy_delete_property(std::to_string(index));
+    }
     if (index < elements_length()) {
         (*element_ptr(index)) = Value();
         ensure_deleted_elements().insert(index);
@@ -3166,6 +3179,7 @@ bool CustomObjectBase::has_property(const std::string& key) const {
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->has_property(key);
         case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->has_property(key);
+        case CustomKind::Host: return static_cast<const DOMObject*>(this)->legacy_has_property(key);
         default: return has_property_default(key);
     }
 }
@@ -3174,6 +3188,7 @@ bool CustomObjectBase::has_own_property(const std::string& key) const {
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->has_own_property(key);
         case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->has_own_property(key);
+        case CustomKind::Host: return static_cast<const DOMObject*>(this)->legacy_has_own_property(key);
         default: return has_own_property_default(key);
     }
 }
@@ -3182,6 +3197,7 @@ Value CustomObjectBase::get_property(const std::string& key) const {
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_property(key);
         case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_property(key);
+        case CustomKind::Host: return static_cast<const DOMObject*>(this)->legacy_get_property(key);
         default: return get_property_default(key);
     }
 }
@@ -3190,6 +3206,7 @@ bool CustomObjectBase::set_property(const std::string& key, const Value& value, 
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<ModuleNamespaceObject*>(this)->set_property(key, value, attrs);
         case CustomKind::DeferredNamespace: return static_cast<DeferredNamespaceObject*>(this)->set_property(key, value, attrs);
+        case CustomKind::Host: return static_cast<DOMObject*>(this)->legacy_set_property(key, value, attrs);
         default: return set_property_default(key, value, attrs);
     }
 }
@@ -3198,6 +3215,7 @@ bool CustomObjectBase::delete_property(const std::string& key) {
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<ModuleNamespaceObject*>(this)->delete_property(key);
         case CustomKind::DeferredNamespace: return static_cast<DeferredNamespaceObject*>(this)->delete_property(key);
+        case CustomKind::Host: return static_cast<DOMObject*>(this)->legacy_delete_property(key);
         default: return delete_property_default(key);
     }
 }
@@ -3206,6 +3224,7 @@ std::vector<std::string> CustomObjectBase::get_own_property_keys() const {
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_own_property_keys();
         case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_own_property_keys();
+        case CustomKind::Host: return static_cast<const DOMObject*>(this)->legacy_get_own_property_keys();
         default: return get_own_property_keys_default();
     }
 }
@@ -3214,6 +3233,7 @@ std::vector<std::string> CustomObjectBase::get_enumerable_keys() const {
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_enumerable_keys();
         case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_enumerable_keys();
+        case CustomKind::Host: return static_cast<const DOMObject*>(this)->legacy_get_enumerable_keys();
         default: return get_enumerable_keys_default();
     }
 }
@@ -3222,6 +3242,7 @@ PropertyDescriptor CustomObjectBase::get_property_descriptor(const std::string& 
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_property_descriptor(key);
         case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_property_descriptor(key);
+        case CustomKind::Host: return static_cast<const DOMObject*>(this)->legacy_get_property_descriptor(key);
         default: return get_property_descriptor_default(key);
     }
 }
@@ -3230,6 +3251,7 @@ bool CustomObjectBase::set_property_descriptor(const std::string& key, const Pro
     switch (get_custom_kind()) {
         case CustomKind::ModuleNamespace: return static_cast<ModuleNamespaceObject*>(this)->set_property_descriptor(key, desc);
         case CustomKind::DeferredNamespace: return static_cast<DeferredNamespaceObject*>(this)->set_property_descriptor(key, desc);
+        case CustomKind::Host: return static_cast<DOMObject*>(this)->legacy_set_property_descriptor(key, desc);
         default: return set_property_descriptor_default(key, desc);
     }
 }

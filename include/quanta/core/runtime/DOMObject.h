@@ -11,13 +11,48 @@
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Value.h"
+#include <concepts>
 #include <new>
+#include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace Quanta {
 
+class Context;
 class DOMObject;
+
+// The hooks of a Web IDL legacy platform object: one that answers `list[0]` and
+// `collection["id"]` itself. A host type declares the ones it supports as static member
+// functions (found by name when the type is allocated), and the engine gives the object
+// the property semantics of WebIDL's [[GetOwnProperty]], [[Set]], [[DefineOwnProperty]],
+// [[Delete]] and [[OwnPropertyKeys]] for legacy platform objects:
+//
+//   static bool IndexedGetter(Context&, T&, uint32_t index, Value& out);   // false: no such index
+//   static void IndexedSetter(Context&, T&, uint32_t index, const Value&); // absent: read-only
+//   static bool IndexedDeleter(Context&, T&, uint32_t index);              // true: deleted
+//   static uint32_t IndexedLength(Context&, T&);   // the supported indices are 0 .. length-1
+//   static bool NamedGetter(Context&, T&, const std::string& name, Value& out);
+//   static void NamedSetter(Context&, T&, const std::string& name, const Value&);
+//   static bool NamedDeleter(Context&, T&, const std::string& name);
+//   static std::vector<std::string> NamedKeys(Context&, T&);   // the supported names
+//   static constexpr bool LegacyOverrideBuiltIns = true;                // [LegacyOverrideBuiltIns]
+//   static constexpr bool LegacyUnenumerableNamedProperties = true;     // [LegacyUnenumerableNamedProperties]
+//
+// An exception a hook raises is reported through the context's flag, as in any native.
+struct DOMLegacyHooks {
+    bool (*indexed_get)(Context&, DOMObject*, uint32_t, Value*) = nullptr;
+    void (*indexed_set)(Context&, DOMObject*, uint32_t, const Value&) = nullptr;
+    bool (*indexed_delete)(Context&, DOMObject*, uint32_t) = nullptr;
+    uint32_t (*indexed_length)(Context&, DOMObject*) = nullptr;
+    bool (*named_get)(Context&, DOMObject*, const std::string&, Value*) = nullptr;
+    void (*named_set)(Context&, DOMObject*, const std::string&, const Value&) = nullptr;
+    bool (*named_delete)(Context&, DOMObject*, const std::string&) = nullptr;
+    std::vector<std::string> (*named_keys)(Context&, DOMObject*) = nullptr;
+    bool override_builtins = false;
+    bool unenumerable_named = false;
+};
 
 // What the collector needs to know about one concrete DOMObject type: how to
 // report the cells its C++ members reference, and how to destroy it.
@@ -25,6 +60,7 @@ struct DOMTypeInfo {
     const DOMTypeInfo* parent;
     void (*visit)(DOMObject*, Visitor&);
     void (*destroy)(DOMObject*);
+    const DOMLegacyHooks* legacy;
 };
 
 template <class T>
@@ -52,11 +88,64 @@ constexpr const DOMTypeInfo* dom_parent_info() {
 // gives the same open-ended dispatch without moving anything. Constant
 // initialized, so there is no start-up order to get wrong.
 template <class T>
+constexpr bool dom_has_legacy_hooks() {
+    return requires { T::IndexedGetter; } || requires { T::NamedGetter; };
+}
+
+template <class T>
+constexpr DOMLegacyHooks dom_make_legacy_hooks() {
+    DOMLegacyHooks h;
+    if constexpr (requires(Context& c, T& t, uint32_t i, Value& v) { { T::IndexedGetter(c, t, i, v) } -> std::convertible_to<bool>; }) {
+        h.indexed_get = [](Context& c, DOMObject* o, uint32_t i, Value* out) -> bool {
+            return T::IndexedGetter(c, *static_cast<T*>(o), i, *out);
+        };
+    }
+    if constexpr (requires(Context& c, T& t, uint32_t i, const Value& v) { T::IndexedSetter(c, t, i, v); }) {
+        h.indexed_set = [](Context& c, DOMObject* o, uint32_t i, const Value& v) {
+            T::IndexedSetter(c, *static_cast<T*>(o), i, v);
+        };
+    }
+    if constexpr (requires(Context& c, T& t, uint32_t i) { { T::IndexedDeleter(c, t, i) } -> std::convertible_to<bool>; }) {
+        h.indexed_delete = [](Context& c, DOMObject* o, uint32_t i) -> bool {
+            return T::IndexedDeleter(c, *static_cast<T*>(o), i);
+        };
+    }
+    if constexpr (requires(Context& c, T& t) { { T::IndexedLength(c, t) } -> std::convertible_to<uint32_t>; }) {
+        h.indexed_length = [](Context& c, DOMObject* o) -> uint32_t { return T::IndexedLength(c, *static_cast<T*>(o)); };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& n, Value& v) { { T::NamedGetter(c, t, n, v) } -> std::convertible_to<bool>; }) {
+        h.named_get = [](Context& c, DOMObject* o, const std::string& n, Value* out) -> bool {
+            return T::NamedGetter(c, *static_cast<T*>(o), n, *out);
+        };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& n, const Value& v) { T::NamedSetter(c, t, n, v); }) {
+        h.named_set = [](Context& c, DOMObject* o, const std::string& n, const Value& v) {
+            T::NamedSetter(c, *static_cast<T*>(o), n, v);
+        };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& n) { { T::NamedDeleter(c, t, n) } -> std::convertible_to<bool>; }) {
+        h.named_delete = [](Context& c, DOMObject* o, const std::string& n) -> bool {
+            return T::NamedDeleter(c, *static_cast<T*>(o), n);
+        };
+    }
+    if constexpr (requires(Context& c, T& t) { { T::NamedKeys(c, t) } -> std::convertible_to<std::vector<std::string>>; }) {
+        h.named_keys = [](Context& c, DOMObject* o) -> std::vector<std::string> { return T::NamedKeys(c, *static_cast<T*>(o)); };
+    }
+    if constexpr (requires { T::LegacyOverrideBuiltIns; }) h.override_builtins = T::LegacyOverrideBuiltIns;
+    if constexpr (requires { T::LegacyUnenumerableNamedProperties; }) h.unenumerable_named = T::LegacyUnenumerableNamedProperties;
+    return h;
+}
+
+template <class T>
+inline constexpr DOMLegacyHooks dom_legacy_hooks_of = dom_make_legacy_hooks<T>();
+
+template <class T>
 struct DOMTypeOf {
     static constexpr DOMTypeInfo info = {
         dom_parent_info<T>(),
         [](DOMObject* o, Visitor& v) { static_cast<T*>(o)->Visit(v); },
         [](DOMObject* o) { static_cast<T*>(o)->~T(); },
+        dom_has_legacy_hooks<T>() ? &dom_legacy_hooks_of<T> : nullptr,
     };
 };
 
@@ -97,6 +186,20 @@ public:
     // Collector entry points.
     void trace(Visitor& v);
     void destroy();
+
+    friend struct DOMLegacyAccess;
+
+    // The nine property operations of a legacy platform object (see DOMLegacyHooks), reached
+    // from CustomObjectBase's own dispatch. For a type with no hooks each is the plain-Object body.
+    bool legacy_has_property(const std::string& key) const;
+    bool legacy_has_own_property(const std::string& key) const;
+    Value legacy_get_property(const std::string& key) const;
+    bool legacy_set_property(const std::string& key, const Value& value, PropertyAttributes attrs);
+    bool legacy_delete_property(const std::string& key);
+    std::vector<std::string> legacy_get_own_property_keys() const;
+    std::vector<std::string> legacy_get_enumerable_keys() const;
+    PropertyDescriptor legacy_get_property_descriptor(const std::string& key) const;
+    bool legacy_set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
 
 private:
     template <class T, class... A>

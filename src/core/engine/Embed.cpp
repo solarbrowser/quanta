@@ -61,7 +61,12 @@ void append_utf8(std::string& out, uint32_t cp) {
 // 3-byte sequence is accepted as the engine stores lone surrogates, a high
 // surrogate directly followed by a low one is merged back into the pair it
 // was, and any surrogate left unpaired becomes U+FFFD -- the USVString rule.
-std::string to_scalar_values(std::string_view in, bool wtf8) {
+enum class Surrogates { Replace, Keep };
+
+// With Keep, a lone surrogate is stored as the engine stores one (a 3-byte sequence) instead of
+// becoming U+FFFD, which is what a DOMString needs: it is a sequence of code units, not scalar
+// values. A high surrogate directly followed by a low one is still one code point.
+std::string to_scalar_values(std::string_view in, bool wtf8, Surrogates surrogates = Surrogates::Replace) {
     std::string out;
     out.reserve(in.size());
 
@@ -78,12 +83,12 @@ std::string to_scalar_values(std::string_view in, bool wtf8) {
                 append_utf8(out, 0x10000 + ((high - 0xD800) << 10) + (c - 0xDC00));
                 return;
             }
-            append_utf8(out, kReplacement);
+            append_utf8(out, surrogates == Surrogates::Keep ? high : kReplacement);
         }
         if (c >= 0xD800 && c <= 0xDBFF) {
             pending_high = c;
         } else if (c >= 0xDC00 && c <= 0xDFFF) {
-            append_utf8(out, kReplacement);
+            append_utf8(out, surrogates == Surrogates::Keep ? c : kReplacement);
         } else {
             append_utf8(out, c);
         }
@@ -125,7 +130,7 @@ std::string to_scalar_values(std::string_view in, bool wtf8) {
         }
     }
     if (needed != 0) emit(kReplacement);
-    if (pending_high) append_utf8(out, kReplacement);
+    if (pending_high) append_utf8(out, surrogates == Surrogates::Keep ? pending_high : kReplacement);
     return out;
 }
 
@@ -463,6 +468,67 @@ std::optional<std::span<const uint8_t>> BytesOf(const Value& value) {
     }
     if (!buffer || buffer->is_detached()) return std::nullopt;
     return std::span<const uint8_t>(buffer->data() + offset, length);
+}
+
+Value FromWtf8(Context&, std::string_view wtf8) {
+    return Value(to_scalar_values(wtf8, /*wtf8=*/true, Surrogates::Keep));
+}
+
+Value FromUtf16(Context&, std::u16string_view units) {
+    std::string out;
+    out.reserve(units.size());
+    for (size_t i = 0; i < units.size(); i++) {
+        uint32_t unit = units[i];
+        if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < units.size() &&
+            units[i + 1] >= 0xDC00 && units[i + 1] <= 0xDFFF) {
+            append_utf8(out, 0x10000 + ((unit - 0xD800) << 10) + (units[i + 1] - 0xDC00));
+            i++;
+        } else {
+            append_utf8(out, unit);
+        }
+    }
+    return Value(std::move(out));
+}
+
+std::string ToWtf8(Context& ctx, const Value& v) {
+    std::string s;
+    if (!v.to_string_checked(ctx, s)) return {};
+    return s;
+}
+
+std::u16string ToUtf16(Context& ctx, const Value& v) {
+    std::string s;
+    if (!v.to_string_checked(ctx, s)) return {};
+    std::u16string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        uint8_t b = static_cast<uint8_t>(s[i]);
+        uint32_t cp = kReplacement;
+        size_t length = 1;
+        if (b < 0x80) {
+            cp = b;
+        } else if (b >= 0xC2 && b <= 0xDF && i + 1 < s.size()) {
+            cp = ((b & 0x1Fu) << 6) | (static_cast<uint8_t>(s[i + 1]) & 0x3Fu);
+            length = 2;
+        } else if (b >= 0xE0 && b <= 0xEF && i + 2 < s.size()) {
+            cp = ((b & 0x0Fu) << 12) | ((static_cast<uint8_t>(s[i + 1]) & 0x3Fu) << 6) |
+                 (static_cast<uint8_t>(s[i + 2]) & 0x3Fu);
+            length = 3;
+        } else if (b >= 0xF0 && b <= 0xF4 && i + 3 < s.size()) {
+            cp = ((b & 0x07u) << 18) | ((static_cast<uint8_t>(s[i + 1]) & 0x3Fu) << 12) |
+                 ((static_cast<uint8_t>(s[i + 2]) & 0x3Fu) << 6) | (static_cast<uint8_t>(s[i + 3]) & 0x3Fu);
+            length = 4;
+        }
+        i += length;
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out.push_back(static_cast<char16_t>(0xD800 + (cp >> 10)));
+            out.push_back(static_cast<char16_t>(0xDC00 + (cp & 0x3FF)));
+        } else {
+            out.push_back(static_cast<char16_t>(cp));
+        }
+    }
+    return out;
 }
 
 // ---- Arrays and properties ------------------------------------------------

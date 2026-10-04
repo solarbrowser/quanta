@@ -88,6 +88,33 @@ if (HasException(ctx)) return Undefined();
 obj->initialize_prototype(proto ? proto : g_my_proto);
 ```
 
+## Indexed and named properties
+
+A Web IDL legacy platform object (`NodeList`, `HTMLCollection`, `NamedNodeMap`) answers `list[0]` and `collection["id"]` itself. A `DOMObject` type opts in by declaring static member functions; the engine finds them by name when the type is allocated and gives the object the property semantics of Web IDL's legacy platform object internal methods (`[[GetOwnProperty]]`, `[[Set]]`, `[[DefineOwnProperty]]`, `[[Delete]]`, `[[OwnPropertyKeys]]`):
+
+```cpp
+struct NodeList : DOMObject {
+    std::vector<Node*> nodes;
+
+    static bool IndexedGetter(Context& ctx, NodeList& self, uint32_t index, Value& out);  // false: no such index
+    static uint32_t IndexedLength(Context&, NodeList& self);          // supported indices are 0 .. length-1
+    // Optional, each switching a behaviour on:
+    //   IndexedSetter, IndexedDeleter                              (absent: read-only, not deletable)
+    //   NamedGetter, NamedSetter, NamedDeleter, NamedKeys          (the supported names)
+    //   static constexpr bool LegacyOverrideBuiltIns = true;
+    //   static constexpr bool LegacyUnenumerableNamedProperties = true;
+};
+```
+
+What follows is the spec's, so a type only says what exists:
+
+- An index is read through `IndexedGetter`; its property is enumerable and configurable, and writable only if there is an `IndexedSetter`. An index with no setter cannot be assigned or defined (a strict write throws), and one with no deleter is not deletable.
+- A name is visible only if `NamedGetter` has it and nothing nearer shadows it: an own property, or a property of a prototype (unless `LegacyOverrideBuiltIns`). That is why `list.forEach` copied from `Array.prototype` beats a child named `forEach`.
+- `Object.keys`, `for...in`, `Object.getOwnPropertyNames` and `Reflect.ownKeys` list the indices ascending, then the visible names (not enumerable with `LegacyUnenumerableNamedProperties`), then ordinary own properties.
+- `length`, `[Symbol.iterator]`, `forEach` and the rest are ordinary members: define `length` as an accessor with `DefineAccessor` and install `Array.prototype`'s `[Symbol.iterator]`, `forEach`, `keys`, `values`, `entries` on the prototype from script, as the spec has them, and `for...of` and `forEach` work on it.
+
+A hook that raises an exception does so through the context's flag, as in any native. The hooks run on the running script's context, or on the realm's own when a host reads a property from outside script.
+
 ## Why `Visit` and the destructor are not virtual
 
 Quanta's `Object` has no vtable. The collector, the write barrier and the conservative probe all treat a cell's base address and its `Object*` as the same word, and a vptr in front of the `Object` would pull them apart. The engine's own subclasses (`Function`, the iterators, ...) dispatch on a kind tag instead.
