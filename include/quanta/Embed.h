@@ -62,13 +62,62 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 // it: the engine does not produce one for scripts (only eval has an observable
 // result), so a script that wants to hand something back sets a global, or calls a
 // function the embedder defined.
+// One line of a stack trace. The position is where the function is declared, not the point of
+// the call in it, until the engine records source positions (line and column are 0 when unknown).
+struct StackFrame {
+    std::string function;
+    std::string filename;
+    uint32_t line = 0;
+    uint32_t column = 0;
+};
+
+// What can be said about a thrown value without running any script of its own: the name, message
+// and cause an Error carries, and its stack as frames. Anything other than an Error object that was
+// thrown (a string, a number) has is_error false and only `message`, its ToString.
+struct ErrorInfo {
+    bool is_error = false;
+    std::string name;
+    std::string message;
+    std::string stack;                  // the engine's text, "Name: message\n    at f (file:1:2)..."
+    std::vector<StackFrame> frames;
+    std::string filename;               // where it was thrown: the top frame, or a syntax error's own place
+    uint32_t line = 0;
+    uint32_t column = 0;
+    bool has_cause = false;
+    Value cause;
+};
+
 struct EvaluateResult {
     bool ok = false;
     Value exception;
     std::string error;
+    // Where it failed, and how it got there. A syntax error has its own position and no frames; an
+    // exception thrown by a script has the position and frames of its stack.
+    std::string filename;
+    uint32_t line = 0;
+    uint32_t column = 0;
+    std::vector<StackFrame> stack;
 };
 
 class Isolate;
+class Realm;
+
+// An exception that nobody caught: from a timer, a job, a FinalizationRegistry cleanup. `exception`
+// is good for the duration of the call; keep it in a Persistent to keep it longer.
+struct UncaughtException {
+    Realm* realm;              // null when the realm was not made through this Isolate
+    Value exception;
+    ErrorInfo info;
+    const char* origin;        // "timer", "queueMicrotask", "FinalizationRegistry cleanup"
+};
+using UncaughtExceptionHandler = std::function<void(const UncaughtException&)>;
+
+// What the host learns about a promise's rejection, for `unhandledrejection` and
+// `rejectionhandled`: it is Unhandled the moment a promise is rejected with no handler, and Handled
+// if one is attached to it afterwards. The promise and reason are good for the duration of the call.
+enum class RejectionEvent { Unhandled, Handled };
+using PromiseRejectionHandler =
+    std::function<void(Realm* realm, const Value& promise, const Value& reason, RejectionEvent event)>;
 
 // One global environment: a document's, or a frame's. It has its own intrinsics
 // (its own Array.prototype, its own %ThrowTypeError%, ...), so an array made in one
@@ -125,7 +174,25 @@ public:
     Isolate(const Isolate&) = delete;
     Isolate& operator=(const Isolate&) = delete;
 
-    std::unique_ptr<Realm> CreateRealm();
+    struct RealmOptions {
+        // Quanta's own console: log, error and warn on stdout and stderr. A host that implements console
+        // itself turns it off, so that there is no global of Quanta's to overwrite or to see through.
+        bool installConsole = true;
+    };
+    std::unique_ptr<Realm> CreateRealm(const RealmOptions& options);
+    std::unique_ptr<Realm> CreateRealm() { return CreateRealm(RealmOptions{}); }
+
+    // Where the engine reports what no script was left to catch. Without a handler an exception is
+    // printed to stderr, as the CLI does; with one, the host decides (window.onerror, a console). A
+    // script that fails in Evaluate is not reported through this: its result says so.
+    void SetUncaughtExceptionHandler(UncaughtExceptionHandler handler);
+    // With a handler set the engine no longer prints unhandled rejections either.
+    void SetPromiseRejectionHandler(PromiseRejectionHandler handler);
+
+    // True when no script is running on this thread: the spec's "JavaScript execution context stack is
+    // empty", which is when a host performs a microtask checkpoint after running a callback. False
+    // inside a native function, a script, a module or anything either one called.
+    bool JsStackEmpty() const;
 
     // Full collection, now. Ordinary collections happen on their own at the
     // interpreter's safepoints.
@@ -138,8 +205,10 @@ public:
     //
     // Runs every queued promise job, including ones those jobs queue, then reports
     // rejections nobody handled. Call it after calling into script from the host
-    // (Call, resolving a promise) -- not from inside a native function, where the
-    // script that called it is still on the stack.
+    // (Call, resolving a promise), when JsStackEmpty() says no script is running. It may be called from
+    // inside a native function: it then runs the jobs that are queued, on top of the script that called it. A
+    // job that asks for a checkpoint, or the native a job called, finds the one already under way and
+    // returns at once.
     void PerformMicrotaskCheckpoint();
     // Fires the built-in setTimeout/setInterval timers that are due, without
     // waiting for any that are not, and runs the job queue after each. A host
@@ -155,6 +224,8 @@ private:
 
     std::unique_ptr<Quanta::Isolate> isolate_;
     std::vector<Realm*> realms_;
+    UncaughtExceptionHandler uncaught_;
+    PromiseRejectionHandler rejection_;
 };
 
 // An Isolate with one Realm in it, for a host that has no use for more than one.
@@ -523,6 +594,104 @@ struct PromiseCapability {
     Value reject;
 };
 PromiseCapability NewPromiseCapability(Context& ctx);
+
+// ---- Inspecting values ---------------------------------------------------------
+//
+// What a console or an inspector needs to describe a value: what kind of thing it is, what is inside it
+// that script reaches only through its own methods (a promise's result, a Map's entries, a Proxy's
+// target), and its properties as descriptors, none of this running a getter or a trap.
+
+enum class ObjectKind {
+    Plain, Array, Arguments, Function, Error, Date, RegExp, Promise, Proxy,
+    Map, Set, WeakMap, WeakSet, WeakRef, FinalizationRegistry,
+    ArrayBuffer, SharedArrayBuffer, TypedArray, DataView,
+    BoxedBoolean, BoxedNumber, BoxedString, BoxedSymbol, BoxedBigInt,
+    Generator, AsyncGenerator, Iterator, ModuleNamespace, Host, Other
+};
+
+enum class PromiseState { Pending, Fulfilled, Rejected };
+
+struct FunctionInfo {
+    std::string name;
+    uint32_t length = 0;
+    bool is_class = false;
+    bool is_arrow = false;
+    bool is_async = false;
+    bool is_generator = false;
+    bool is_native = false;
+    bool is_bound = false;
+    bool is_constructor = false;
+    std::string source;        // what Function.prototype.toString answers
+};
+
+// The Values in these are not seen by the collector from where they sit: keep an ObjectInfo on the
+// native stack, not in a member.
+struct ObjectInfo {
+    bool is_object = false;    // false for a primitive, which has none of the rest
+    ObjectKind kind = ObjectKind::Other;
+    // The name of the nearest `constructor` on the prototype chain, as a console prints it ("Map", "Foo").
+    std::string class_name;
+    // Stays the same for the life of the object and differs between objects: for spotting a cycle.
+    uint64_t id = 0;
+    Value prototype;                      // [[Prototype]] (null for none); the rest of the chain by GetPrototypeOf
+    bool extensible = true;
+
+    std::optional<FunctionInfo> function;
+
+    PromiseState promise_state = PromiseState::Pending;
+    Value promise_result;                 // the value or the reason, once settled
+
+    Value proxy_target, proxy_handler;    // both null once revoked
+    bool proxy_revoked = false;
+
+    Value primitive_value;                // a boxed primitive's, and nothing else's
+    double date_value = 0;                // a Date's time value (NaN for an invalid one)
+    std::string regexp_source, regexp_flags;
+
+    size_t size = 0;                      // Array length, Map/Set size, typed array length, ArrayBuffer byteLength
+    size_t byte_length = 0;               // typed array, DataView
+    std::string element_type;             // a typed array's: "Uint8Array", "Float64Array", ...
+    bool detached = false;                // an ArrayBuffer, or a view of one
+};
+ObjectInfo Inspect(Context& ctx, const Value& value);
+
+// One own property as it is stored: a data property has a value, an accessor its getter and setter as
+// they are (never called).
+struct PropertyInfo {
+    Value key;                            // a string or a symbol
+    bool has_value = false;
+    Value value;
+    Value getter, setter;
+    bool has_getter = false, has_setter = false;
+    bool writable = false, enumerable = false, configurable = false;
+};
+
+// The own properties of an object, strings and then symbols, in property order, with the Values rooted
+// for as long as the list lives. A Proxy has none to list without its traps: Inspect gives its target.
+class PropertyList {
+public:
+    size_t size() const { return items_.size(); }
+    const PropertyInfo& operator[](size_t i) const { return items_[i]; }
+    const PropertyInfo* begin() const { return items_.data(); }
+    const PropertyInfo* end() const { return items_.data() + items_.size(); }
+    void Add(PropertyInfo info);
+
+private:
+    std::vector<PropertyInfo> items_;
+    ValueList roots_;
+};
+PropertyList InspectProperties(Context& ctx, const Value& object);
+
+// A Map's entries as key, value, key, value, ...; a Set's values. A WeakMap's and WeakSet's are not
+// there to list, by design, and neither are what a WeakRef holds.
+ValueList MapEntries(const Value& map);
+ValueList SetValues(const Value& set);
+
+// ---- Inspecting errors --------------------------------------------------------
+
+// Name, message, cause and stack of a thrown value, without running its own toString or any getter
+// that throws (one that does is skipped). Works on whatever script threw.
+ErrorInfo InspectError(Context& ctx, const Value& thrown);
 
 // ---- Memory ---------------------------------------------------------------
 

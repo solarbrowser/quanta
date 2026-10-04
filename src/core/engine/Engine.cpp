@@ -672,7 +672,7 @@ Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> share
             std::string error_msg = (*lex_errors)[0];
             if (error_msg.find("SyntaxError") == std::string::npos)
                 error_msg = "SyntaxError: " + error_msg;
-            return Result(error_msg);
+            return Result(error_msg, 0, 0);
         }
 
         if (parser.has_errors()) {
@@ -711,7 +711,7 @@ Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> share
                     }
                 }
 
-                return Result(decorated);
+                return Result(decorated, static_cast<uint32_t>(err_line), static_cast<uint32_t>(err_col));
             }
             return Result("SyntaxError: Parse error");
         }

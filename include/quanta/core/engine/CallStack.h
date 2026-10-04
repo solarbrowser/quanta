@@ -113,6 +113,8 @@ public:
     
     std::string generate_stack_trace() const;
     std::string generate_stack_trace(size_t max_frames) const;
+    // Without the `skip_top` innermost frames (an Error's own constructor, which is not where it was thrown).
+    std::string generate_stack_trace(size_t max_frames, size_t skip_top) const;
     
     std::string current_function() const;
     std::string current_filename() const;

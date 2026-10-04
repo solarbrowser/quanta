@@ -49,6 +49,9 @@ public:
         // drains the microtask queue and stops, and the host fires timers
         // itself (EventLoop::run_due_timers) when its own loop says to.
         bool host_drives_event_loop = false;
+        // Quanta's own console (log, error, warn on stdout/stderr). A host that implements
+        // console itself leaves it out, so there is no global of it to overwrite.
+        bool install_console = true;
     };
 
     struct Result {

@@ -15,13 +15,17 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 |---|---|
 | `Isolate::Create()` | New Isolate (a heap and an event loop); its heap becomes the thread's active one. Null while another is live on the thread. |
 | `Isolate::CreateRealm()` | A new global environment in the Isolate, returned as `unique_ptr<Realm>`. Null on failure. |
+| `Isolate::CreateRealm(RealmOptions)` | As above, with options: `installConsole = false` leaves out Quanta's own console (log/error/warn on stdout and stderr), so the host's is the only one. |
+| `Isolate::SetUncaughtExceptionHandler(fn)` | Where the engine reports an exception no script was left to catch (a timer, a `queueMicrotask` callback, a `FinalizationRegistry` cleanup): `fn(UncaughtException{realm, exception, info, origin})`. Without one it is printed to stderr. A script that fails in `Evaluate` is not reported this way: its result says so. |
+| `Isolate::SetPromiseRejectionHandler(fn)` | `fn(realm, promise, reason, RejectionEvent)`: `Unhandled` the moment a promise is rejected with no handler, `Handled` if one is attached afterwards (HostPromiseRejectionTracker: the host decides when to fire `unhandledrejection`, and cancels it on `Handled`). With a handler set the engine no longer prints unhandled rejections. |
+| `Isolate::JsStackEmpty()` | True when no script is running on the thread -- the spec's "JavaScript execution context stack is empty", which is when a host performs a microtask checkpoint after running a callback. |
 | `Isolate::CollectGarbage()` | Full collection now. Ordinary ones happen on their own. |
 | `Isolate::PerformMicrotaskCheckpoint()`, `RunDueTimers()`, `NextTimerDelayMs()` | The host's turns of the event loop, one per Isolate. See [event-loop.md](event-loop.md). |
 | `~Isolate()` | Destroys the realms still alive in it, then frees the heap. |
 | `Realm::GetContext()` | The realm's global context -- what `DefineClass` and `DefineGlobal` take. |
 | `Realm::Run(fn)` | Runs host code inside the realm: it is the realm that is running, and its context the one engine code that wants a running context finds. For a host that calls into script, or makes values, from outside any native function, so that what it makes belongs to this realm. |
 | `Realm::FromContext(ctx)` | The `Realm` a context belongs to; null for one made some other way (`$262.createRealm`) or destroyed. |
-| `Realm::Evaluate(source, filename)` | Runs a script in the realm and drains the job queue once. Returns `{ok, exception, error}`. There is no completion value: the engine does not produce one for scripts, so a script that wants to hand something back sets a global or calls a function the host defined. |
+| `Realm::Evaluate(source, filename)` | Runs a script in the realm and drains the job queue once. Returns `{ok, exception, error, filename, line, column, stack}`: a syntax error is placed in the source (and `exception` is the `SyntaxError`), an exception thrown by script has the position and frames of its stack. A frame's position is where its function is declared until the engine records source positions. There is no completion value: the engine does not produce one for scripts, so a script that wants to hand something back sets a global or calls a function the host defined. |
 | `~Realm()` | Destroys the realm: its timers and queued jobs go at once, and what it made is freed once nothing else can reach it. |
 | `Runtime::Create()` | An Isolate with one Realm in it. `GetContext`, `Evaluate`, `CollectGarbage`, `PerformMicrotaskCheckpoint`, `RunDueTimers` and `NextTimerDelayMs` are those of the Isolate or the Realm. |
 
@@ -147,6 +151,15 @@ A C++ member holding a cell is invisible to the collector; these are what to use
 |---|---|
 | `NewPromiseCapability(ctx)` | `{promise, resolve, reject}`. |
 | `ReportExternalAllocation(bytes)` | Memory owned outside the heap. See [event-loop.md](event-loop.md). |
+
+## Inspecting values
+
+| | |
+|---|---|
+| `Inspect(ctx, value)` | An `ObjectInfo`: the kind (`Plain`, `Array`, `Function`, `Error`, `Date`, `RegExp`, `Promise`, `Proxy`, `Map`, `Set`, the weak ones, `ArrayBuffer`, `SharedArrayBuffer`, `TypedArray`, `DataView`, the boxed primitives, generators and iterators, `ModuleNamespace`, `Host`), the class name a console prints (the nearest `constructor` by name), an `id` that is the same for the life of an object and differs between objects (what finds a cycle), `[[Prototype]]`, extensibility, and what is inside it that script reaches only through methods: a Promise's state and result, a Proxy's target and handler (or that it is revoked), a boxed primitive's value, a Date's time value, a RegExp's source and flags, sizes, a typed array's element type and lengths, whether a buffer is detached, and for a function its name, length, class/arrow/async/generator/native/bound/constructor flags and source text. None of it runs a getter or a trap. |
+| `InspectProperties(ctx, object)` | The own properties as `PropertyInfo` descriptors (strings, then symbols, in order): a data property has its value, an accessor its getter and setter as they are, never called. The values stay alive with the list. A Proxy has none to list without its traps: use its target. |
+| `MapEntries(map)`, `SetValues(set)` | A Map's entries as key, value, key, value, ...; a Set's values. A WeakMap's, a WeakSet's and a WeakRef's contents are not there to list, by design. |
+| `InspectError(ctx, thrown)` | An `ErrorInfo`: name, message, cause, the engine's stack text and its frames (function, file, line, column). Anything thrown that is not an Error (a string, a number) has `is_error` false and only `message`. |
 
 ## Errors
 

@@ -125,15 +125,20 @@ std::string CallStack::generate_stack_trace() const {
 }
 
 std::string CallStack::generate_stack_trace(size_t max_frames) const {
-    if (depth_ == 0) {
+    return generate_stack_trace(max_frames, 0);
+}
+
+std::string CallStack::generate_stack_trace(size_t max_frames, size_t skip_top) const {
+    if (depth_ <= skip_top) {
         return "";
     }
 
     std::string trace;
-    size_t frame_count = std::min(max_frames, depth_);
+    const size_t available = depth_ - skip_top;
+    size_t frame_count = std::min(max_frames, available);
 
     for (size_t i = 0; i < frame_count; ++i) {
-        size_t frame_idx = depth_ - 1 - i;
+        size_t frame_idx = depth_ - 1 - skip_top - i;
         trace += "    ";
         trace += format_frame(frames_[frame_idx], i);
         if (i < frame_count - 1) {
@@ -141,9 +146,9 @@ std::string CallStack::generate_stack_trace(size_t max_frames) const {
         }
     }
 
-    if (max_frames < depth_) {
+    if (max_frames < available) {
         trace += "\n    ... and ";
-        trace += std::to_string(depth_ - max_frames);
+        trace += std::to_string(available - max_frames);
         trace += " more frames";
     }
 

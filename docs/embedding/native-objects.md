@@ -115,6 +115,27 @@ What follows is the spec's, so a type only says what exists:
 
 A hook that raises an exception does so through the context's flag, as in any native. The hooks run on the running script's context, or on the realm's own when a host reads a property from outside script.
 
+## Finalization
+
+A host object is destroyed when the collector sweeps it. Two things about that are guaranteed, and one is not:
+
+- **Not guaranteed: order.** The destructors of one collection's dead objects run in an unspecified order, and so do those of the objects that die when an `Isolate` is destroyed (its realms go first, then the heap is swept once and everything in it is dead). A destructor may free what its object owns -- `std::string`, `std::vector`, a file handle -- and must do nothing else: not read another cell (it may be destroyed already), not call into script, not create cells.
+- **Guaranteed: a first pass.** A type that declares `void Finalize()` is told once that it is dead, before **any** destructor of that collection runs. Every cell of the collection, dead or alive, is still intact then, so `Finalize` is where an object takes itself out of the host's registries (a document's list of ranges, an observer table) and where it may read the objects it was linked to. It must not run script, create cells or store the object anywhere (it is dead). At `Isolate` teardown every host object with a `Finalize` gets it before the first destructor.
+- **Guaranteed: weak handles.** `WeakHandle<T>(ptr)` names a cell without keeping it alive: `Get()` returns it while it lives and null once the collector found it dead, a pass that happens before `Finalize` and before any destructor. It works for host objects and for script objects (`WeakHandle<Object>`). Copies share the answer. For the host's own bookkeeping that must not extend a lifetime.
+
+## Members that hold cells
+
+A C++ member that holds a cell is invisible to the collector, and a store into an old object needs `NoteWrite`. Two member types do both by themselves, so `Visit` does not have to list them and no store can forget the barrier:
+
+```cpp
+struct Observer : DOMObject {
+    TracedValue callback;      // one value
+    TracedList targets;        // a list of values: push_back, set, erase, clear, indexing, iteration
+};
+```
+
+They attach themselves to the object being constructed, so they must be members of a `DOMObject` type (a `Traced` made anywhere else aborts at once rather than quietly not tracing). They have no copy or move.
+
 ## Why `Visit` and the destructor are not virtual
 
 Quanta's `Object` has no vtable. The collector, the write barrier and the conservative probe all treat a cell's base address and its `Object*` as the same word, and a vptr in front of the `Object` would pull them apart. The engine's own subclasses (`Function`, the iterators, ...) dispatch on a kind tag instead.

@@ -9,6 +9,12 @@
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/runtime/Error.h"
+#include "quanta/core/runtime/MapSet.h"
+#include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/RegExp.h"
+#include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/engine/HostHooks.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/DataView.h"
@@ -189,6 +195,36 @@ EvaluateResult Realm::Evaluate(std::string_view source, const std::string& filen
     out.ok = r.success;
     out.exception = r.exception_value;
     out.error = r.error_message;
+    out.filename = filename;
+    if (!r.success) {
+        Context& ctx = GetContext();
+        // A script that does not parse has no exception object yet: make the SyntaxError it is.
+        if (out.exception.is_undefined() && r.error_message.rfind("SyntaxError", 0) == 0) {
+            std::string message = r.error_message.substr(std::min<size_t>(r.error_message.find(": ") + 2, r.error_message.size()));
+            message = message.substr(0, message.find('\n'));
+            RealmScope realm_scope(engine_->realm());
+            RunningContext running(ctx);
+            out.exception = NewError(ctx, "SyntaxError", message);
+            if (ctx.has_exception()) {
+                ctx.clear_exception();
+                out.exception = Value();
+            }
+        }
+        if (!out.exception.is_undefined()) {
+            ErrorInfo info = InspectError(ctx, out.exception);
+            out.stack = std::move(info.frames);
+            out.line = info.line;
+            out.column = info.column;
+            if (!info.filename.empty()) out.filename = info.filename;
+        }
+        if (r.line_number > 0) {
+            // A syntax error is placed in the source, whatever stack the SyntaxError object was made with.
+            out.line = r.line_number;
+            out.column = r.column_number;
+            out.filename = filename;
+            out.stack.clear();
+        }
+    }
     return out;
 }
 
@@ -211,19 +247,56 @@ Isolate::~Isolate() {
         realm->isolate_ = nullptr;
     }
     realms_.clear();
+    HostHooks::set_uncaught_handler({});
+    HostHooks::set_rejection_tracker({});
     isolate_.reset();
     g_isolate_live = false;
 }
 
-std::unique_ptr<Realm> Isolate::CreateRealm() {
+std::unique_ptr<Realm> Isolate::CreateRealm(const RealmOptions& options) {
     Engine::Config config;
     config.host_drives_event_loop = true;
+    config.install_console = options.installConsole;
     auto engine = std::make_unique<Engine>(*isolate_, config);
     if (!engine->initialize()) return nullptr;
     std::unique_ptr<Realm> realm(new Realm(*this, std::move(engine)));
     realm->engine_->set_host_realm(realm.get());
     realms_.push_back(realm.get());
     return realm;
+}
+
+void Isolate::SetUncaughtExceptionHandler(UncaughtExceptionHandler handler) {
+    uncaught_ = std::move(handler);
+    if (!uncaught_) {
+        HostHooks::set_uncaught_handler({});
+        return;
+    }
+    HostHooks::set_uncaught_handler([this](Context& ctx, const Value& exception, const char* origin) {
+        if (!uncaught_) return;
+        UncaughtException report{Realm::FromContext(ctx), exception, InspectError(ctx, exception), origin};
+        UncaughtExceptionHandler call = uncaught_;
+        call(report);
+    });
+}
+
+void Isolate::SetPromiseRejectionHandler(PromiseRejectionHandler handler) {
+    rejection_ = std::move(handler);
+    if (!rejection_) {
+        HostHooks::set_rejection_tracker({});
+        return;
+    }
+    HostHooks::set_rejection_tracker([this](Promise* promise, bool handled) {
+        if (!rejection_) return;
+        Context* made_in = promise->creation_context();
+        Realm* realm = made_in ? Realm::FromContext(*made_in) : nullptr;
+        PromiseRejectionHandler call = rejection_;
+        call(realm, Value(static_cast<Object*>(promise)), promise->get_value(),
+             handled ? RejectionEvent::Handled : RejectionEvent::Unhandled);
+    });
+}
+
+bool Isolate::JsStackEmpty() const {
+    return HostHooks::js_stack_empty();
 }
 
 void Isolate::CollectGarbage() {
@@ -1077,6 +1150,325 @@ PromiseCapability NewPromiseCapability(Context& ctx) {
     Value pair = Promise::withResolvers(ctx, {}, Value(promise_ctor));
     if (ctx.has_exception()) return {};
     return {Get(ctx, pair, "promise"), Get(ctx, pair, "resolve"), Get(ctx, pair, "reject")};
+}
+
+// ---- Inspecting values ---------------------------------------------------------
+
+namespace {
+
+// A Value for a cell, tagged as the engine tags it (a function is not an "object" Value).
+Value value_of_cell(Object* o) {
+    if (!o) return Value::null();
+    if (o->get_type() == Object::ObjectType::Function) return Value(static_cast<Function*>(o));
+    return Value(o);
+}
+
+// The key a property is stored under, as the Value a script sees: a symbol's key string becomes the Symbol.
+Value key_value(const std::string& key) {
+    if (key.find("Symbol.") == 0) {
+        if (Symbol* sym = Symbol::get_well_known(key)) return Value(sym);
+    }
+    if (key.find("@@sym:") == 0) {
+        if (Symbol* sym = Symbol::find_by_property_key(key)) return Value(sym);
+    }
+    return Value(key);
+}
+
+// The nearest `constructor` data property along the prototype chain, by name: nothing is called.
+std::string constructor_name(Object* object) {
+    for (Object* o = object; o && o->get_type() != Object::ObjectType::Proxy; o = o->get_prototype()) {
+        if (!o->has_own_property("constructor")) continue;
+        PropertyDescriptor d = o->get_property_descriptor("constructor");
+        if (!d.is_data_descriptor()) continue;
+        Function* f = d.get_value().is_function() ? d.get_value().as_function() : nullptr;
+        if (f) return f->get_name();
+    }
+    return std::string();
+}
+
+}
+
+ObjectInfo Inspect(Context& ctx, const Value& value) {
+    ObjectInfo info;
+    Object* object = value.as_object_or_null();
+    if (!object) return info;
+    info.is_object = true;
+    info.id = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(object));
+    using OT = Object::ObjectType;
+    const OT type = object->get_type();
+    if (type == OT::Proxy) {
+        Proxy* proxy = static_cast<Proxy*>(object);
+        info.kind = ObjectKind::Proxy;
+        info.proxy_revoked = proxy->is_revoked();
+        info.proxy_target = value_of_cell(proxy->get_proxy_target());
+        info.proxy_handler = value_of_cell(proxy->get_proxy_handler());
+        info.prototype = Value::null();
+        return info;
+    }
+    info.extensible = object->is_extensible();
+    info.prototype = value_of_cell(object->get_prototype());
+    info.class_name = constructor_name(object);
+
+    auto primitive = [&]() {
+        info.primitive_value = object->get_property("[[PrimitiveValue]]");
+        if (ctx.has_exception()) ctx.clear_exception();
+    };
+    switch (type) {
+        case OT::Ordinary: info.kind = ObjectKind::Plain; break;
+        case OT::Array: info.kind = ObjectKind::Array; info.size = object->get_length(); break;
+        case OT::Arguments: info.kind = ObjectKind::Arguments; break;
+        case OT::Function: {
+            info.kind = ObjectKind::Function;
+            Function* f = static_cast<Function*>(object);
+            FunctionInfo fn;
+            fn.name = f->get_name();
+            fn.length = static_cast<uint32_t>(f->get_declared_length());
+            fn.is_class = f->is_class_constructor();
+            fn.is_arrow = f->is_arrow();
+            fn.is_async = f->get_function_kind() == Function::FunctionKind::Async ||
+                          f->get_function_kind() == Function::FunctionKind::AsyncGenerator;
+            fn.is_generator = f->get_function_kind() == Function::FunctionKind::Generator ||
+                              f->get_function_kind() == Function::FunctionKind::AsyncGenerator;
+            fn.is_native = f->is_native();
+            fn.is_bound = f->has_internal_slot("__bound_target__");
+            fn.is_constructor = f->is_constructor();
+            fn.source = f->get_source_text();
+            if (fn.source.empty()) fn.source = "function " + fn.name + "() { [native code] }";
+            info.function = std::move(fn);
+            break;
+        }
+        case OT::String: info.kind = ObjectKind::BoxedString; primitive(); break;
+        case OT::Number: info.kind = ObjectKind::BoxedNumber; primitive(); break;
+        case OT::Boolean: info.kind = ObjectKind::BoxedBoolean; primitive(); break;
+        case OT::Symbol: info.kind = ObjectKind::BoxedSymbol; primitive(); break;
+        case OT::BigInt: info.kind = ObjectKind::BoxedBigInt; primitive(); break;
+        case OT::Date: info.kind = ObjectKind::Date; info.date_value = object->get_internal_slot("[[DateValue]]").to_number(); break;
+        case OT::RegExp:
+            info.kind = ObjectKind::RegExp;
+            if (RegExpObject* re = RegExpObject::from(object)) {
+                if (re->impl()) {
+                    info.regexp_source = re->impl()->get_source();
+                    info.regexp_flags = re->impl()->get_flags();
+                }
+            }
+            break;
+        case OT::Error: info.kind = ObjectKind::Error; break;
+        case OT::Promise: {
+            info.kind = ObjectKind::Promise;
+            Promise* p = static_cast<Promise*>(object);
+            info.promise_state = p->is_pending() ? PromiseState::Pending
+                               : p->is_fulfilled() ? PromiseState::Fulfilled : PromiseState::Rejected;
+            if (!p->is_pending()) info.promise_result = p->get_value();
+            break;
+        }
+        case OT::Map: info.kind = ObjectKind::Map; info.size = static_cast<Map*>(object)->size(); break;
+        case OT::Set: info.kind = ObjectKind::Set; info.size = static_cast<Quanta::Set*>(object)->size(); break;
+        case OT::WeakMap: info.kind = ObjectKind::WeakMap; break;
+        case OT::WeakSet: info.kind = ObjectKind::WeakSet; break;
+        case OT::WeakRef: info.kind = ObjectKind::WeakRef; break;
+        case OT::FinalizationRegistry: info.kind = ObjectKind::FinalizationRegistry; break;
+        case OT::ArrayBuffer: {
+            ArrayBuffer* buffer = static_cast<ArrayBuffer*>(object);
+            info.kind = buffer->is_shared() ? ObjectKind::SharedArrayBuffer : ObjectKind::ArrayBuffer;
+            info.size = info.byte_length = buffer->byte_length();
+            info.detached = buffer->is_detached();
+            break;
+        }
+        case OT::TypedArray: {
+            TypedArrayBase* view = static_cast<TypedArrayBase*>(object);
+            info.kind = ObjectKind::TypedArray;
+            info.element_type = view->get_type_name();
+            info.size = view->is_out_of_bounds() ? 0 : view->length();
+            info.byte_length = view->is_out_of_bounds() ? 0 : view->byte_length();
+            info.detached = view->buffer() && view->buffer()->is_detached();
+            break;
+        }
+        case OT::DataView: {
+            DataView* view = static_cast<DataView*>(object);
+            info.kind = ObjectKind::DataView;
+            info.byte_length = view->is_out_of_bounds() ? 0 : view->current_byte_length();
+            info.detached = view->buffer() && view->buffer()->is_detached();
+            break;
+        }
+        case OT::Custom: {
+            using CK = CustomObjectBase::CustomKind;
+            switch (static_cast<CustomObjectBase*>(object)->get_custom_kind()) {
+                case CK::Generator: info.kind = ObjectKind::Generator; break;
+                case CK::AsyncGenerator: info.kind = ObjectKind::AsyncGenerator; break;
+                case CK::AsyncIterator: case CK::ArrayIterator: case CK::StringIterator:
+                case CK::MapIterator: case CK::SetIterator: info.kind = ObjectKind::Iterator; break;
+                case CK::ModuleNamespace: case CK::DeferredNamespace: info.kind = ObjectKind::ModuleNamespace; break;
+                case CK::Host: info.kind = ObjectKind::Host; break;
+                default: info.kind = ObjectKind::Other; break;
+            }
+            break;
+        }
+        default: info.kind = ObjectKind::Other; break;
+    }
+    return info;
+}
+
+void PropertyList::Add(PropertyInfo info) {
+    roots_.Append(info.key);
+    if (info.has_value) roots_.Append(info.value);
+    if (info.has_getter) roots_.Append(info.getter);
+    if (info.has_setter) roots_.Append(info.setter);
+    items_.push_back(std::move(info));
+}
+
+PropertyList InspectProperties(Context& ctx, const Value& value) {
+    PropertyList list;
+    Object* object = value.as_object_or_null();
+    if (!object || object->get_type() == Object::ObjectType::Proxy) return list;
+    std::vector<std::string> keys = object->get_own_property_keys();
+    if (ctx.has_exception()) return list;
+    // Strings first, then symbols, as [[OwnPropertyKeys]] orders them.
+    std::vector<std::string> ordered;
+    for (const std::string& k : keys) {
+        if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) ordered.push_back(k);
+    }
+    for (const std::string& k : keys) {
+        if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0) ordered.push_back(k);
+    }
+    for (const std::string& key : ordered) {
+        PropertyDescriptor d = object->get_property_descriptor(key);
+        PropertyInfo p;
+        p.key = key_value(key);
+        p.enumerable = d.is_enumerable();
+        p.configurable = d.is_configurable();
+        if (d.is_accessor_descriptor()) {
+            p.has_getter = d.has_getter() && d.get_getter();
+            p.has_setter = d.has_setter() && d.get_setter();
+            if (p.has_getter) p.getter = value_of_cell(d.get_getter());
+            if (p.has_setter) p.setter = value_of_cell(d.get_setter());
+        } else {
+            p.has_value = true;
+            p.value = d.get_value();
+            p.writable = d.is_writable();
+        }
+        list.Add(std::move(p));
+    }
+    return list;
+}
+
+ValueList MapEntries(const Value& map) {
+    ValueList out;
+    Object* object = map.as_object_or_null();
+    if (!object || object->get_type() != Object::ObjectType::Map) return out;
+    for (auto& [key, value] : static_cast<Map*>(object)->entries()) {
+        out.Append(key);
+        out.Append(value);
+    }
+    return out;
+}
+
+ValueList SetValues(const Value& set) {
+    ValueList out;
+    Object* object = set.as_object_or_null();
+    if (!object || object->get_type() != Object::ObjectType::Set) return out;
+    for (const Value& v : static_cast<Quanta::Set*>(object)->values()) out.Append(v);
+    return out;
+}
+
+// ---- Inspecting errors --------------------------------------------------------
+
+namespace {
+
+// "    at name (file:line:col)", "    at name", or "    at file:line:col" -> a StackFrame.
+bool parse_stack_line(std::string_view line, StackFrame& out) {
+    size_t start = line.find_first_not_of(" \t");
+    if (start == std::string_view::npos) return false;
+    line.remove_prefix(start);
+    if (line.substr(0, 3) != "at ") return false;
+    line.remove_prefix(3);
+    std::string_view function = line, location;
+    if (!line.empty() && line.back() == ')') {
+        size_t open = line.find(" (");
+        if (open != std::string_view::npos) {
+            function = line.substr(0, open);
+            location = line.substr(open + 2, line.size() - open - 3);
+        }
+    }
+    out.function = std::string(function);
+    // file:line:column, the file possibly holding colons of its own (https://host/x.js).
+    auto number_at_end = [](std::string_view& s, uint32_t& value) {
+        size_t colon = s.rfind(':');
+        if (colon == std::string_view::npos || colon + 1 >= s.size()) return false;
+        uint64_t v = 0;
+        for (char ch : s.substr(colon + 1)) {
+            if (ch < '0' || ch > '9') return false;
+            v = v * 10 + static_cast<uint64_t>(ch - '0');
+            if (v > 0xFFFFFFFFull) return false;
+        }
+        value = static_cast<uint32_t>(v);
+        s = s.substr(0, colon);
+        return true;
+    };
+    std::string_view file = location;
+    uint32_t column = 0, line_number = 0;
+    std::string_view probe = file;
+    if (number_at_end(probe, column)) {
+        std::string_view rest = probe;
+        if (number_at_end(rest, line_number)) {
+            file = rest;
+            out.line = line_number;
+            out.column = column;
+        }
+    }
+    out.filename = std::string(file);
+    return true;
+}
+
+}
+
+ErrorInfo InspectError(Context& ctx, const Value& thrown) {
+    ErrorInfo info;
+    Object* object = thrown.as_object_or_null();
+    if (!object) {
+        info.message = thrown.to_string();
+        return info;
+    }
+    // Reads that cannot throw into the caller's lap: a getter that does is skipped.
+    auto read = [&](const char* name) -> Value {
+        const bool had_exception = ctx.has_exception();
+        Value saved = had_exception ? ctx.get_exception() : Value();
+        Value v = object->get_property(name);
+        if (!had_exception && ctx.has_exception()) {
+            ctx.clear_exception();
+            return Value();
+        }
+        if (had_exception && !ctx.has_exception()) ctx.throw_exception(saved, true);
+        return v;
+    };
+    info.is_error = as_error(object) != nullptr;
+    Value name = read("name");
+    Value message = read("message");
+    Value stack = read("stack");
+    info.name = name.is_string() ? name.to_string() : std::string();
+    info.message = message.is_string() ? message.to_string() : std::string();
+    if (stack.is_string()) info.stack = stack.to_string();
+    else if (Error* err = as_error(object)) info.stack = err->get_stack_trace();
+    if (!info.is_error && info.name.empty() && info.message.empty()) info.message = thrown.to_string();
+    if (object->has_own_property("cause")) {
+        info.has_cause = true;
+        info.cause = read("cause");
+    }
+    size_t pos = 0;
+    bool first_line = true;
+    while (pos <= info.stack.size()) {
+        size_t end = info.stack.find('\n', pos);
+        std::string_view line(info.stack.data() + pos, (end == std::string::npos ? info.stack.size() : end) - pos);
+        pos = end == std::string::npos ? info.stack.size() + 1 : end + 1;
+        if (first_line) { first_line = false; if (line.find("    at ") != 0 && line.substr(0, 3) != "at ") continue; }
+        StackFrame frame;
+        if (parse_stack_line(line, frame)) info.frames.push_back(std::move(frame));
+    }
+    if (!info.frames.empty()) {
+        info.filename = info.frames.front().filename;
+        info.line = info.frames.front().line;
+        info.column = info.frames.front().column;
+    }
+    return info;
 }
 
 // ---- Memory ---------------------------------------------------------------

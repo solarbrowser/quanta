@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
+#include "quanta/core/engine/HostHooks.h"
 #include "quanta/core/engine/builtins/GlobalsBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
@@ -1644,7 +1645,9 @@ void register_global_builtins(Context& ctx) {
     console_obj->set_property("error", Value(console_error_fn.release()), PropertyAttributes::BuiltinFunction);
     console_obj->set_property("warn", Value(console_warn_fn.release()), PropertyAttributes::BuiltinFunction);
     
-    ctx.get_lexical_environment()->create_binding("console", Value(console_obj.release()), false);
+    if (!ctx.get_engine() || ctx.get_engine()->get_config().install_console) {
+        ctx.get_lexical_environment()->create_binding("console", Value(console_obj.release()), false);
+    }
 
     // Dynamic import() -- module loading with ES module namespace object
     auto import_fn = ObjectFactory::create_native_function("import",
@@ -2262,7 +2265,7 @@ void register_global_builtins(Context& ctx) {
                 if (call_ctx->has_exception()) {
                     Value exc = call_ctx->get_exception();
                     call_ctx->clear_exception();
-                    std::cerr << "Uncaught (in queueMicrotask) " << exc.to_string() << std::endl;
+                    HostHooks::report_uncaught(*call_ctx, exc, "queueMicrotask");
                 }
             }, {Value(cb)});
             return Value();

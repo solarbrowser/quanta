@@ -831,6 +831,9 @@ size_t run_sweep(bool minor) {
     // deterministically on the poison instead of silently reading a
     // recycled cell. Debug tool for hunting invisible lambda captures.
     static const bool poison = env_flag("QUANTA_GC_POISON");
+    // Host objects that asked to hear of their death, and weak handles to what died, before any
+    // destructor of this collection runs: every cell is still intact.
+    if (DOMObject::finalization_pending()) DOMObject::finalize_dead(dead);
     for (const Heap::DeadCell& d : dead) {
         switch (d.kind) {
             case CellKind::Object: {

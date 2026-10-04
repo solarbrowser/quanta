@@ -383,6 +383,9 @@ private:
     };
     std::vector<MicrotaskEntry> microtask_queue_;
     std::vector<MicrotaskEntry> draining_queue_;  // batch in flight (traced too)
+    // A checkpoint asked for from inside a job, or from the native a job called, is the one
+    // already under way (HTML: "performing a microtask checkpoint").
+    bool draining_ = false;
 
     // Refcounts Context* held by pending timers/Promises so the collector's
     // reachability-based survivor prune (Collector.cpp) force-keeps one

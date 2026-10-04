@@ -67,6 +67,8 @@ public:
     static Value try_method(Context& ctx, std::span<const Value> args, Value receiver);
     
     PromiseState get_state() const { return state_; }
+    // The context the promise was made in, and so the realm it belongs to.
+    Context* creation_context() const { return context_; }
     const Value& get_value() const { return value_; }
     bool is_pending() const { return state_ == PromiseState::PENDING; }
     bool is_fulfilled() const { return state_ == PromiseState::FULFILLED; }

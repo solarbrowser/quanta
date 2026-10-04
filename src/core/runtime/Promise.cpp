@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/engine/HostHooks.h"
 #include "quanta/core/runtime/Promise.h"
 #include <span>
 #include "quanta/core/gc/Collector.h"
@@ -245,7 +246,10 @@ void Promise::reject(const Value& reason) {
 
     state_ = PromiseState::REJECTED;
     value_ = reason;
-    if (!is_handled_) pending_rejections().push_back(Value(this));
+    if (!is_handled_) {
+        pending_rejections().push_back(Value(this));
+        HostHooks::note_rejection(this, false);
+    }
     execute_handlers();
 }
 
@@ -255,7 +259,10 @@ Value Promise::take_settled_value() {
 }
 
 void Promise::mark_handled() {
-    if (state_ == PromiseState::REJECTED && !is_handled_) forget_rejection(this);
+    if (state_ == PromiseState::REJECTED && !is_handled_) {
+        forget_rejection(this);
+        HostHooks::note_rejection(this, true);
+    }
     is_handled_ = true;
 }
 
@@ -264,6 +271,8 @@ void Promise::report_unhandled_rejections() {
     if (v.empty()) return;
     std::vector<Value> batch;
     batch.swap(v);
+    // A host that tracks rejections reports them itself.
+    if (HostHooks::has_rejection_tracker()) return;
     for (const Value& entry : batch) {
         Promise* p = entry.is_object() ? as_promise(entry.as_object()) : nullptr;
         // A handler attached after the rejection clears the entry through

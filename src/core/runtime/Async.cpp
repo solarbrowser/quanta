@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/engine/HostHooks.h"
 #include "quanta/core/runtime/Async.h"
 #include <algorithm>
 #include <span>
@@ -1616,7 +1617,7 @@ void EventLoop::fire_timer(TimerEntry entry) {
     if (entry.call_ctx->has_exception()) {
         Value exc = entry.call_ctx->get_exception();
         entry.call_ctx->clear_exception();
-        std::cerr << "Uncaught (in timer) " << exc.to_string() << std::endl;
+        HostHooks::report_uncaught(*entry.call_ctx, exc, "timer");
     }
 
     bool still_active = entry.interval_ms >= 0 && !cancelled_ids_.count(entry.id);
@@ -1676,6 +1677,12 @@ void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> k
 }
 
 void EventLoop::drain_microtasks() {
+    if (draining_) return;
+    struct Draining {
+        bool& flag;
+        explicit Draining(bool& f) : flag(f) { flag = true; }
+        ~Draining() { flag = false; }
+    } draining(draining_);
     // Loops until empty (a job can enqueue more). The 10s cap guards against a runaway microtask chain -- unrelated to setTimeout/setInterval, which run through this same EventLoop's timer heap instead.
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!microtask_queue_.empty()) {

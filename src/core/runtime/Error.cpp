@@ -95,7 +95,14 @@ void Error::generate_stack_trace() {
 
         try {
             CallStack& stack = CallStack::instance();
-            std::string stack_frames = stack.generate_stack_trace(20);
+            // `new RangeError(...)` runs the constructor as a frame of its own; the error was not
+            // thrown from inside it.
+            size_t skip = 0;
+            if (stack.depth() > 0) {
+                const CallStackFrame& top = stack.top();
+                if (top.function_ptr && top.function_ptr->is_native() && top.name() == type_to_name(error_type_)) skip = 1;
+            }
+            std::string stack_frames = stack.generate_stack_trace(20, skip);
 
             if (!stack_frames.empty()) {
                 trace += "\n";

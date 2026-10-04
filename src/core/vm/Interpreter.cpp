@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/engine/HostHooks.h"
 #include <array>
 #include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
@@ -9020,6 +9021,7 @@ Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
     Value script_this = (track_completion || ctx.get_type() == Context::Type::Module)
         ? ctx.get_this_value()
         : (ctx.get_global_object() ? Value(ctx.get_global_object()) : Value());
+    HostHooks::ScriptEntry script_entry;
     return run(*chunk, ctx, {}, &script_this);
 }
 

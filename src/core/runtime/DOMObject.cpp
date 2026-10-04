@@ -6,21 +6,99 @@
 
 #include "quanta/core/runtime/DOMObject.h"
 #include "quanta/core/gc/Collector.h"
+#include <cstdio>
+#include <cstdlib>
+#include <unordered_set>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Realm.h"
 
 namespace Quanta {
 
+namespace {
+
+// The host object whose constructor is running, which a Traced member finds to attach itself to.
+constinit thread_local DOMObject* g_constructing = nullptr;
+// How many live host objects declared Finalize(); the pass over a collection's dead is skipped when none did.
+constinit thread_local size_t g_finalizable_live = 0;
+
+std::vector<std::weak_ptr<WeakHandleBase::Slot>>& weak_slots() {
+    static thread_local std::vector<std::weak_ptr<WeakHandleBase::Slot>> slots;
+    return slots;
+}
+
+}
+
+DOMObject::DOMObject() : CustomObjectBase(ObjectType::Custom) {
+    set_custom_kind(CustomKind::Host);
+    g_constructing = this;
+}
+
+DOMObject* DOMObject::constructing() { return g_constructing; }
+void DOMObject::set_constructing(DOMObject* object) { g_constructing = object; }
+void DOMObject::note_finalizable() { g_finalizable_live++; }
+
 void DOMObject::trace(Visitor& v) {
     Object::trace_default(v);
+    for (const TracedBase* member = traced_; member; member = member->next_) member->Trace(v);
     if (type_) type_->visit(this, v);
 }
 
 // A cell that was never given a type (its constructor threw before
 // Heap::Allocate could stamp it) has only the base to destroy.
 void DOMObject::destroy() {
+    if (type_ && type_->finalize) g_finalizable_live--;
     if (type_) type_->destroy(this);
     else this->~DOMObject();
+}
+
+bool DOMObject::finalization_pending() {
+    return g_finalizable_live > 0 || !weak_slots().empty();
+}
+
+void DOMObject::finalize_dead(const std::vector<Heap::DeadCell>& dead) {
+    auto& slots = weak_slots();
+    if (!slots.empty()) {
+        std::unordered_set<const void*> gone;
+        gone.reserve(dead.size());
+        for (const Heap::DeadCell& d : dead) {
+            if (d.kind == CellKind::Object) gone.insert(d.cell);
+        }
+        size_t kept = 0;
+        for (size_t i = 0; i < slots.size(); i++) {
+            std::shared_ptr<WeakHandleBase::Slot> slot = slots[i].lock();
+            if (!slot) continue;
+            if (slot->target && gone.count(slot->target)) slot->target = nullptr;
+            slots[kept++] = slots[i];
+        }
+        slots.resize(kept);
+    }
+    if (g_finalizable_live == 0) return;
+    for (const Heap::DeadCell& d : dead) {
+        if (d.kind != CellKind::Object) continue;
+        Object* obj = static_cast<Object*>(d.cell);
+        if (obj->get_type() != Object::ObjectType::Custom) continue;
+        auto* base = static_cast<CustomObjectBase*>(obj);
+        if (base->get_custom_kind() != CustomObjectBase::CustomKind::Host) continue;
+        DOMObject* dom = static_cast<DOMObject*>(base);
+        if (dom->type_ && dom->type_->finalize) dom->type_->finalize(dom);
+    }
+}
+
+TracedBase::TracedBase() : owner_(g_constructing) {
+    if (!owner_) {
+        std::fprintf(stderr, "quanta: a Traced member was made outside the constructor of a DOMObject\n");
+        std::abort();
+    }
+    next_ = owner_->traced_;
+    owner_->traced_ = this;
+}
+
+void TracedBase::NoteStored(const Value& value) {
+    owner_->NoteWrite(value);
+}
+
+WeakHandleBase::WeakHandleBase(Object* target) : slot_(std::make_shared<Slot>(Slot{target})) {
+    weak_slots().push_back(slot_);
 }
 
 void DOMObject::NoteWrite() {

@@ -12,6 +12,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Value.h"
 #include <concepts>
+#include <memory>
 #include <new>
 #include <string>
 #include <type_traits>
@@ -61,6 +62,7 @@ struct DOMTypeInfo {
     void (*visit)(DOMObject*, Visitor&);
     void (*destroy)(DOMObject*);
     const DOMLegacyHooks* legacy;
+    void (*finalize)(DOMObject*);
 };
 
 template <class T>
@@ -139,6 +141,16 @@ constexpr DOMLegacyHooks dom_make_legacy_hooks() {
 template <class T>
 inline constexpr DOMLegacyHooks dom_legacy_hooks_of = dom_make_legacy_hooks<T>();
 
+// A type declares `void Finalize()` to hear that it is dead before anything is destroyed.
+template <class T>
+constexpr void (*dom_finalizer_of())(DOMObject*) {
+    if constexpr (requires(T& t) { t.Finalize(); }) {
+        return [](DOMObject* o) { static_cast<T*>(o)->Finalize(); };
+    } else {
+        return nullptr;
+    }
+}
+
 template <class T>
 struct DOMTypeOf {
     static constexpr DOMTypeInfo info = {
@@ -146,6 +158,7 @@ struct DOMTypeOf {
         [](DOMObject* o, Visitor& v) { static_cast<T*>(o)->Visit(v); },
         [](DOMObject* o) { static_cast<T*>(o)->~T(); },
         dom_has_legacy_hooks<T>() ? &dom_legacy_hooks_of<T> : nullptr,
+        dom_finalizer_of<T>(),
     };
 };
 
@@ -159,11 +172,15 @@ struct DOMTypeOf {
 //    and the like are fine as members.
 //  - Visit() runs whenever the collector traces the object, and is the ONLY
 //    way a cell referenced from a C++ member stays alive.
+class TracedBase;
+
 class DOMObject : public CustomObjectBase {
     const DOMTypeInfo* type_ = nullptr;
+    // The Traced members this object declares, linked as they were constructed.
+    TracedBase* traced_ = nullptr;
 
 public:
-    DOMObject() : CustomObjectBase(ObjectType::Custom) { set_custom_kind(CustomKind::Host); }
+    DOMObject();
     ~DOMObject() = default;
 
     // The base reports nothing; a derived type's own Visit() hides this one.
@@ -187,6 +204,13 @@ public:
     void trace(Visitor& v);
     void destroy();
 
+    // Before any cell of a collection's dead is destroyed, the dead host objects that declared
+    // `Finalize()` are told (and the WeakHandles that named a dead cell are cleared). Everything
+    // is still intact then, so a finalizer may read other cells; see the finalization contract
+    // in docs/embedding/native-objects.md.
+    static bool finalization_pending();
+    static void finalize_dead(const std::vector<Heap::DeadCell>& dead);
+
     friend struct DOMLegacyAccess;
 
     // The nine property operations of a legacy platform object (see DOMLegacyHooks), reached
@@ -204,7 +228,11 @@ public:
 private:
     template <class T, class... A>
     friend T* Heap::Allocate(A&&...);
+    friend class TracedBase;
     void set_dom_type(const DOMTypeInfo* info) { type_ = info; }
+    static DOMObject* constructing();
+    static void set_constructing(DOMObject* object);
+    static void note_finalizable();
 
     bool is_a(const DOMTypeInfo* wanted) const {
         for (const DOMTypeInfo* t = type_; t; t = t->parent) {
@@ -212,6 +240,93 @@ private:
         }
         return false;
     }
+};
+
+// A member of a host object that holds cells, which the object traces by itself and writes through
+// the barrier by itself: no Visit() entry to forget and no NoteWrite() to miss. A Traced member is
+// declared in the object's own class and constructed with it (it finds the object being built); one
+// made anywhere else is a programming error and aborts.
+class TracedBase {
+public:
+    virtual ~TracedBase() = default;
+    TracedBase(const TracedBase&) = delete;
+    TracedBase& operator=(const TracedBase&) = delete;
+
+protected:
+    TracedBase();
+    DOMObject* owner_;
+    // After a cell reference was stored: the barrier an old owner needs for a young target.
+    void NoteStored(const Value& value);
+
+private:
+    friend class DOMObject;
+    virtual void Trace(Visitor& v) const = 0;
+    TracedBase* next_ = nullptr;
+};
+
+// One value.
+class TracedValue : public TracedBase {
+public:
+    TracedValue() = default;
+    const Value& Get() const { return value_; }
+    void Set(const Value& value) { value_ = value; NoteStored(value); }
+    void Clear() { value_ = Value(); }
+
+private:
+    void Trace(Visitor& v) const override { v.visit(value_); }
+    Value value_;
+};
+
+// A list of values: what a host object keeps instead of a std::vector<Value> it has to Mark by hand.
+class TracedList : public TracedBase {
+public:
+    TracedList() = default;
+    size_t size() const { return values_.size(); }
+    bool empty() const { return values_.empty(); }
+    const Value& operator[](size_t i) const { return values_[i]; }
+    const Value* begin() const { return values_.data(); }
+    const Value* end() const { return values_.data() + values_.size(); }
+    void push_back(const Value& value) { values_.push_back(value); NoteStored(value); }
+    void set(size_t i, const Value& value) { values_[i] = value; NoteStored(value); }
+    void pop_back() { values_.pop_back(); }
+    void erase(size_t i) { values_.erase(values_.begin() + static_cast<std::ptrdiff_t>(i)); }
+    void clear() { values_.clear(); }
+
+private:
+    void Trace(Visitor& v) const override { for (const Value& value : values_) v.visit(value); }
+    std::vector<Value> values_;
+};
+
+// A reference to a cell that does not keep it alive: Get() returns the object while it lives and null
+// once the collector has found it dead (the clearing happens before any destructor of that collection
+// runs). For a host's own bookkeeping that must not extend a lifetime. Copies share the answer. A
+// thread's handles belong to that thread.
+class WeakHandleBase {
+public:
+    WeakHandleBase() = default;
+    bool IsEmpty() const { return !Raw(); }
+    void Reset() { slot_.reset(); }
+
+protected:
+    explicit WeakHandleBase(Object* target);
+    Object* Raw() const { return slot_ ? slot_->target : nullptr; }
+
+private:
+    friend class DOMObject;
+public:
+    struct Slot { Object* target; };
+private:
+    std::shared_ptr<Slot> slot_;
+};
+
+template <class T>
+class WeakHandle : public WeakHandleBase {
+    static_assert(std::is_base_of_v<Object, T>, "a WeakHandle names a cell");
+
+public:
+    WeakHandle() = default;
+    explicit WeakHandle(T* target) : WeakHandleBase(target) {}
+    T* Get() const { return static_cast<T*>(Raw()); }
 };
 
 template <class T>
@@ -238,8 +353,11 @@ T* Heap::Allocate(A&&... args) {
     // ever made switches every trace edge over to the slower path that can
     // resolve it (see g_any_large_cell). Not worth it for a host object.
     static_assert(sizeof(T) <= kMaxTier1Size, "host object too large for a heap block");
+    DOMObject* const outer = DOMObject::constructing();
     T* obj = new T(std::forward<A>(args)...);
+    DOMObject::set_constructing(outer);
     obj->set_dom_type(&DOMTypeOf<T>::info);
+    if constexpr (DOMTypeOf<T>::info.finalize != nullptr) DOMObject::note_finalizable();
     return obj;
 }
 

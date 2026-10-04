@@ -12,7 +12,9 @@
 #include "quanta/core/gc/Collector.h"
 
 #include <chrono>
+#include <functional>
 #include <map>
+#include <set>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -1554,6 +1556,329 @@ static void test_realm_helpers() {
     CHECK(eval_in(*b, "viaRun instanceof Array").as_boolean());
 }
 
+// ---- Reporting what nobody caught ------------------------------------------------
+
+static Embed::Isolate* g_report_isolate;
+
+static void test_error_reporting() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    g_report_isolate = isolate.get();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    Embed::Realm& r = *a;
+    Context& ctx = r.GetContext();
+
+    // What Evaluate says about a script that throws, and one that does not parse.
+    Embed::EvaluateResult thrown = r.Evaluate("function inner() { throw new RangeError('deep'); }\nfunction outer() { inner(); }\nouter();", "https://example.test/app.js");
+    CHECK(!thrown.ok && thrown.exception.is_object());
+    CHECK(thrown.filename == "https://example.test/app.js" && thrown.line > 0);
+    CHECK(thrown.stack.size() >= 2 && thrown.stack[0].function == "inner" && thrown.stack[1].function == "outer");
+    CHECK(thrown.stack[0].filename == "https://example.test/app.js" && thrown.stack[0].line > 0);
+    Embed::ErrorInfo info = InspectError(ctx, thrown.exception);
+    CHECK(info.is_error && info.name == "RangeError" && info.message == "deep" && !info.has_cause);
+    CHECK(info.stack.rfind("RangeError: deep", 0) == 0);
+
+    Embed::EvaluateResult syntax = r.Evaluate("let ok = 1;\nlet = = 2;", "bad.js");
+    CHECK(!syntax.ok && syntax.line == 2 && syntax.column > 0 && syntax.filename == "bad.js" && syntax.stack.empty());
+    CHECK(syntax.exception.is_object() && InspectError(ctx, syntax.exception).name == "SyntaxError");
+    CHECK(eval_in(r, "1 + 1").as_number() == 2);
+
+    // Causes, and values that are not errors.
+    r.Evaluate("globalThis.chained = new Error('outer', { cause: new TypeError('why') });");
+    Embed::ErrorInfo chained = InspectError(ctx, global_of(r, "chained"));
+    CHECK(chained.has_cause && InspectError(ctx, chained.cause).name == "TypeError");
+    Embed::ErrorInfo plain = InspectError(ctx, FromUtf8(ctx, "just text"));
+    CHECK(!plain.is_error && plain.message == "just text" && plain.frames.empty());
+    Embed::ErrorInfo number = InspectError(ctx, Value(42.0));
+    CHECK(!number.is_error && number.message == "42");
+
+    // Exceptions with no script left to catch them.
+    struct Seen { Embed::Realm* realm; std::string origin, name, message; bool is_error; size_t frames; };
+    std::vector<Seen> seen;
+    isolate->SetUncaughtExceptionHandler([&](const Embed::UncaughtException& e) {
+        seen.push_back({e.realm, e.origin, e.info.name, e.info.message, e.info.is_error, e.info.frames.size()});
+    });
+    r.Evaluate("setTimeout(function failing() { throw new Error('from a timer'); }, 0);"
+               "queueMicrotask(() => { throw 'a string'; });");
+    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    isolate->RunDueTimers();
+    CHECK(seen.size() == 2);
+    if (seen.size() == 2) {
+        CHECK(seen[0].origin == "queueMicrotask" && !seen[0].is_error && seen[0].message == "a string" && seen[0].realm == &r);
+        CHECK(seen[1].origin == "timer" && seen[1].is_error && seen[1].name == "Error" && seen[1].message == "from a timer" &&
+              seen[1].frames >= 1 && seen[1].realm == &r);
+    }
+    isolate->SetUncaughtExceptionHandler(nullptr);
+
+    // Promise rejections: unhandled when rejected, handled when a handler turns up.
+    struct Rejection { Embed::Realm* realm; Embed::RejectionEvent event; std::string reason; };
+    std::vector<Rejection> rejections;
+    isolate->SetPromiseRejectionHandler([&](Embed::Realm* realm, const Value& promise, const Value& reason, Embed::RejectionEvent event) {
+        CHECK(promise.is_object());
+        rejections.push_back({realm, event, InspectError(realm->GetContext(), reason).message});
+    });
+    r.Evaluate("globalThis.late = Promise.reject(new Error('nobody'));");
+    CHECK(rejections.size() == 1 && rejections[0].event == Embed::RejectionEvent::Unhandled && rejections[0].reason == "nobody" &&
+          rejections[0].realm == &r);
+    r.Evaluate("late.catch(() => {});");
+    CHECK(rejections.size() == 2 && rejections[1].event == Embed::RejectionEvent::Handled);
+    // Attached in the same turn, a handler still gives the host both events: it can cancel what it queued.
+    r.Evaluate("Promise.reject(new Error('handled at once')).catch(() => {});");
+    CHECK(rejections.size() == 4 && rejections[2].event == Embed::RejectionEvent::Unhandled &&
+          rejections[3].event == Embed::RejectionEvent::Handled);
+    r.Evaluate("(async () => { throw new Error('async'); })();");
+    CHECK(rejections.size() == 5 && rejections[4].reason == "async" && rejections[4].event == Embed::RejectionEvent::Unhandled);
+    isolate->SetPromiseRejectionHandler(nullptr);
+
+    // Whether any script is running, and a checkpoint from inside one.
+    DefineGlobalFunction(ctx, "stackEmpty", [](Context&, Value, Args, Value) { return Value(g_report_isolate->JsStackEmpty()); }, 0);
+    DefineGlobalFunction(ctx, "checkpoint", [](Context&, Value, Args, Value) {
+        g_report_isolate->PerformMicrotaskCheckpoint();
+        return Undefined();
+    }, 0);
+    CHECK(isolate->JsStackEmpty());
+    CHECK(!eval_in(r, "stackEmpty()").as_boolean());
+    r.Evaluate("globalThis.order = [];"
+               "Promise.resolve().then(() => order.push('job'));"
+               "checkpoint(); order.push('after');"
+               "Promise.resolve().then(() => { Promise.resolve().then(() => order.push('inner'));"
+               "  checkpoint(); order.push('outer-end'); });");
+    CHECK(eval_in(r, "order.join()").to_string() == "job,after,outer-end,inner");
+    CHECK(isolate->JsStackEmpty());
+    g_report_isolate = nullptr;
+}
+
+// ---- Finalization, weak handles and traced members ------------------------------
+
+static std::set<void*> g_registry;           // a host's own bookkeeping of live nodes
+static int g_finalized, g_peer_intact;
+
+struct Node : DOMObject {
+    static constexpr uint32_t kAlive = 0xA11CE;
+    uint32_t sentinel = kAlive;
+    int id;
+    Node* peer = nullptr;                     // a raw pointer to another node: not traced, not owned
+    explicit Node(int id) : id(id) { g_registry.insert(this); }
+    // Everything is still intact here: the peer may be read, dead or not.
+    void Finalize() {
+        g_finalized++;
+        if (peer && peer->sentinel == kAlive && peer->id != 0) g_peer_intact++;
+        g_registry.erase(this);
+    }
+    // The destructor may free what the object owns and nothing else.
+    ~Node() { sentinel = 0xDEAD; }
+};
+
+[[gnu::noinline]] static void make_node_pair(Embed::Realm& r) {
+    Node* a = Heap::Allocate<Node>(1);
+    Node* b = Heap::Allocate<Node>(2);
+    a->peer = b;
+    b->peer = a;
+    set_global(r, "nodeA", FromObject(a));
+    set_global(r, "nodeB", FromObject(b));
+}
+
+struct TracedHolder : DOMObject {
+    TracedValue one;
+    TracedList list;
+};
+
+[[gnu::noinline]] static TracedHolder* make_traced_holder(Embed::Realm& r) {
+    TracedHolder* holder = Heap::Allocate<TracedHolder>();
+    set_global(r, "holder", FromObject(holder));
+    return holder;
+}
+
+[[gnu::noinline]] static void store_young_values(Embed::Realm& r, TracedHolder* holder) {
+    r.Evaluate("globalThis.young = { tag: 'one' }; globalThis.young2 = { tag: 'two' };");
+    holder->one.Set(global_of(r, "young"));
+    holder->list.push_back(global_of(r, "young2"));
+    r.Evaluate("young = young2 = undefined;");
+}
+
+[[gnu::noinline]] static std::string read_tag(Context& ctx, const Value& object) {
+    return Get(ctx, object, "tag").to_string();
+}
+
+static void test_finalization_and_weak() {
+    g_registry.clear();
+    g_finalized = g_peer_intact = 0;
+    {
+        std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+        std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+        Embed::Realm& r = *realm;
+        Context& ctx = r.GetContext();
+
+        // Finalize runs once, before any destructor, with every cell of the collection still intact.
+        make_node_pair(r);
+        WeakHandle<Node> weak_a(DOMObject::Cast<Node>(global_of(r, "nodeA")));
+        WeakHandle<Node> weak_copy = weak_a;
+        r.Evaluate("globalThis.scriptObject = { tag: 'js' };");
+        WeakHandle<Object> weak_script(global_of(r, "scriptObject").as_object());
+        CHECK(weak_a.Get() && weak_copy.Get() == weak_a.Get() && weak_script.Get() && g_registry.size() == 2);
+        isolate->CollectGarbage();
+        CHECK(g_finalized == 0 && weak_a.Get() && weak_script.Get());
+
+        r.Evaluate("nodeA = nodeB = scriptObject = undefined;");
+        scrub_stack();
+        isolate->CollectGarbage();
+        isolate->CollectGarbage();
+        CHECK(g_finalized == 2 && g_peer_intact == 2 && g_registry.empty());
+        CHECK(weak_a.Get() == nullptr && weak_copy.Get() == nullptr && weak_copy.IsEmpty() && weak_script.Get() == nullptr);
+
+        // Traced members: traced and written through the barrier by themselves.
+        TracedHolder* holder = make_traced_holder(r);
+        isolate->CollectGarbage();               // the holder is old now
+        store_young_values(r, holder);
+        scrub_stack();
+        Collector::collect_minor();              // an old object's new edges must not be missed
+        CHECK(read_tag(ctx, holder->one.Get()) == "one" && read_tag(ctx, holder->list[0]) == "two");
+        isolate->CollectGarbage();
+        isolate->CollectGarbage();
+        CHECK(read_tag(ctx, holder->one.Get()) == "one" && read_tag(ctx, holder->list[0]) == "two" && holder->list.size() == 1);
+        holder->list.clear();
+        holder->one.Clear();
+        CHECK(holder->list.empty() && holder->one.Get().is_undefined());
+
+        // Teardown: everything still alive is finalized before the heap goes.
+        r.Evaluate("globalThis.keep = undefined;");
+        make_node_pair(r);
+        CHECK(g_registry.size() == 2);
+    }
+    CHECK(g_registry.empty() && g_finalized == 4);
+}
+
+// ---- Inspecting values -------------------------------------------------------------
+
+static void test_inspect() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    Context& ctx = r.GetContext();
+    using K = Embed::ObjectKind;
+
+    r.Evaluate(
+        "globalThis.sideEffects = 0;"
+        "class Point { constructor() { this.x = 1; } get norm() { sideEffects++; return 1; } }"
+        "const sym = Symbol('tag');"
+        "globalThis.samples = {"
+        "  plain: { a: 1, get lazy() { sideEffects++; return 2; }, set lazy(v) {}, [sym]: 'symval' },"
+        "  point: new Point(), arr: [1, 2, 3], fn: function named(a, b) { return a + b; }, arrow: (x) => x,"
+        "  klass: Point, asyncFn: async function af() {}, gen: function* g() {}, bound: function b0() {}.bind(null),"
+        "  native: Math.max, err: new RangeError('bad'), date: new Date(86400000), badDate: new Date(NaN), re: /a+b/gi,"
+        "  map: new Map([[1, 'one'], ['k', { v: 2 }]]), set: new Set([1, 'two']), weakMap: new WeakMap(), weakSet: new WeakSet(),"
+        "  weakRef: new WeakRef({}), pending: new Promise(() => {}), ok: Promise.resolve(42), no: Promise.reject(new Error('r')),"
+        "  proxy: new Proxy({ t: 1 }, { get() { sideEffects++; return 5; }, ownKeys() { sideEffects++; return []; } }),"
+        "  u8: new Uint8Array(4), f64: new Float64Array(2), buf: new ArrayBuffer(8), sab: new SharedArrayBuffer(2), dv: new DataView(new ArrayBuffer(6), 2),"
+        "  boxedNum: new Number(7), boxedStr: new String('s'), boxedBool: new Boolean(false), boxedSym: Object(Symbol('b')), boxedBig: Object(5n),"
+        "  generator: (function* () { yield 1; })(), iterator: [1][Symbol.iterator](), args: (function () { return arguments; })(1, 2),"
+        "  frozen: Object.freeze({}), nullProto: Object.create(null) };"
+        "samples.no.catch(() => {});"
+        "const dead = Proxy.revocable({}, {}); dead.revoke(); samples.revoked = dead.proxy;");
+    Value samples = global_of(r, "samples");
+    auto info_of = [&](const char* name) { return Inspect(ctx, Get(ctx, samples, name)); };
+
+    CHECK(!Inspect(ctx, Value(1.0)).is_object && !Inspect(ctx, FromUtf8(ctx, "s")).is_object);
+    Embed::ObjectInfo plain = info_of("plain");
+    CHECK(plain.is_object && plain.kind == K::Plain && plain.class_name == "Object" && plain.extensible && plain.id != 0);
+    CHECK(info_of("point").class_name == "Point" && info_of("point").kind == K::Plain);
+    CHECK(info_of("arr").kind == K::Array && info_of("arr").size == 3 && info_of("arr").class_name == "Array");
+    CHECK(info_of("frozen").extensible == false);
+    CHECK(info_of("nullProto").class_name.empty() && info_of("nullProto").prototype.is_null());
+    CHECK(info_of("args").kind == K::Arguments);
+
+    Embed::ObjectInfo fn = info_of("fn");
+    CHECK(fn.kind == K::Function && fn.function && fn.function->name == "named" && fn.function->length == 2 &&
+          !fn.function->is_class && !fn.function->is_arrow && fn.function->is_constructor && !fn.function->is_native &&
+          fn.function->source.find("a + b") != std::string::npos);
+    CHECK(info_of("arrow").function->is_arrow && !info_of("arrow").function->is_constructor);
+    CHECK(info_of("klass").function->is_class && info_of("klass").function->name == "Point");
+    CHECK(info_of("asyncFn").function->is_async && !info_of("asyncFn").function->is_generator);
+    CHECK(info_of("gen").function->is_generator && !info_of("gen").function->is_async);
+    CHECK(info_of("bound").function->is_bound);
+    CHECK(info_of("native").function->is_native && info_of("native").function->name == "max" &&
+          info_of("native").function->source.find("[native code]") != std::string::npos);
+
+    CHECK(info_of("err").kind == K::Error && info_of("err").class_name == "RangeError");
+    CHECK(info_of("date").kind == K::Date && info_of("date").date_value == 86400000.0 && std::isnan(info_of("badDate").date_value));
+    Embed::ObjectInfo re = info_of("re");
+    CHECK(re.kind == K::RegExp && re.regexp_source == "a+b" && re.regexp_flags == "gi");
+    Embed::ObjectInfo map = info_of("map");
+    CHECK(map.kind == K::Map && map.size == 2 && info_of("set").kind == K::Set && info_of("set").size == 2);
+    CHECK(info_of("weakMap").kind == K::WeakMap && info_of("weakSet").kind == K::WeakSet && info_of("weakRef").kind == K::WeakRef);
+
+    ValueList entries = MapEntries(Get(ctx, samples, "map"));
+    CHECK(entries.size() == 4 && entries[0].as_number() == 1 && entries[1].to_string() == "one" && entries[2].to_string() == "k" &&
+          Get(ctx, entries[3], "v").as_number() == 2);
+    ValueList members = SetValues(Get(ctx, samples, "set"));
+    CHECK(members.size() == 2 && members[0].as_number() == 1 && members[1].to_string() == "two" && MapEntries(samples).size() == 0);
+
+    Embed::ObjectInfo pending = info_of("pending"), ok = info_of("ok"), no = info_of("no");
+    CHECK(pending.kind == K::Promise && pending.promise_state == Embed::PromiseState::Pending && pending.promise_result.is_undefined());
+    CHECK(ok.promise_state == Embed::PromiseState::Fulfilled && ok.promise_result.as_number() == 42);
+    CHECK(no.promise_state == Embed::PromiseState::Rejected && InspectError(ctx, no.promise_result).message == "r");
+
+    Embed::ObjectInfo proxy = info_of("proxy");
+    CHECK(proxy.kind == K::Proxy && !proxy.proxy_revoked && Get(ctx, proxy.proxy_target, "t").as_number() == 1 && proxy.proxy_handler.is_object());
+    Embed::ObjectInfo revoked = info_of("revoked");
+    CHECK(revoked.kind == K::Proxy && revoked.proxy_revoked && revoked.proxy_target.is_null());
+    CHECK(InspectProperties(ctx, Get(ctx, samples, "proxy")).size() == 0);
+
+    CHECK(info_of("u8").kind == K::TypedArray && info_of("u8").element_type == "Uint8Array" && info_of("u8").size == 4 && info_of("u8").byte_length == 4);
+    CHECK(info_of("f64").element_type == "Float64Array" && info_of("f64").byte_length == 16);
+    CHECK(info_of("buf").kind == K::ArrayBuffer && info_of("buf").byte_length == 8 && !info_of("buf").detached);
+    CHECK(info_of("sab").kind == K::SharedArrayBuffer && info_of("dv").kind == K::DataView && info_of("dv").byte_length == 4);
+    CHECK(info_of("boxedNum").kind == K::BoxedNumber && info_of("boxedNum").primitive_value.as_number() == 7);
+    CHECK(info_of("boxedStr").kind == K::BoxedString && info_of("boxedStr").primitive_value.to_string() == "s");
+    CHECK(info_of("boxedBool").kind == K::BoxedBoolean && !info_of("boxedBool").primitive_value.as_boolean());
+    CHECK(info_of("boxedSym").kind == K::BoxedSymbol && info_of("boxedBig").kind == K::BoxedBigInt);
+    CHECK(info_of("generator").kind == K::Generator && info_of("iterator").kind == K::Iterator);
+
+    // Properties come back as descriptors; nothing was called to make them.
+    Embed::PropertyList props = InspectProperties(ctx, Get(ctx, samples, "plain"));
+    CHECK(props.size() == 3);
+    if (props.size() == 3) {
+        CHECK(props[0].key.to_string() == "a" && props[0].has_value && props[0].value.as_number() == 1 && props[0].writable && props[0].enumerable);
+        CHECK(props[1].key.to_string() == "lazy" && !props[1].has_value && props[1].has_getter && props[1].has_setter && props[1].getter.is_function());
+        CHECK(IsSymbol(props[2].key) && props[2].value.to_string() == "symval");
+    }
+    CHECK(eval_in(r, "sideEffects").as_number() == 0);   // no getter, no trap ran
+    Embed::PropertyList point_props = InspectProperties(ctx, Get(ctx, samples, "point"));
+    CHECK(point_props.size() == 1 && point_props[0].key.to_string() == "x");
+    Embed::PropertyList proto_props = InspectProperties(ctx, Get(ctx, Get(ctx, samples, "klass"), "prototype"));
+    bool norm_is_accessor = false;
+    for (const Embed::PropertyInfo& p : proto_props) if (p.key.to_string() == "norm") norm_is_accessor = p.has_getter && !p.has_value && !p.enumerable;
+    CHECK(norm_is_accessor && eval_in(r, "sideEffects").as_number() == 0);
+
+    // Identity: stable for an object, different between objects, which is what finds a cycle.
+    r.Evaluate("globalThis.loop = { name: 'loop' }; loop.self = loop; loop.child = { parent: loop };");
+    Value loop = global_of(r, "loop");
+    std::set<uint64_t> on_path;
+    std::function<bool(const Value&, int)> has_cycle = [&](const Value& v, int depth) {
+        Embed::ObjectInfo i = Inspect(ctx, v);
+        if (!i.is_object || depth > 8) return false;
+        if (!on_path.insert(i.id).second) return true;
+        for (const Embed::PropertyInfo& p : InspectProperties(ctx, v)) {
+            if (p.has_value && has_cycle(p.value, depth + 1)) { on_path.erase(i.id); return true; }
+        }
+        on_path.erase(i.id);
+        return false;
+    };
+    CHECK(has_cycle(loop, 0) && Inspect(ctx, loop).id == Inspect(ctx, global_of(r, "loop")).id && Inspect(ctx, loop).id != info_of("plain").id);
+    CHECK(!has_cycle(Get(ctx, samples, "arr"), 0));
+
+    // Detached buffers say so, through the view too.
+    r.Evaluate("globalThis.moving = new ArrayBuffer(4); globalThis.movingView = new Uint8Array(moving); moving.transfer();");
+    CHECK(Inspect(ctx, global_of(r, "moving")).detached && Inspect(ctx, global_of(r, "movingView")).detached &&
+          Inspect(ctx, global_of(r, "movingView")).size == 0);
+
+    // A realm without Quanta's console.
+    std::unique_ptr<Embed::Realm> quiet = isolate->CreateRealm(Embed::Isolate::RealmOptions{false});
+    CHECK(eval_in(*quiet, "typeof console").to_string() == "undefined");
+    CHECK(eval_in(r, "typeof console").to_string() == "object");
+    quiet->Evaluate("globalThis.console = { log() { return 'mine'; } };");
+    CHECK(eval_in(*quiet, "console.log()").to_string() == "mine");
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -1594,6 +1919,9 @@ int main() {
     test_objects_and_conversions();
     test_buffers_zero_copy();
     test_realm_helpers();
+    test_error_reporting();
+    test_finalization_and_weak();
+    test_inspect();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

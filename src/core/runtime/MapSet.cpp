@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/engine/HostHooks.h"
 #include "quanta/core/runtime/MapSet.h"
 #include <span>
 #include "quanta/core/gc/Collector.h"
@@ -2099,7 +2100,7 @@ void FinalizationRegistry::enqueue_cleanup_job() {
             if (self->context_->has_exception()) {
                 Value exc = self->context_->get_exception();
                 self->context_->clear_exception();
-                std::cerr << "Uncaught (in FinalizationRegistry cleanup) " << exc.to_string() << std::endl;
+                HostHooks::report_uncaught(*self->context_, exc, "FinalizationRegistry cleanup");
             }
         }
     }, {Value(self)});
