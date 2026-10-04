@@ -1163,6 +1163,18 @@ static void test_lone_surrogates() {
     CHECK(!HasException(ctx));
 }
 
+// A block-bodied arrow inside a function reads that function's `arguments`, also when the
+// function's body is read back lazily and the arrow's body is stepped over.
+static void test_arrow_arguments() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    CHECK(eval_in(r, "(function f() { return (() => { return arguments.length; })(); })(1, 2)").as_number() == 2);
+    CHECK(eval_in(r, "(function f() { return (() => { return (() => { return arguments[1]; })(); })(); })('a', 'b')").to_string() == "b");
+    CHECK(eval_in(r, "(function f() { const g = () => { if (true) { return arguments[0]; } }; return g(); })(7)").as_number() == 7);
+    CHECK(eval_in(r, "(function f() { return (() => { return typeof arguments; })(); })()").to_string() == "object");
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -1197,6 +1209,7 @@ int main() {
     test_globals_buffers_nested_proxies();
     test_legacy_platform_objects();
     test_lone_surrogates();
+    test_arrow_arguments();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

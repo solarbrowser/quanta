@@ -93,6 +93,10 @@ private:
     // Whether the body just asked for was stepped over rather than read. The
     // literal still gets built -- from the range, with no subtree.
     bool last_body_skipped_ = false;
+    // Whether the body skipped last names `arguments` anywhere inside it. A skipped arrow
+    // body is never read, so what its enclosing function learns from reading it (that it
+    // uses the function's own `arguments`) has to come from what was recorded of it.
+    bool last_body_names_arguments_ = false;
     bool skip_recorded_body();
     size_t last_body_tok_last_ = 0;
 

@@ -191,6 +191,8 @@ bool Parser::skip_recorded_body() {
     last_body_src_first_ = open;
     last_body_src_last_ = info->body_end;
     last_body_strict_ = info->body_strict;
+    static const uint32_t arguments_id = NamePool::intern("arguments");
+    last_body_names_arguments_ = info->all_names.count(arguments_id) != 0;
     return true;
 }
 
@@ -9641,8 +9643,11 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     if (match(TokenType::LEFT_BRACE)) {
         took_block_body = true;
         options_.function_depth++;
+        last_body_skipped_ = false;
         body = parse_block_statement(true);
         options_.function_depth--;
+        // An arrow's body reads the enclosing function's `arguments`, which a skipped one cannot say.
+        if (last_body_skipped_ && last_body_names_arguments_) subtree_acc_ |= kSubtreeArguments;
     } else {
         last_body_skipped_ = false;
         const size_t concise_tok_first = current_token_index_;
@@ -12412,8 +12417,11 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
     options_.in_async_body = true;
     if (match(TokenType::LEFT_BRACE)) {
         options_.function_depth++;
+        last_body_skipped_ = false;
         body = parse_block_statement(true);
         options_.function_depth--;
+        // An arrow's body reads the enclosing function's `arguments`, which a skipped one cannot say.
+        if (last_body_skipped_ && last_body_names_arguments_) subtree_acc_ |= kSubtreeArguments;
         if (body && has_non_simple_params) {
             auto* block = static_cast<BlockStatement*>(body.get());
             for (const auto& stmt : block->get_statements()) {
@@ -12514,8 +12522,11 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
     options_.in_async_body = true;
     if (match(TokenType::LEFT_BRACE)) {
         options_.function_depth++;
+        last_body_skipped_ = false;
         body = parse_block_statement(true);
         options_.function_depth--;
+        // An arrow's body reads the enclosing function's `arguments`, which a skipped one cannot say.
+        if (last_body_skipped_ && last_body_names_arguments_) subtree_acc_ |= kSubtreeArguments;
     } else {
         auto expr = parse_assignment_expression();
         if (!expr) {
