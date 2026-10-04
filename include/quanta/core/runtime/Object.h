@@ -1978,6 +1978,13 @@ public:
     bool super_is_null() const { return class_slots().super_is_null; }
     bool is_static_method() const { return class_slots().is_static_method; }
     // Derived in the spec sense: `extends <anything>`, `extends null` included.
+    // A native written to receive new.target, which then reads new.target.prototype itself.
+    bool takes_new_target() const { return has_construct_native_; }
+    // Whether a class with a constructor of its own passes new.target straight to such a
+    // native with its super() call, which then makes the object and reads new.target.prototype
+    // there, and only there. (A default constructor does not: it relies on the prototype
+    // read before it runs.)
+    bool super_call_reads_new_target() const;
     bool is_derived_ctor() const { const ClassSlots& s = class_slots(); return s.super_ctor || s.super_is_null; }
 
     // GetPrototypeFromConstructor's read. get_property("prototype") answers

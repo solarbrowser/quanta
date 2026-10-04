@@ -1982,6 +1982,12 @@ bool Function::set_property(const std::string& key, const Value& value, Property
     return ok;
 }
 
+bool Function::super_call_reads_new_target() const {
+    if (!is_derived_ctor() || is_default_ctor()) return false;
+    const Function* super = super_constructor();
+    return super && super->is_native() && super->takes_new_target();
+}
+
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     ValueVectorRoot args_root(&args);
     return construct(ctx, std::span<const Value>(args));

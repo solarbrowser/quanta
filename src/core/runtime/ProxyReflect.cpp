@@ -180,6 +180,8 @@ Value Proxy::get_trap(const Value& key, const Value& receiver) {
         Context* ctx = Object::current_context_;
         Value result = ctx ? trap_fn->call(*ctx, {Value(target_), key, receiver}, Value(handler_))
                             : target_->get_property(key.to_string());
+        // A trap that throws is the whole result: the invariants below only judge a value.
+        if (ctx && ctx->has_exception()) return Value();
         // The trap may have revoked this proxy itself (target_ now null) -- skip the
         // invariant checks below, which read target_.
         if (is_revoked()) return result;
@@ -236,6 +238,7 @@ bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver
         Context* ctx = Object::current_context_;
         bool result = ctx ? trap_fn->call(*ctx, {Value(target_), key, value, receiver}, Value(handler_)).to_boolean()
                            : target_->set_property(key.to_string(), value);
+        if (ctx && ctx->has_exception()) return false;
         if (result) {
             // Invariant: non-writable, non-configurable data property => new value must equal existing
             std::string key_str = to_prop_key(key);
@@ -330,6 +333,7 @@ bool Proxy::delete_trap(const Value& key) {
         Context* ctx = Object::current_context_;
         bool result = ctx ? trap_fn->call(*ctx, {Value(target_), key}, Value(handler_)).to_boolean()
                            : target_->delete_property(key.to_string());
+        if (ctx && ctx->has_exception()) return false;
         if (result) {
             std::string key_str = to_prop_key(key);
             PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
@@ -876,10 +880,16 @@ Value Proxy::construct_trap(std::span<const Value> args, Object* new_target) {
     Function* target_fn = static_cast<Function*>(target_);
 
     // GetPrototypeFromConstructor(newTarget): may fire the proxy's get trap and revoke it.
+    // A native that takes new.target does it itself, once, when it makes its object.
     auto new_object = ObjectFactory::create_object();
-    Value target_proto = nt->get_property("prototype");
-    if (ctx->has_exception()) return Value();
-    if (target_proto.is_object()) {
+    Value target_proto;
+    if (!target_fn->takes_new_target()) {
+        target_proto = nt->get_property("prototype");
+        if (ctx->has_exception()) return Value();
+    }
+    if (target_fn->takes_new_target()) {
+        // nothing to install: the native decides
+    } else if (target_proto.is_object()) {
         new_object->initialize_prototype(target_proto.as_object());
     } else if (target_proto.is_function()) {
         new_object->initialize_prototype(static_cast<Object*>(target_proto.as_function()));
@@ -1552,7 +1562,7 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
     // Native constructors resolve their own prototype from new.target *after*
     // argument validation (GetPrototypeFromConstructor ordering), so reading it
     // here would fire a newTarget.prototype getter too early.
-    if (!target->is_native()) {
+    if (!target->is_native() && !target->super_call_reads_new_target()) {
         nt_proto = new_target_obj->get_property("prototype");
         if (ctx.has_exception()) return Value();
         // Spec fallback: if newTarget.prototype isn't an object, the default

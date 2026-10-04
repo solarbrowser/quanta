@@ -1201,6 +1201,58 @@ static void test_accessor_redefined_in_setter() {
                      "return results[0] === results[1]; })()").as_boolean());
 }
 
+static Object* g_elem_proto;
+struct Elem : DOMObject {};
+
+static Value ConstructElem(Context& ctx, Value, Args, Value newTarget) {
+    if (IsUndefined(newTarget)) {
+        ThrowTypeError(ctx, "Illegal constructor");
+        return Undefined();
+    }
+    Object* proto = PrototypeFromNewTarget(ctx, newTarget);
+    if (HasException(ctx)) return Undefined();
+    Elem* e = Heap::Allocate<Elem>();
+    e->initialize_prototype(proto ? proto : g_elem_proto);
+    return FromObject(e);
+}
+
+// A Proxy's get trap that throws is what the caller sees, not an invariant violation about the
+// value it never returned; and new.target.prototype is read once by a native constructor, whether
+// it is reached directly, through a Proxy of it, or through a class that extends it.
+static void test_proxy_get_and_construct_reads() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> realm = isolate->CreateRealm();
+    Embed::Realm& r = *realm;
+    ClassRef elem = DefineClass(r.GetContext(), "HTMLElement", ConstructElem, 0);
+    g_elem_proto = elem.prototype;
+    DefineGlobal(r.GetContext(), "HTMLElement", elem.constructor);
+
+    for (const char* trap : {"get", "set", "deleteProperty"}) {
+        std::string script = std::string("(() => { const target = class {}; Object.freeze(target);"
+            "const p = new Proxy(target, { ") + trap + "() { throw new RangeError('boom'); } });"
+            "try { " + (std::string(trap) == "get" ? "p.prototype;" : std::string(trap) == "set" ? "p.prototype = 1;" : "delete p.prototype;") +
+            " return 'no throw'; } catch (e) { return e.constructor.name; } })()";
+        CHECK(eval_in(r, script.c_str()).to_string() == "RangeError");
+    }
+
+    const char* counting = "var reads = 0; var proxy = new Proxy(function NT() {}, { get(t, k, rcv) { if (k === 'prototype') reads++; return Reflect.get(t, k, rcv); } });";
+    auto reads_of = [&](const char* body) {
+        r.Evaluate(std::string(counting) + "globalThis.__out = (() => { " + body + " return reads; })();");
+        return global_of(r, "__out").as_number();
+    };
+    CHECK(reads_of("Reflect.construct(HTMLElement, [], proxy);") == 1);
+    CHECK(reads_of("new (new Proxy(HTMLElement, { get(t, k, rcv) { if (k === 'prototype') reads++; return Reflect.get(t, k, rcv); } }))();") == 1);
+    CHECK(reads_of("class Sub extends HTMLElement { constructor() { super(); } } Reflect.construct(Sub, [], proxy);") == 1);
+    CHECK(reads_of("class Sub extends HTMLElement {} Reflect.construct(Sub, [], proxy);") == 1);
+    CHECK(reads_of("Reflect.construct(Map, [], proxy);") == 1);
+    // And the object still gets new.target's prototype.
+    CHECK(eval_in(r, "(() => { function NT() {} NT.prototype = { marker: 1 };"
+                     "class Sub extends HTMLElement { constructor() { super(); } }"
+                     "class Plain extends HTMLElement {}"
+                     "return [Reflect.construct(HTMLElement, [], NT), Reflect.construct(Sub, [], NT), Reflect.construct(Plain, [], NT)]"
+                     ".every(o => Object.getPrototypeOf(o) === NT.prototype); })()").as_boolean());
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -1237,6 +1289,7 @@ int main() {
     test_lone_surrogates();
     test_arrow_arguments();
     test_accessor_redefined_in_setter();
+    test_proxy_get_and_construct_reads();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would
