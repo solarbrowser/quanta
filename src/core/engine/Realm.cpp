@@ -14,6 +14,7 @@ void Realm::trace(Visitor& v) const {
     v.visit_object(object_proto);
     v.visit_object(array_proto);
     v.visit_object(function_proto);
+    v.visit_object(global_proxy);
     v.visit_object(pristine_call);
     v.visit_object(pristine_apply);
     v.visit_object(throw_type_error);

@@ -54,6 +54,8 @@ static Value get_v(Context& ctx, Object* lookup_obj, const Value& receiver, cons
 
 // OrdinarySetPrototypeOf: same-value short-circuit, then extensibility check, then cycle check.
 static bool ordinary_set_prototype_of(Object* obj, Object* new_proto) {
+    bool exotic_result = false;
+    if (DOMObject::exotic_set_prototype_of(obj, new_proto, exotic_result)) return exotic_result;
     if (new_proto == obj->get_prototype()) return true;
     if (obj->has_internal_slot("__immutableProto__")) return false;
     if (!obj->is_extensible()) return false;
@@ -918,6 +920,9 @@ void register_object_builtins(Context& ctx) {
             }
 
             Object* proto = obj->get_prototype();
+            if (DOMObject::exotic_get_prototype_of(obj, proto)) {
+                if (ctx.has_exception()) return Value();
+            }
             if (proto) {
                 Function* func_proto = as_function(proto);
                 if (func_proto) {
@@ -1475,8 +1480,10 @@ void register_object_builtins(Context& ctx) {
     // TypedArray [[PreventExtensions]] returns false for views over a resizable
     // buffer (their index set can still change), so seal/freeze/preventExtensions throw.
     auto rejects_prevent_extensions = [](Object* obj) -> bool {
-        // A legacy platform object's [[PreventExtensions]] answers false as well.
+        // A legacy platform object's [[PreventExtensions]] answers false as well, and an exotic one decides.
         if (DOMObject::rejects_prevent_extensions(obj)) return true;
+        bool exotic_result = true;
+        if (DOMObject::exotic_prevent_extensions(obj, exotic_result)) return !exotic_result;
         if (!obj->is_typed_array()) return false;
         ArrayBuffer* buf = static_cast<TypedArrayBase*>(obj)->buffer();
         return buf && buf->is_resizable();
@@ -1646,6 +1653,8 @@ void register_object_builtins(Context& ctx) {
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 return Value(static_cast<Proxy*>(obj)->is_extensible_trap());
             }
+            bool exotic_result = false;
+            if (DOMObject::exotic_is_extensible(obj, exotic_result)) return Value(exotic_result);
             return Value(obj->is_extensible());
         }, 1);
     object_constructor->set_property("isExtensible", Value(isExtensible_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1954,6 +1963,8 @@ void register_object_builtins(Context& ctx) {
             Object* this_obj = to_object_or_throw(ctx, receiver);
             if (!this_obj) return Value();
             Object* proto = this_obj->get_prototype();
+            DOMObject::exotic_get_prototype_of(this_obj, proto);
+            if (ctx.has_exception()) return Value();
             return proto ? Value(proto) : Value::null();
         }, 0);
     auto proto_setter = ObjectFactory::create_native_function("set __proto__",

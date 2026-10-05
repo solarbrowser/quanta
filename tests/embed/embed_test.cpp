@@ -2558,6 +2558,150 @@ static void test_named_properties_object() {
     }
 }
 
+// ---- Exotic objects, WindowProxy, cross-origin ---------------------------------------------
+
+static void test_exotic_objects() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    Context& ca = a->GetContext();
+    auto text_of = [](Embed::Realm& r, const char* expr) {
+        Context& ctx = r.GetContext();
+        r.Evaluate(std::string("globalThis.__r = String(") + expr + ")");
+        return Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "__r"));
+    };
+
+    // A generic exotic object: some operations the host's, the rest ordinary.
+    Embed::ExoticHooks hooks;
+    hooks.get = [](Context& c, const Value&, const Value& key, const Value&) -> Value {
+        std::string k = key.is_string() ? key.to_string() : "";
+        return k == "magic" ? Embed::FromUtf8(c, "42") : Value();
+    };
+    hooks.getOwnProperty = [](Context& c, const Value&, const Value& key) -> std::optional<Embed::Descriptor> {
+        if (!key.is_string() || key.to_string() != "magic") return std::nullopt;
+        Embed::Descriptor d;
+        d.value = Embed::FromUtf8(c, "42");
+        d.has_value = d.has_writable = d.has_enumerable = d.has_configurable = true;
+        d.enumerable = true;
+        return d;
+    };
+    hooks.ownPropertyKeys = [](Context& c, const Value&) {
+        Embed::ValueList keys;
+        keys.Append(Embed::FromUtf8(c, "magic"));
+        return keys;
+    };
+    hooks.setPrototypeOf = [](Context&, const Value&, const Value&) { return false; };
+    hooks.preventExtensions = [](Context&, const Value&) { return false; };
+    Embed::Set(ca, Value(ca.get_global_object()), "exotic", Embed::NewExoticObject(ca, std::move(hooks), Embed::Null()));
+    CHECK(text_of(*a, "exotic.magic + ',' + Object.keys(exotic) + ',' + JSON.stringify(Object.getOwnPropertyDescriptor(exotic, 'magic'))") ==
+          "42,magic,{\"value\":\"42\",\"writable\":false,\"enumerable\":true,\"configurable\":false}");
+    CHECK(text_of(*a, "Reflect.setPrototypeOf(exotic, {}) + ',' + Reflect.preventExtensions(exotic) + ',' + Reflect.isExtensible(exotic)") == "false,false,true");
+
+    // Windows: A and B in one origin, C in another.
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> c = isolate->CreateRealm();
+    std::map<Embed::Realm*, std::string> origin{{a.get(), "https://a.test"}, {b.get(), "https://a.test"}, {c.get(), "https://evil.test"}};
+    Value proxy_b;
+    Embed::CrossOriginHooks window_hooks;
+    window_hooks.sameOrigin = [&](Embed::Realm* caller, Embed::Realm* target) { return caller && target && origin[caller] == origin[target]; };
+    window_hooks.properties = {{"close", false, false}, {"closed", true, false}, {"location", true, true},
+                               {"postMessage", false, false}, {"frames", true, false}};
+    window_hooks.childCount = [&](Embed::Realm* target) -> uint32_t { return target == a.get() ? 1 : 0; };
+    Persistent child_b;
+    window_hooks.childAt = [&](Embed::Realm* target, uint32_t index) -> std::optional<Value> {
+        if (target == a.get() && index == 0) return child_b.Get();
+        return std::nullopt;
+    };
+    window_hooks.childNamed = [&](Embed::Realm* target, const std::string& name) -> std::optional<Value> {
+        if (target == a.get() && name == "frameB") return child_b.Get();
+        return std::nullopt;
+    };
+    for (Embed::Realm* r : {a.get(), b.get(), c.get()}) {
+        CHECK(r->Evaluate("var secret = 'secret-' + (globalThis.who = 'w');"
+                          " function close() { return 'close:' + (this === globalThis ? 'proxy' : typeof this); }"
+                          " function postMessage(m) { return 'posted:' + m; }"
+                          " var loc = 'loc0';"
+                          " Object.defineProperty(globalThis, 'closed', { get() { return 'closed:' + (this === globalThis ? 'proxy' : typeof this); }, configurable: true });"
+                          " Object.defineProperty(globalThis, 'location', { get() { return loc; }, set(v) { loc = 'set:' + v; }, configurable: true });"
+                          " Object.defineProperty(globalThis, 'frames', { get() { return 'frames'; }, configurable: true });").ok);
+    }
+    Value proxy_a = Embed::NewWindowProxy(*a, window_hooks);
+    proxy_b = Embed::NewWindowProxy(*b, window_hooks);
+    child_b = Persistent(ca, proxy_b);
+    Value proxy_c = Embed::NewWindowProxy(*c, window_hooks);
+    Embed::Set(b->GetContext(), Value(b->GetContext().get_global_object()), "winA", proxy_a);
+    Embed::Set(c->GetContext(), Value(c->GetContext().get_global_object()), "winA", proxy_a);
+    CHECK(!Embed::HasException(ca) && Embed::IsWindowProxy(proxy_a));
+
+    // The proxy is the realm's global as script sees it.
+    CHECK(text_of(*a, "(globalThis === this) + ',' + ((function () { return this; })() === globalThis) + ',' + (typeof secret) + ',' + (globalThis.secret)") == "true,true,string,secret-w");
+    CHECK(text_of(*a, "Object.getPrototypeOf(globalThis) === Object.getPrototypeOf(this)") == "true");
+    CHECK(Embed::UnwrapWindowProxy(proxy_a).as_object() == ca.get_global_object());
+
+    // Same origin: everything, forwarded; accessors see the proxy as `this`.
+    CHECK(text_of(*b, "winA.secret + ',' + winA.close() + ',' + winA.closed") == "secret-w,close:proxy,closed:proxy");
+    CHECK(text_of(*b, "(winA.secret = 'changed', winA.secret) + ',' + Object.keys(winA).includes('secret')") == "changed,true");
+    CHECK(text_of(*a, "secret") == "changed");
+    CHECK(text_of(*b, "winA[0] === globalThis && winA.length === undefined && Reflect.ownKeys(winA)[0] === '0'") == "true");
+    CHECK(text_of(*b, "Reflect.defineProperty(winA, '0', { value: 1 }) + ',' + Reflect.deleteProperty(winA, '0')") == "false,false");
+    CHECK(text_of(*b, "Object.getPrototypeOf(winA) !== null && Reflect.isExtensible(winA) && !Reflect.preventExtensions(winA)") == "true");
+
+    // Another origin: the CrossOriginProperties and nothing else.
+    auto thrown = [&](const char* expr) { return text_of(*c, (std::string("(() => { try { return ") + expr + "; } catch (e) { return e.name; } })()").c_str()); };
+    CHECK(text_of(*c, "winA.close() + ',' + winA.closed + ',' + winA.postMessage('hi')") == "close:proxy,closed:proxy,posted:hi");
+    CHECK(thrown("winA.secret") == "SecurityError");
+    CHECK(thrown("winA.nope") == "SecurityError");
+    CHECK(thrown("('secret' in winA)") == "SecurityError");
+    CHECK(text_of(*c, "winA.then") == "undefined");
+    CHECK(text_of(*c, "winA[Symbol.toStringTag]") == "undefined");
+    CHECK(thrown("(winA.secret = 1)") == "SecurityError");
+    CHECK(thrown("delete winA.secret") == "SecurityError");
+    CHECK(thrown("Object.defineProperty(winA, 'x', { value: 1 })") == "SecurityError");
+    CHECK(thrown("(winA.closed = 1)") == "SecurityError");           // a getter only
+    CHECK(text_of(*c, "(winA.location = 'x', winA.location)") == "set:x");
+    CHECK(text_of(*a, "loc") == "set:x");
+    CHECK(text_of(*c, "JSON.stringify(Reflect.ownKeys(winA).filter(k => typeof k === 'string'))") == "[\"0\",\"close\",\"closed\",\"location\",\"postMessage\",\"frames\"]");
+    CHECK(text_of(*c, "Reflect.ownKeys(winA).filter(k => typeof k === 'symbol').length") == "3");
+    CHECK(text_of(*c, "Object.getPrototypeOf(winA) === null") == "true");
+    CHECK(text_of(*c, "Reflect.setPrototypeOf(winA, null) + ',' + Reflect.setPrototypeOf(winA, {}) + ',' + Reflect.isExtensible(winA) + ',' + Reflect.preventExtensions(winA)") == "true,false,true,false");
+    // The same wrapper each time, and descriptors as HTML shapes them.
+    CHECK(text_of(*c, "Object.getOwnPropertyDescriptor(winA, 'close').value === winA.close") == "true");
+    CHECK(text_of(*c, "JSON.stringify(Object.getOwnPropertyDescriptor(winA, 'close'), (k, v) => typeof v === 'function' ? 'fn' : v)") ==
+          "{\"value\":\"fn\",\"writable\":false,\"enumerable\":false,\"configurable\":true}");
+    CHECK(text_of(*c, "Object.getOwnPropertyDescriptor(winA, 'location').get !== undefined && Object.getOwnPropertyDescriptor(winA, 'closed').set === undefined") == "true");
+    // Children are visible across origins, by index and by name.
+    CHECK(text_of(*c, "(winA[0] === winA[0]) + ',' + typeof winA[0] + ',' + (winA.frameB === winA[0])") == "true,object,true");
+    // The error is the caller's: C's SecurityError is not A's.
+    CHECK(text_of(*c, "(() => { try { winA.secret; } catch (e) { return e instanceof Error && e.name; } })()") == "SecurityError");
+
+    // Navigation: the proxy stays, the window behind it is new.
+    std::unique_ptr<Embed::Realm> a2 = isolate->CreateRealm();
+    origin[a2.get()] = "https://a.test";
+    CHECK(a2->Evaluate("var secret = 'second document';").ok);
+    CHECK(Embed::SetWindowProxyTarget(proxy_a, *a2));
+    CHECK(text_of(*b, "winA.secret") == "second document");
+    CHECK(text_of(*a2, "globalThis === this") == "true");
+    CHECK(Embed::UnwrapWindowProxy(proxy_a).as_object() == a2->GetContext().get_global_object());
+    child_b.Reset();
+
+    // A Location: its own target, ordinary for its origin and the CrossOriginProperties for the rest.
+    Embed::CrossOriginHooks location_hooks;
+    location_hooks.sameOrigin = window_hooks.sameOrigin;
+    location_hooks.properties = {{"href", false, true}, {"replace", false, false}};
+    Value location = Embed::NewCrossOriginObject(*b, Embed::Null(), location_hooks);
+    Embed::Set(b->GetContext(), Value(b->GetContext().get_global_object()), "loc", location);
+    Embed::Set(c->GetContext(), Value(c->GetContext().get_global_object()), "loc", location);
+    CHECK(b->Evaluate("var assigned = ''; Object.defineProperty(loc, 'href', { get() { return 'https://a.test/'; }, set(v) { assigned = v; }, configurable: false });"
+                      " loc.replace = function (u) { return 'replaced:' + u; }; loc.secret = 'hidden';").ok);
+    CHECK(text_of(*b, "loc.href + ',' + loc.replace('/x') + ',' + loc.secret + ',' + Object.keys(loc)") == "https://a.test/,replaced:/x,hidden,replace,secret");
+    CHECK(text_of(*c, "loc.replace('/y')") == "replaced:/y");
+    CHECK(thrown("loc.href") == "SecurityError");            // setter only across origins
+    CHECK(thrown("loc.secret") == "SecurityError");
+    CHECK(thrown("Reflect.get(loc, 'href')") == "SecurityError");
+    CHECK(text_of(*c, "(loc.href = '/z', 'ok')") == "ok");
+    CHECK(text_of(*b, "assigned") == "/z");
+    CHECK(text_of(*c, "Object.getPrototypeOf(loc) === null && Reflect.ownKeys(loc).filter(k => typeof k === 'string').join()") == "href,replace");
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -2608,6 +2752,7 @@ int main() {
     test_timer_provider();
     test_code_generation();
     test_named_properties_object();
+    test_exotic_objects();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

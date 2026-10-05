@@ -178,6 +178,32 @@ The hooks, per host object:
 | `isTransferable(realm, object)` | Whether it may be in a transfer list. |
 | `deserialize(realm, data, transferred)` | The object, in `realm`; `data.values` are already cloned there. A value of `data.values` cannot refer back to the object being made. |
 
+## Exotic objects, WindowProxy and cross-origin objects
+
+`NewExoticObject(ctx, hooks, prototype)` is an object whose internal methods are the host's: `ExoticHooks` has one optional hook for each of [[GetOwnProperty]], [[DefineOwnProperty]], [[HasProperty]], [[Get]], [[Set]], [[Delete]], [[OwnPropertyKeys]], [[GetPrototypeOf]], [[SetPrototypeOf]], [[IsExtensible]] and [[PreventExtensions]], and a missing one is the ordinary behaviour of the object itself. Each hook gets the context of whoever is running, so an error it raises belongs to the caller's realm. A getter or setter is called with the object as `this` (the receiver is always the object itself). The hooks must not capture cells, and they live as long as the object.
+
+On top of that the engine builds HTML's WindowProxy and cross-origin objects, so that the algorithms are not rewritten for each of Window and Location.
+
+| | |
+|---|---|
+| `NewWindowProxy(realm, hooks)` | The WindowProxy for the window of `realm`. The realm's `globalThis`, its top-level `this` and the `this` of a sloppy function called without one become the proxy; names are still resolved against the global object behind it. |
+| `SetWindowProxyTarget(proxy, realm)` | Navigation: the proxy now fronts the window of `realm`, and that realm's global is the proxy too. The proxy is the same object, so an `iframe.contentWindow` held earlier stays valid. |
+| `NewCrossOriginObject(realm, prototype, hooks)` | A Location: its own target. |
+| `UnwrapWindowProxy(value)`, `IsWindowProxy(value)` | The window (the global object) behind a proxy: a host method called with the proxy as `this` unwraps it itself. Anything else comes back as it is. |
+| `Realm::SetGlobalProxy(proxy)` | What the two above do for the realm. |
+
+`CrossOriginHooks` is what the host says:
+
+| | |
+|---|---|
+| `sameOrigin(caller, target)` | IsPlatformObjectSameOrigin: whether script running in `caller` (null if it is not in a realm of this Isolate) may use all of `target`. Not asked for the same realm. |
+| `properties` | CrossOriginProperties: `{name, getter, setter}` for each thing another origin may reach. Neither getter nor setter: an operation (`close`, `postMessage`). The function behind it is the property of that name the window (or location) has itself, and the engine wraps it in a function of the caller's realm, the same one each time. |
+| `childCount`, `childAt`, `childNamed` | A window's document-tree children as `frames[0]` and, across origins as well, by name. Each gives the child's WindowProxy. |
+
+A same-origin caller gets every internal method forwarded to the window; any other gets CrossOriginGetOwnPropertyHelper, CrossOriginGet, CrossOriginSet and CrossOriginOwnPropertyKeys: a SecurityError (a `DOMException` of the caller's realm if it has one, otherwise an `Error` with that name) for anything not listed, `undefined` for `then` and the `toStringTag`, `hasInstance` and `isConcatSpreadable` symbols, a `null` prototype, and no way to define, delete or prevent extensions. The prototype is immutable. A WindowProxy's own prototype is the window's.
+
+`Object.getPrototypeOf`, `Object.setPrototypeOf`, `Reflect.*` and `Object.isExtensible`/`preventExtensions`/`seal`/`freeze` ask an exotic object's own methods. `instanceof` and an inherited-property walk still read the stored prototype, which for a WindowProxy is the window's.
+
 ## Named properties on a global
 
 `window.foo` for an element with `id="foo"`: WebIDL gives a global with a named getter an object in its prototype chain that answers for those names (Window.prototype, then the named properties object, then EventTarget.prototype). `NewNamedPropertiesObject` makes that object; the host wires it into the chain and keeps the names current.

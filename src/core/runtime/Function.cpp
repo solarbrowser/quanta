@@ -660,9 +660,9 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
                 // fast_no_closures path.
                 Object* global = nullptr;
                 if (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx) {
-                    global = closure_context_->get_global_object();
+                    global = closure_context_->get_global_this();
                 }
-                if (!global) global = ctx.get_global_object();
+                if (!global) global = ctx.get_global_this();
                 if (global) fast_this = Value(global);
             } else if (!this_value.is_object() && !this_value.is_function()) {
                 // box_primitive_this_sloppy's own first check is exactly this --
@@ -956,9 +956,9 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                     // rather than the shared ctx it would otherwise read.
                     Object* global = nullptr;
                     if (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx) {
-                        global = closure_context_->get_global_object();
+                        global = closure_context_->get_global_this();
                     }
-                    if (!global) global = ctx.get_global_object();
+                    if (!global) global = ctx.get_global_this();
                     if (global) actual_this = Value(global);
                 } else if (!this_value.is_object() && !this_value.is_function()) {
                     // ToObject must produce a wrapper from THIS function's own
@@ -1072,7 +1072,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             Value actual_this = this_value;
             if (!env_ctx.is_strict_mode()) {
                 if (this_value.is_undefined() || this_value.is_null()) {
-                    if (Object* global = env_ctx.get_global_object()) actual_this = Value(global);
+                    if (Object* global = env_ctx.get_global_this()) actual_this = Value(global);
                 } else if (!this_value.is_object() && !this_value.is_function()) {
                     actual_this = ObjectFactory::box_primitive_this_sloppy(env_ctx, this_value);
                 }
@@ -1358,7 +1358,7 @@ Value Function::call_native_in_realm(Realm* realm, Context& ctx, std::span<const
     bool this_is_nullish = this_value.is_undefined() || this_value.is_null();
     if (!is_arrow_ && !is_strict_now) {
         if (this_is_nullish) {
-            Object* global = function_context.get_global_object();
+            Object* global = function_context.get_global_this();
             if (global) {
                 actual_this = Value(global);
             }

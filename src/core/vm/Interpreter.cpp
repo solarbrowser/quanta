@@ -7,6 +7,7 @@
 #include "quanta/core/engine/HostHooks.h"
 #include <array>
 #include "quanta/core/vm/Interpreter.h"
+#include "quanta/core/runtime/DOMObject.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/engine/Context.h"
@@ -509,6 +510,11 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         return Value(static_cast<double>(obj->element_count()));
     }
 
+    // An exotic host object answers for every property itself: not even an own accessor is read around it.
+    if (obj->get_type() == Object::ObjectType::Custom && DOMObject::exotic_of(obj)) {
+        return obj->get_property(name);
+    }
+
     Shape* obj_shape = obj->get_shape();
     bool fast_type_ok = shape_fast_path_ok(obj->get_type());
     uint64_t cur_epoch = Object::descriptor_epoch();
@@ -924,6 +930,12 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (!obj) { set_primitive_named(ctx, receiver, name, value); return; }
 
     write_barrier_for(obj, value);
+    if (obj->get_type() == Object::ObjectType::Custom && DOMObject::exotic_of(obj)) {
+        bool ok = obj->set_property(name, value);
+        if (ctx.has_exception()) return;
+        if (!ok && ctx.is_strict_mode()) ctx.throw_type_error("Cannot assign to read only property '" + name + "'");
+        return;
+    }
     bool ordinary_recv = shape_fast_path_ok(obj->get_type());
     // Same epoch-trusting fast path as get_named's own -- skips
     // has_descriptor_override entirely on a hit. See Object::
@@ -9026,7 +9038,7 @@ Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
     // whose own is undefined. A script's is the global object.
     Value script_this = (track_completion || ctx.get_type() == Context::Type::Module)
         ? ctx.get_this_value()
-        : (ctx.get_global_object() ? Value(ctx.get_global_object()) : Value());
+        : (ctx.get_global_this() ? Value(ctx.get_global_this()) : Value());
     HostHooks::ScriptEntry script_entry;
     return run(*chunk, ctx, {}, &script_this);
 }

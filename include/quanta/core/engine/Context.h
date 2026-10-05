@@ -312,6 +312,11 @@ public:
     void set_strict_mode(bool strict) { strict_mode_ = strict; }
 
     Object* get_global_object() const { return global_object_; }
+    // The global `this` value: the realm's WindowProxy if the host gave it one, otherwise the global object.
+    Object* get_global_this() const {
+        Realm* r = realm();
+        return r && r->global_proxy ? r->global_proxy : global_object_;
+    }
     void set_global_object(Object* global);
 
     Object* get_this_binding() const {

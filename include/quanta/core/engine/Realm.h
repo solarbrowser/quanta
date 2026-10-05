@@ -59,6 +59,10 @@ public:
     Object* object_proto = nullptr;
     Object* array_proto = nullptr;
     Object* function_proto = nullptr;
+
+    // The window proxy a host fronts the global with (WindowProxy): when set, it is what script sees as globalThis
+    // and as the global `this`; the global object stays what names resolve against.
+    Object* global_proxy = nullptr;
     Function* pristine_call = nullptr;
     Function* pristine_apply = nullptr;
 

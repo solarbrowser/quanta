@@ -341,6 +341,10 @@ public:
     // there is one and otherwise the built-in loop (RunDueTimers). Returns the task, which can be cancelled.
     Task EnqueueTask(const std::string& source, std::function<void()> fn, double delayMs = 0);
 
+    // Makes `proxy` (a WindowProxy) what script in this realm sees as its global: globalThis, the top-level
+    // `this`, the `this` of a sloppy function called without one. NewWindowProxy and SetWindowProxyTarget do this.
+    void SetGlobalProxy(const Value& proxy);
+
     // Runs host code inside this realm: it is the realm that is running, and its context the
     // one engine code that wants a running context finds. What a host that calls into script
     // (or makes values) from outside any native function needs, so that what it makes belongs
@@ -939,6 +943,75 @@ Value NewError(Context& ctx, std::string_view kind, std::string_view message);
 // Throws that class, or any value at all.
 void ThrowError(Context& ctx, std::string_view kind, std::string_view message);
 void Throw(Context& ctx, const Value& exception);
+
+
+// ---- Exotic host objects ----------------------------------------------------------------
+//
+// An object that decides for itself what each of the object internal methods means: the cross-origin Window and
+// Location, a WindowProxy. Every hook is optional, and a missing one is the ordinary behaviour of the object
+// itself. They run on the context of whoever is running (`caller`), so an error they raise (a SecurityError, say)
+// is made in the caller's realm. `key` is a string or a symbol. A getter or setter is called with `receiver`,
+// which here is always the object itself.
+struct ExoticHooks {
+    std::function<std::optional<Descriptor>(Context& caller, const Value& self, const Value& key)> getOwnProperty;
+    std::function<bool(Context& caller, const Value& self, const Value& key, const Descriptor& descriptor)> defineOwnProperty;
+    std::function<bool(Context& caller, const Value& self, const Value& key)> hasProperty;
+    std::function<Value(Context& caller, const Value& self, const Value& key, const Value& receiver)> get;
+    std::function<bool(Context& caller, const Value& self, const Value& key, const Value& value, const Value& receiver)> set;
+    std::function<bool(Context& caller, const Value& self, const Value& key)> deleteProperty;
+    std::function<ValueList(Context& caller, const Value& self)> ownPropertyKeys;
+    std::function<Value(Context& caller, const Value& self)> getPrototypeOf;          // an object, or Null()
+    std::function<bool(Context& caller, const Value& self, const Value& prototype)> setPrototypeOf;
+    std::function<bool(Context& caller, const Value& self)> isExtensible;
+    std::function<bool(Context& caller, const Value& self)> preventExtensions;
+};
+// The hooks must not capture cells (a Value, a Persistent); they live as long as the object does.
+Value NewExoticObject(Context& ctx, ExoticHooks hooks, const Value& prototype);
+
+// ---- WindowProxy and cross-origin objects ------------------------------------------------
+//
+// HTML's WindowProxy: the object script holds for a window, which stays the same when the window behind it is
+// replaced by a navigation, and which lets a script in another origin touch only the few things it may. The host
+// says which origins may use all of a window and what the rest may use (CrossOriginProperties); the engine does
+// the internal methods (CrossOriginGetOwnPropertyHelper, CrossOriginGet/Set/OwnPropertyKeys, the immutable
+// prototype, the SecurityErrors and the wrapper functions) as HTML writes them.
+struct CrossOriginProperty {
+    std::string name;
+    // For an attribute, whether a script in another origin may read (`getter`) and write (`setter`) it. Neither:
+    // an operation (close, focus, postMessage). Its function is the property the window or location has of that
+    // name, which the engine wraps.
+    bool getter = false;
+    bool setter = false;
+};
+
+struct CrossOriginHooks {
+    // IsPlatformObjectSameOrigin: whether script running in `caller` may use the whole of `target`. `caller` is
+    // null for script that is not in a realm of this Isolate. Never asked when the two are the same realm.
+    std::function<bool(Realm* caller, Realm* target)> sameOrigin;
+    // CrossOriginProperties: what another origin may reach.
+    std::vector<CrossOriginProperty> properties;
+    // A window's document-tree children, which a window answers for as indices (frames[0]) and, from another
+    // origin as well, by name. Each gives the WindowProxy of the child. Optional; a Location has none.
+    std::function<uint32_t(Realm* target)> childCount;
+    std::function<std::optional<Value>(Realm* target, uint32_t index)> childAt;
+    std::function<std::optional<Value>(Realm* target, const std::string& name)> childNamed;
+};
+
+// The WindowProxy for the window of `window`'s realm. `window`'s global becomes the proxy: globalThis, the
+// top-level `this` and the `this` of a sloppy function called without one are the proxy from then on, not the
+// global object itself. Its properties are the global's, forwarded, and its prototype is the global's.
+Value NewWindowProxy(Realm& window, CrossOriginHooks hooks);
+// Navigation: the proxy now fronts the window of `window`'s realm, whose global becomes it too. The old window
+// carries on as the object it was, no longer reachable through the proxy.
+bool SetWindowProxyTarget(const Value& proxy, Realm& window);
+// The window (the global object) behind a WindowProxy; anything else is returned as it is. What a host method
+// called with the proxy as `this` needs.
+Value UnwrapWindowProxy(const Value& value);
+bool IsWindowProxy(const Value& value);
+
+// The cross-origin object for a Location: it is its own target. Its properties are the ordinary ones of the
+// object, defined by the host, for script in a same-origin realm, and the CrossOriginProperties for the rest.
+Value NewCrossOriginObject(Realm& realm, const Value& prototype, CrossOriginHooks hooks);
 
 }
 

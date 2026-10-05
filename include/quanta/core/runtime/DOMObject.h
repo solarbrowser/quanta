@@ -64,6 +64,36 @@ struct DOMLegacyHooks {
     Object* (*subject)(DOMObject*) = nullptr;
 };
 
+// The internal methods of an exotic host object: one that decides for itself what each property operation
+// means (WindowProxy and the cross-origin Window and Location). A host type declares the ones it takes over as
+// static member functions; an operation it leaves out is the ordinary one of the object itself. They run on
+// the context of whoever is running, so an error they raise belongs to the caller's realm.
+//
+//   static bool ExoticGetOwnProperty(Context&, T&, const std::string& key, PropertyDescriptor& out);  // false: none
+//   static bool ExoticDefineOwnProperty(Context&, T&, const std::string& key, const PropertyDescriptor&);
+//   static bool ExoticHasProperty(Context&, T&, const std::string& key);
+//   static Value ExoticGet(Context&, T&, const std::string& key);
+//   static bool ExoticSet(Context&, T&, const std::string& key, const Value&);   // false: the [[Set]] failed
+//   static bool ExoticDelete(Context&, T&, const std::string& key);
+//   static std::vector<std::string> ExoticOwnKeys(Context&, T&);
+//   static bool ExoticGetPrototypeOf(Context&, T&, Object*& out);   // out: null for no prototype
+//   static bool ExoticSetPrototypeOf(Context&, T&, Object* prototype);
+//   static bool ExoticIsExtensible(Context&, T&);
+//   static bool ExoticPreventExtensions(Context&, T&);
+struct DOMExoticHooks {
+    bool (*get_own_property)(Context&, DOMObject*, const std::string&, PropertyDescriptor&) = nullptr;
+    bool (*define_own_property)(Context&, DOMObject*, const std::string&, const PropertyDescriptor&) = nullptr;
+    bool (*has_property)(Context&, DOMObject*, const std::string&) = nullptr;
+    Value (*get)(Context&, DOMObject*, const std::string&) = nullptr;
+    bool (*set)(Context&, DOMObject*, const std::string&, const Value&) = nullptr;
+    bool (*remove)(Context&, DOMObject*, const std::string&) = nullptr;
+    std::vector<std::string> (*own_keys)(Context&, DOMObject*) = nullptr;
+    bool (*get_prototype_of)(Context&, DOMObject*, Object*&) = nullptr;
+    bool (*set_prototype_of)(Context&, DOMObject*, Object*) = nullptr;
+    bool (*is_extensible)(Context&, DOMObject*) = nullptr;
+    bool (*prevent_extensions)(Context&, DOMObject*) = nullptr;
+};
+
 // What the collector needs to know about one concrete DOMObject type: how to
 // report the cells its C++ members reference, and how to destroy it.
 struct DOMTypeInfo {
@@ -72,6 +102,7 @@ struct DOMTypeInfo {
     void (*destroy)(DOMObject*);
     const DOMLegacyHooks* legacy;
     void (*finalize)(DOMObject*);
+    const DOMExoticHooks* exotic;
 };
 
 template <class T>
@@ -153,6 +184,53 @@ constexpr DOMLegacyHooks dom_make_legacy_hooks() {
 template <class T>
 inline constexpr DOMLegacyHooks dom_legacy_hooks_of = dom_make_legacy_hooks<T>();
 
+template <class T>
+constexpr bool dom_has_exotic_hooks() {
+    return requires { T::ExoticGetOwnProperty; } || requires { T::ExoticGet; } || requires { T::ExoticGetPrototypeOf; };
+}
+
+template <class T>
+constexpr DOMExoticHooks dom_make_exotic_hooks() {
+    DOMExoticHooks h;
+    if constexpr (requires(Context& c, T& t, const std::string& k, PropertyDescriptor& d) { { T::ExoticGetOwnProperty(c, t, k, d) } -> std::convertible_to<bool>; }) {
+        h.get_own_property = [](Context& c, DOMObject* o, const std::string& k, PropertyDescriptor& d) -> bool { return T::ExoticGetOwnProperty(c, *static_cast<T*>(o), k, d); };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& k, const PropertyDescriptor& d) { { T::ExoticDefineOwnProperty(c, t, k, d) } -> std::convertible_to<bool>; }) {
+        h.define_own_property = [](Context& c, DOMObject* o, const std::string& k, const PropertyDescriptor& d) -> bool { return T::ExoticDefineOwnProperty(c, *static_cast<T*>(o), k, d); };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& k) { { T::ExoticHasProperty(c, t, k) } -> std::convertible_to<bool>; }) {
+        h.has_property = [](Context& c, DOMObject* o, const std::string& k) -> bool { return T::ExoticHasProperty(c, *static_cast<T*>(o), k); };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& k) { { T::ExoticGet(c, t, k) } -> std::convertible_to<Value>; }) {
+        h.get = [](Context& c, DOMObject* o, const std::string& k) -> Value { return T::ExoticGet(c, *static_cast<T*>(o), k); };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& k, const Value& v) { { T::ExoticSet(c, t, k, v) } -> std::convertible_to<bool>; }) {
+        h.set = [](Context& c, DOMObject* o, const std::string& k, const Value& v) -> bool { return T::ExoticSet(c, *static_cast<T*>(o), k, v); };
+    }
+    if constexpr (requires(Context& c, T& t, const std::string& k) { { T::ExoticDelete(c, t, k) } -> std::convertible_to<bool>; }) {
+        h.remove = [](Context& c, DOMObject* o, const std::string& k) -> bool { return T::ExoticDelete(c, *static_cast<T*>(o), k); };
+    }
+    if constexpr (requires(Context& c, T& t) { { T::ExoticOwnKeys(c, t) } -> std::convertible_to<std::vector<std::string>>; }) {
+        h.own_keys = [](Context& c, DOMObject* o) -> std::vector<std::string> { return T::ExoticOwnKeys(c, *static_cast<T*>(o)); };
+    }
+    if constexpr (requires(Context& c, T& t, Object*& out) { { T::ExoticGetPrototypeOf(c, t, out) } -> std::convertible_to<bool>; }) {
+        h.get_prototype_of = [](Context& c, DOMObject* o, Object*& out) -> bool { return T::ExoticGetPrototypeOf(c, *static_cast<T*>(o), out); };
+    }
+    if constexpr (requires(Context& c, T& t, Object* p) { { T::ExoticSetPrototypeOf(c, t, p) } -> std::convertible_to<bool>; }) {
+        h.set_prototype_of = [](Context& c, DOMObject* o, Object* p) -> bool { return T::ExoticSetPrototypeOf(c, *static_cast<T*>(o), p); };
+    }
+    if constexpr (requires(Context& c, T& t) { { T::ExoticIsExtensible(c, t) } -> std::convertible_to<bool>; }) {
+        h.is_extensible = [](Context& c, DOMObject* o) -> bool { return T::ExoticIsExtensible(c, *static_cast<T*>(o)); };
+    }
+    if constexpr (requires(Context& c, T& t) { { T::ExoticPreventExtensions(c, t) } -> std::convertible_to<bool>; }) {
+        h.prevent_extensions = [](Context& c, DOMObject* o) -> bool { return T::ExoticPreventExtensions(c, *static_cast<T*>(o)); };
+    }
+    return h;
+}
+
+template <class T>
+inline constexpr DOMExoticHooks dom_exotic_hooks_of = dom_make_exotic_hooks<T>();
+
 // A type declares `void Finalize()` to hear that it is dead before anything is destroyed.
 template <class T>
 constexpr void (*dom_finalizer_of())(DOMObject*) {
@@ -171,6 +249,7 @@ struct DOMTypeOf {
         [](DOMObject* o) { static_cast<T*>(o)->~T(); },
         dom_has_legacy_hooks<T>() ? &dom_legacy_hooks_of<T> : nullptr,
         dom_finalizer_of<T>(),
+        dom_has_exotic_hooks<T>() ? &dom_exotic_hooks_of<T> : nullptr,
     };
 };
 
@@ -238,6 +317,26 @@ public:
     bool legacy_set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
     // [[PreventExtensions]] of a legacy platform object (and of a named properties object) answers false.
     static bool rejects_prevent_extensions(const Object* object);
+
+    // The prototype and extensibility internal methods of an exotic host object, for the callers that must see
+    // them (Object.getPrototypeOf and friends). Each returns false when `object` is not exotic in that respect,
+    // and the ordinary behaviour applies; otherwise `out` / `result` is the answer (an exception may be pending).
+    static bool exotic_get_prototype_of(Object* object, Object*& out);
+    static bool exotic_set_prototype_of(Object* object, Object* prototype, bool& result);
+    static bool exotic_is_extensible(Object* object, bool& result);
+    static bool exotic_prevent_extensions(Object* object, bool& result);
+    static const DOMExoticHooks* exotic_of(const Object* object);
+
+    // The ordinary property operations of the object itself, for an exotic object that answers for some of its
+    // properties and leaves the rest to the plain object it also is.
+    bool ordinary_has_property(const std::string& key) const;
+    bool ordinary_has_own_property(const std::string& key) const;
+    Value ordinary_get(const std::string& key) const;
+    bool ordinary_set(const std::string& key, const Value& value);
+    bool ordinary_delete(const std::string& key);
+    std::vector<std::string> ordinary_own_keys() const;
+    PropertyDescriptor ordinary_get_own_property(const std::string& key) const;
+    bool ordinary_define_own_property(const std::string& key, const PropertyDescriptor& desc);
 
 private:
     template <class T, class... A>

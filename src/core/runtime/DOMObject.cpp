@@ -140,6 +140,26 @@ Context* hook_context() {
 
 }
 
+// While one of the ordinary_* operations runs on an exotic object, its exotic hooks stand aside: the ordinary
+// bodies reach for the dispatching operations of the same object inside.
+namespace {
+constinit thread_local const DOMObject* g_ordinary_self = nullptr;
+struct OrdinaryScope {
+    const DOMObject* previous;
+    explicit OrdinaryScope(const DOMObject* self) : previous(g_ordinary_self) { g_ordinary_self = self; }
+    ~OrdinaryScope() { g_ordinary_self = previous; }
+};
+}
+
+bool DOMObject::ordinary_has_property(const std::string& key) const { OrdinaryScope s(this); return has_property_default(key); }
+bool DOMObject::ordinary_has_own_property(const std::string& key) const { OrdinaryScope s(this); return has_own_property_default(key); }
+Value DOMObject::ordinary_get(const std::string& key) const { OrdinaryScope s(this); return get_property_default(key); }
+bool DOMObject::ordinary_set(const std::string& key, const Value& value) { OrdinaryScope s(this); return set_property_default(key, value); }
+bool DOMObject::ordinary_delete(const std::string& key) { OrdinaryScope s(this); return delete_property_default(key); }
+std::vector<std::string> DOMObject::ordinary_own_keys() const { OrdinaryScope s(this); return get_own_property_keys_default(); }
+PropertyDescriptor DOMObject::ordinary_get_own_property(const std::string& key) const { OrdinaryScope s(this); return get_property_descriptor_default(key); }
+bool DOMObject::ordinary_define_own_property(const std::string& key, const PropertyDescriptor& desc) { OrdinaryScope s(this); return set_property_descriptor_default(key, desc); }
+
 // Reaches the protected ordinary-object bodies the helpers below need.
 struct DOMLegacyAccess {
 // The named property visibility algorithm: P is a supported name, and nothing nearer than
@@ -237,13 +257,29 @@ static bool legacy_own(const DOMObject* self, const DOMLegacyHooks& h, Context& 
     Context* ctx = hooks ? hook_context() : nullptr;                                             \
     if (!hooks || !ctx) return fallback;
 
+// An exotic host object (DOMExoticHooks) answers for the operations it declares, on the running context.
+#define QUANTA_EXOTIC(member)                                                                      \
+    const DOMExoticHooks* exotic = type_ ? type_->exotic : nullptr;                                \
+    Context* exotic_ctx = exotic && exotic->member && g_ordinary_self != this ? hook_context() : nullptr;
+
 bool DOMObject::legacy_has_own_property(const std::string& key) const {
+    {
+        QUANTA_EXOTIC(get_own_property)
+        if (exotic_ctx) {
+            PropertyDescriptor desc;
+            return exotic->get_own_property(*exotic_ctx, const_cast<DOMObject*>(this), key, desc);
+        }
+    }
     QUANTA_LEGACY_PROLOGUE(has_own_property_default(key))
     PropertyDescriptor desc;
     return DOMLegacyAccess::legacy_own(this, *hooks, *ctx, key, false, desc);
 }
 
 bool DOMObject::legacy_has_property(const std::string& key) const {
+    {
+        QUANTA_EXOTIC(has_property)
+        if (exotic_ctx) return exotic->has_property(*exotic_ctx, const_cast<DOMObject*>(this), key);
+    }
     QUANTA_LEGACY_PROLOGUE(has_property_default(key))
     uint32_t index = 0;
     if (hooks->indexed_get && !is_symbol_key(key) && array_index(key, index)) {
@@ -256,6 +292,10 @@ bool DOMObject::legacy_has_property(const std::string& key) const {
 }
 
 Value DOMObject::legacy_get_property(const std::string& key) const {
+    {
+        QUANTA_EXOTIC(get)
+        if (exotic_ctx) return exotic->get(*exotic_ctx, const_cast<DOMObject*>(this), key);
+    }
     QUANTA_LEGACY_PROLOGUE(get_property_default(key))
     if (is_symbol_key(key)) return get_property_default(key);
     uint32_t index = 0;
@@ -273,6 +313,10 @@ Value DOMObject::legacy_get_property(const std::string& key) const {
 }
 
 bool DOMObject::legacy_set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    {
+        QUANTA_EXOTIC(set)
+        if (exotic_ctx) return exotic->set(*exotic_ctx, this, key, value);
+    }
     QUANTA_LEGACY_PROLOGUE(set_property_default(key, value, attrs))
     if (hooks->subject) return false;   // a named properties object takes no property of its own
     if (is_symbol_key(key)) return set_property_default(key, value, attrs);
@@ -292,6 +336,10 @@ bool DOMObject::legacy_set_property(const std::string& key, const Value& value, 
 }
 
 bool DOMObject::legacy_delete_property(const std::string& key) {
+    {
+        QUANTA_EXOTIC(remove)
+        if (exotic_ctx) return exotic->remove(*exotic_ctx, this, key);
+    }
     QUANTA_LEGACY_PROLOGUE(delete_property_default(key))
     if (hooks->subject) return false;
     if (is_symbol_key(key)) return delete_property_default(key);
@@ -310,6 +358,10 @@ bool DOMObject::legacy_delete_property(const std::string& key) {
 }
 
 std::vector<std::string> DOMObject::legacy_get_own_property_keys() const {
+    {
+        QUANTA_EXOTIC(own_keys)
+        if (exotic_ctx) return exotic->own_keys(*exotic_ctx, const_cast<DOMObject*>(this));
+    }
     QUANTA_LEGACY_PROLOGUE(get_own_property_keys_default())
     std::vector<std::string> keys;
     if (hooks->indexed_get && hooks->indexed_length) {
@@ -322,6 +374,23 @@ std::vector<std::string> DOMObject::legacy_get_own_property_keys() const {
 }
 
 std::vector<std::string> DOMObject::legacy_get_enumerable_keys() const {
+    {
+        QUANTA_EXOTIC(own_keys)
+        if (exotic_ctx) {
+            // EnumerableOwnProperties: the keys, asked one by one.
+            std::vector<std::string> keys;
+            for (std::string& key : exotic->own_keys(*exotic_ctx, const_cast<DOMObject*>(this))) {
+                if (is_symbol_key(key)) continue;
+                PropertyDescriptor desc;
+                if (exotic->get_own_property &&
+                    exotic->get_own_property(*exotic_ctx, const_cast<DOMObject*>(this), key, desc) && desc.is_enumerable()) {
+                    keys.push_back(std::move(key));
+                }
+                if (exotic_ctx->has_exception()) break;
+            }
+            return keys;
+        }
+    }
     QUANTA_LEGACY_PROLOGUE(get_enumerable_keys_default())
     // EnumerableOwnProperties: the own keys, asked one by one whether they are enumerable.
     std::vector<std::string> keys;
@@ -336,6 +405,14 @@ std::vector<std::string> DOMObject::legacy_get_enumerable_keys() const {
 }
 
 PropertyDescriptor DOMObject::legacy_get_property_descriptor(const std::string& key) const {
+    {
+        QUANTA_EXOTIC(get_own_property)
+        if (exotic_ctx) {
+            PropertyDescriptor desc;
+            if (exotic->get_own_property(*exotic_ctx, const_cast<DOMObject*>(this), key, desc)) return desc;
+            return PropertyDescriptor();
+        }
+    }
     QUANTA_LEGACY_PROLOGUE(get_property_descriptor_default(key))
     PropertyDescriptor desc;
     if (DOMLegacyAccess::legacy_own(this, *hooks, *ctx, key, false, desc)) return desc;
@@ -343,6 +420,10 @@ PropertyDescriptor DOMObject::legacy_get_property_descriptor(const std::string& 
 }
 
 bool DOMObject::legacy_set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    {
+        QUANTA_EXOTIC(define_own_property)
+        if (exotic_ctx) return exotic->define_own_property(*exotic_ctx, this, key, desc);
+    }
     QUANTA_LEGACY_PROLOGUE(set_property_descriptor_default(key, desc))
     if (hooks->subject) return false;
     if (is_symbol_key(key)) return set_property_descriptor_default(key, desc);
@@ -373,7 +454,45 @@ bool DOMObject::rejects_prevent_extensions(const Object* object) {
     if (!object || object->get_type() != Object::ObjectType::Custom) return false;
     if (static_cast<const CustomObjectBase*>(object)->get_custom_kind() != CustomObjectBase::CustomKind::Host) return false;
     const DOMTypeInfo* info = static_cast<const DOMObject*>(object)->type_;
-    return info && info->legacy;
+    // An exotic object answers for itself, in exotic_prevent_extensions.
+    return info && info->legacy && !(info->exotic && info->exotic->prevent_extensions);
+}
+
+const DOMExoticHooks* DOMObject::exotic_of(const Object* object) {
+    if (!object || object->get_type() != Object::ObjectType::Custom) return nullptr;
+    if (static_cast<const CustomObjectBase*>(object)->get_custom_kind() != CustomObjectBase::CustomKind::Host) return nullptr;
+    const DOMTypeInfo* info = static_cast<const DOMObject*>(object)->type_;
+    return info ? info->exotic : nullptr;
+}
+
+bool DOMObject::exotic_get_prototype_of(Object* object, Object*& out) {
+    const DOMExoticHooks* hooks = exotic_of(object);
+    Context* ctx = hooks && hooks->get_prototype_of ? hook_context() : nullptr;
+    return ctx && hooks->get_prototype_of(*ctx, static_cast<DOMObject*>(object), out);
+}
+
+bool DOMObject::exotic_set_prototype_of(Object* object, Object* prototype, bool& result) {
+    const DOMExoticHooks* hooks = exotic_of(object);
+    Context* ctx = hooks && hooks->set_prototype_of ? hook_context() : nullptr;
+    if (!ctx) return false;
+    result = hooks->set_prototype_of(*ctx, static_cast<DOMObject*>(object), prototype);
+    return true;
+}
+
+bool DOMObject::exotic_is_extensible(Object* object, bool& result) {
+    const DOMExoticHooks* hooks = exotic_of(object);
+    Context* ctx = hooks && hooks->is_extensible ? hook_context() : nullptr;
+    if (!ctx) return false;
+    result = hooks->is_extensible(*ctx, static_cast<DOMObject*>(object));
+    return true;
+}
+
+bool DOMObject::exotic_prevent_extensions(Object* object, bool& result) {
+    const DOMExoticHooks* hooks = exotic_of(object);
+    Context* ctx = hooks && hooks->prevent_extensions ? hook_context() : nullptr;
+    if (!ctx) return false;
+    result = hooks->prevent_extensions(*ctx, static_cast<DOMObject*>(object));
+    return true;
 }
 
 }

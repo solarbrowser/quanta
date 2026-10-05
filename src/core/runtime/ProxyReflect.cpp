@@ -133,6 +133,8 @@ static bool target_callable(Object* target) {
 
 // OrdinarySetPrototypeOf: same-value short-circuit, extensibility check, then cycle detection.
 static bool ordinary_set_prototype_of(Object* obj, Object* new_proto) {
+    bool exotic_result = false;
+    if (DOMObject::exotic_set_prototype_of(obj, new_proto, exotic_result)) return exotic_result;
     if (new_proto == obj->get_prototype()) return true;
     if (obj->has_internal_slot("__immutableProto__")) return false;
     if (!obj->is_extensible()) return false;
@@ -1089,6 +1091,8 @@ Value Reflect::reflect_get(Context& ctx, std::span<const Value> args, Value rece
         if (current->get_type() == Object::ObjectType::Proxy) {
             return static_cast<Proxy*>(current)->get_trap(trap_key(key), reflect_receiver);
         }
+        // An exotic host object has a [[Get]] of its own, which is not its [[GetOwnProperty]] read through.
+        if (DOMObject::exotic_of(current)) return current->get_property(key);
         PropertyDescriptor desc = current->get_property_descriptor(key);
         if (desc.is_accessor_descriptor()) {
             if (!desc.has_getter()) return Value();
@@ -1107,6 +1111,11 @@ Value Reflect::reflect_get(Context& ctx, std::span<const Value> args, Value rece
 // [[GetOwnProperty]]/[[DefineOwnProperty]] (which fire Proxy traps if Receiver is a
 // Proxy), not a plain write on the original target.
 bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx) {
+    // An exotic host object's [[Set]] is its own.
+    if (DOMObject::exotic_of(O)) {
+        bool ok = O->set_property(key, value);
+        return ok && !ctx.has_exception();
+    }
     // A module namespace's own [[Set]] is "always false" (10.4.6.9), so it
     // never reaches the define step OrdinarySet would take on the receiver --
     // where a no-change define would have reported success. A deferred
@@ -1386,6 +1395,8 @@ Value Reflect::reflect_get_prototype_of(Context& ctx, std::span<const Value> arg
     }
     
     Object* proto = target->get_prototype();
+    DOMObject::exotic_get_prototype_of(target, proto);
+    if (ctx.has_exception()) return Value();
     return proto ? Value(proto) : Value::null();
 }
 
@@ -1430,6 +1441,8 @@ Value Reflect::reflect_is_extensible(Context& ctx, std::span<const Value> args, 
         if (ctx.has_exception()) return Value();
         return Value(result);
     }
+    bool exotic_result = false;
+    if (DOMObject::exotic_is_extensible(target, exotic_result)) return Value(exotic_result);
     return Value(target->is_extensible());
 }
 
@@ -1449,6 +1462,8 @@ Value Reflect::reflect_prevent_extensions(Context& ctx, std::span<const Value> a
         if (ctx.has_exception()) return Value();
         return Value(result);
     }
+    bool exotic_result = true;
+    if (DOMObject::exotic_prevent_extensions(target, exotic_result)) return Value(exotic_result);
     if (DOMObject::rejects_prevent_extensions(target)) return Value(false);
     target->prevent_extensions();
     return Value(true);
