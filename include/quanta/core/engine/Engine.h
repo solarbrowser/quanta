@@ -131,6 +131,16 @@ public:
 
     Result execute(const std::string& source);
     Result execute(const std::string& source, const std::string& filename);
+
+    // A script in two halves, for a tree that is parsed once and run more than once, in this realm or another of
+    // the same Isolate. The parse needs the Isolate's heap to be the active one and no realm; a SyntaxError comes
+    // back as the failed Result execute() gives. With a cache of an earlier parse of the same text the function
+    // bodies it knows are stepped over (see ScriptCache).
+    static Result parse_script_unit(std::shared_ptr<const std::string> source, const std::string& filename,
+                                    ExecutableRef<ScriptUnit>& unit, const class ScriptCache* cache = nullptr);
+    // Evaluates the unit's program in this realm. A program may be run again; it must have been made to survive
+    // its own run (Program::set_retained) and is set up afresh for each.
+    Result run_script_unit(const ExecutableRef<ScriptUnit>& unit, const std::string& filename);
     // Takes the caller's buffer rather than copying it. A script's text is
     // held for as long as the parse tree that addresses it, so the caller
     // that read it from disk can hand it over instead of keeping one each.

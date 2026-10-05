@@ -74,6 +74,13 @@ enum SubtreeFlags : uint32_t {
     kSubtreeNestedLexical = 1u << 6,
 };
 
+// An executable a node keeps for itself, because the form has no body range to key it on, is good for the realm
+// it was made for. A tree several realms run (a compiled Script) finds none in another's.
+inline const ExecutableRef<FunctionExecutable>& no_executable() {
+    static const ExecutableRef<FunctionExecutable> none;
+    return none;
+}
+
 class ASTNode {
 public:
 
@@ -1264,6 +1271,7 @@ private:
     // FunctionExecutable's own doc comment for why a durable clone, not a
     // borrow, is required).
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    mutable ScriptUnit::RealmStamp cached_executable_stamp_;
     // Which parse tree this literal belongs to, recorded when the node was
     // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
     // which still take their own clone.
@@ -1340,7 +1348,7 @@ public:
         if (owning_unit_ && has_body_token_range()) {
             return owning_unit_->executable_at(body_src_first_);
         }
-        return cached_executable_;
+        return (owning_unit_ && owning_unit_->shared() && !cached_executable_stamp_.current()) ? no_executable() : cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
@@ -1349,6 +1357,7 @@ public:
             return;
         }
         cached_executable_ = std::move(exe);
+        if (owning_unit_ && owning_unit_->shared()) cached_executable_stamp_.set();
     }
 
     std::string to_string() const override;
@@ -1388,6 +1397,7 @@ private:
     // address, and a computed field key is resolved per evaluation, so neither
     // is cacheable.
     mutable ExecutableRef<FunctionExecutable> cached_ctor_exe_;
+    mutable ScriptUnit::RealmStamp cached_ctor_exe_stamp_;
 
 
 public:
@@ -1421,7 +1431,7 @@ public:
         if (owning_unit_ && has_body_token_range()) {
             return owning_unit_->ctor_executable_at(body_src_first_);
         }
-        return cached_ctor_exe_;
+        return (owning_unit_ && owning_unit_->shared() && !cached_ctor_exe_stamp_.current()) ? no_executable() : cached_ctor_exe_;
     }
     void set_cached_ctor_exe(ExecutableRef<FunctionExecutable> e) const {
         if (owning_unit_ && has_body_token_range()) {
@@ -1429,6 +1439,7 @@ public:
             return;
         }
         cached_ctor_exe_ = std::move(e);
+        if (owning_unit_ && owning_unit_->shared()) cached_ctor_exe_stamp_.set();
     }
     // A range into the owning unit's source rather than a copy of it; see
     // ScriptUnit::source(). Materialized only when something actually asks,
@@ -1662,6 +1673,7 @@ private:
     // FunctionExecutable's own doc comment explains why a durable clone
     // (not a borrow) is required.
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    mutable ScriptUnit::RealmStamp cached_executable_stamp_;
     // Which parse tree this literal belongs to, recorded when the node was
     // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
     // which still take their own clone.
@@ -1768,7 +1780,7 @@ public:
         if (owning_unit_ && has_body_token_range()) {
             return owning_unit_->executable_at(body_src_first_);
         }
-        return cached_executable_;
+        return (owning_unit_ && owning_unit_->shared() && !cached_executable_stamp_.current()) ? no_executable() : cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
@@ -1777,6 +1789,7 @@ public:
             return;
         }
         cached_executable_ = std::move(exe);
+        if (owning_unit_ && owning_unit_->shared()) cached_executable_stamp_.set();
     }
 
     std::string to_string() const override;
@@ -1812,6 +1825,7 @@ private:
     // non-async branch (async arrows are a Function subclass, not yet
     // sharing an executable).
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    mutable ScriptUnit::RealmStamp cached_executable_stamp_;
     // Which parse tree this literal belongs to, recorded when the node was
     // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
     // which still take their own clone.
@@ -1888,7 +1902,7 @@ public:
         if (owning_unit_ && has_body_token_range()) {
             return owning_unit_->executable_at(body_src_first_);
         }
-        return cached_executable_;
+        return (owning_unit_ && owning_unit_->shared() && !cached_executable_stamp_.current()) ? no_executable() : cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
@@ -1897,6 +1911,7 @@ public:
             return;
         }
         cached_executable_ = std::move(exe);
+        if (owning_unit_ && owning_unit_->shared()) cached_executable_stamp_.set();
     }
 
     std::string to_string() const override;
@@ -1960,6 +1975,7 @@ private:
     // Same cache-on-node pattern as FunctionExpression/FunctionDeclaration/
     // ArrowFunctionExpression's own cached_executable_.
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    mutable ScriptUnit::RealmStamp cached_executable_stamp_;
     // Which parse tree this literal belongs to, recorded when the node was
     // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
     // which still take their own clone.
@@ -1974,7 +1990,7 @@ public:
         if (owning_unit_ && has_body_token_range()) {
             return owning_unit_->executable_at(body_src_first_);
         }
-        return cached_executable_;
+        return (owning_unit_ && owning_unit_->shared() && !cached_executable_stamp_.current()) ? no_executable() : cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
@@ -1983,6 +1999,7 @@ public:
             return;
         }
         cached_executable_ = std::move(exe);
+        if (owning_unit_ && owning_unit_->shared()) cached_executable_stamp_.set();
     }
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
                            std::vector<std::unique_ptr<Parameter>> params,
@@ -2330,6 +2347,9 @@ private:
     bool is_strict_ = false;
     bool may_suspend_ = false;
     bool hoisted_ = false;
+    // A tree that is run more than once (a compiled Script) must outlive its own compile: the top-level
+    // statements stay, and the hoisting is done afresh for each run.
+    bool retained_ = false;
     Value completion_promise_;
 
     void check_use_strict_directive(Context& ctx);
@@ -2352,6 +2372,8 @@ public:
     // resolving what the module imports, so a dependency calling back into this
     // module finds its functions already there. Idempotent.
     void hoist_declarations(Context& ctx);
+    void set_retained(bool retained) { retained_ = retained; }
+    void prepare_rerun() { hoisted_ = false; }
     Program(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)
         : ASTNode(Type::PROGRAM, start, end), statements_(std::move(statements)) {}
 

@@ -10,6 +10,7 @@
 #include "quanta/lexer/Token.h"
 
 #include "quanta/parser/FunctionExecutable.h"
+#include "quanta/core/engine/Realm.h"
 
 namespace Quanta {
 
@@ -309,6 +310,7 @@ public:
     // whether a local may live in a register. Keyed the same way an executable
     // is, on where the body opens in the source, so a body parsed back later
     // finds the same entry.
+    const std::unordered_map<uint32_t, BodyScopeInfo>& body_scopes() const { return body_scopes_; }
     const BodyScopeInfo* scope_info_at(uint32_t body_src) const {
         auto it = body_scopes_.find(body_src);
         return it == body_scopes_.end() ? nullptr : &it->second;
@@ -317,22 +319,51 @@ public:
         body_scopes_[body_src] = std::move(info);
     }
 
+    // Executables are kept per realm: a unit that several realms run (a Script compiled once and run in each)
+    // would otherwise hand one realm's executable, and the feedback it learned, to another. The realm is the one
+    // running, which is where a closure is instantiated.
+    static uint64_t current_realm_id() { return g_current_realm ? g_current_realm->id() : 0; }
+    // A node that keeps an executable of its own remembers which realm it was made for; this is that, cheaply.
+    struct RealmStamp {
+        const void* realm = nullptr;
+        uint32_t epoch = 0;
+        bool current() const { return realm == g_current_realm && epoch == Realm::death_epoch(); }
+        void set() { realm = g_current_realm; epoch = Realm::death_epoch(); }
+    };
+    static uint64_t realm_key(uint32_t body_tok) {
+        return (current_realm_id() << 32) | body_tok;
+    }
     const ExecutableRef<FunctionExecutable>& executable_at(uint32_t body_tok) const {
         static const ExecutableRef<FunctionExecutable> kNone;
-        auto it = executables_.find(body_tok);
+        auto it = executables_.find(realm_key(body_tok));
         return it == executables_.end() ? kNone : it->second;
     }
     void set_executable_at(uint32_t body_tok, ExecutableRef<FunctionExecutable> exe) {
-        executables_[body_tok] = std::move(exe);
+        executables_[realm_key(body_tok)] = std::move(exe);
+    }
+    // A unit that several realms run (a compiled Script): the executables a node keeps for itself are then good for
+    // one realm each, and the node checks. Off for every other unit, which has one run and pays nothing.
+    bool shared() const { return shared_; }
+    void mark_shared() { shared_ = true; }
+    // A realm that is going: the executables made for it are let go.
+    void drop_realm(uint64_t realm_id) {
+        auto drop = [realm_id](auto& map) {
+            for (auto it = map.begin(); it != map.end();) {
+                if ((it->first >> 32) == realm_id) it = map.erase(it);
+                else ++it;
+            }
+        };
+        drop(executables_);
+        drop(ctor_executables_);
     }
     // A class site has two: the class's own and the constructor it builds.
     const ExecutableRef<FunctionExecutable>& ctor_executable_at(uint32_t body_tok) const {
         static const ExecutableRef<FunctionExecutable> kNone;
-        auto it = ctor_executables_.find(body_tok);
+        auto it = ctor_executables_.find(realm_key(body_tok));
         return it == ctor_executables_.end() ? kNone : it->second;
     }
     void set_ctor_executable_at(uint32_t body_tok, ExecutableRef<FunctionExecutable> exe) {
-        ctor_executables_[body_tok] = std::move(exe);
+        ctor_executables_[realm_key(body_tok)] = std::move(exe);
     }
 
 private:
@@ -344,11 +375,12 @@ private:
     static const std::string& empty_source() { static const std::string e; return e; }
     // Built on the first deferred body this unit is asked for, then reused.
     // See executable_at.
-    std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> executables_;
+    std::unordered_map<uint64_t, ExecutableRef<FunctionExecutable>> executables_;
     // See scope_info_at.
     std::unordered_map<uint32_t, BodyScopeInfo> body_scopes_;
-    std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> ctor_executables_;
+    std::unordered_map<uint64_t, ExecutableRef<FunctionExecutable>> ctor_executables_;
     mutable uint32_t ref_count_ = 0;
+    bool shared_ = false;
 
     static constinit thread_local ScriptUnit* building_;
 };

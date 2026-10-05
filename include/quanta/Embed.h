@@ -102,6 +102,7 @@ struct EvaluateResult {
 
 class Isolate;
 class Realm;
+class Script;
 
 // An exception that nobody caught: from a timer, a job, a FinalizationRegistry cleanup. `exception`
 // is good for the duration of the call; keep it in a Persistent to keep it longer.
@@ -298,6 +299,41 @@ struct CodeGenerationHooks {
     std::function<std::optional<std::string>(Realm* realm, CompileKind kind, const std::vector<std::string>& parts)> ensureCanCompile;
 };
 
+// ---- Compiled scripts -------------------------------------------------------------------
+
+// A script parsed once, to be run in realms of the Isolate that parsed it. It keeps the text and the tree; each
+// run makes functions of its own in the realm it runs in, so one realm's functions, and what they have learned, are
+// never another's. Drop it before the Isolate goes. Not for other threads: its reference counts are not atomic.
+class Script {
+public:
+    ~Script();
+    Script(const Script&) = delete;
+    Script& operator=(const Script&) = delete;
+
+    const std::string& Filename() const;
+    size_t SourceSize() const;
+    // What the parse learned about each function body, for CompileScript to step over them next time: keep it
+    // beside the text, in a file or a store, and hand both back. It is good for this text and this version of the
+    // engine only, and is checked against both. Cheap to make once the script is compiled.
+    std::vector<uint8_t> SerializeCache() const;
+
+    struct Impl;   // the engine's; not for the host
+
+private:
+    friend class Isolate;
+    friend class Realm;
+    explicit Script(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
+
+struct CompileResult {
+    std::shared_ptr<Script> script;    // null when it does not compile
+    std::string error;                 // the SyntaxError, with the lines around it
+    uint32_t line = 0;
+    uint32_t column = 0;
+    bool cacheUsed = false;            // a cache was given and was good for this text
+};
+
 // One global environment: a document's, or a frame's. It has its own intrinsics
 // (its own Array.prototype, its own %ThrowTypeError%, ...), so an array made in one
 // is not `instanceof Array` in another, as between frames.
@@ -321,6 +357,9 @@ public:
     Context& GetContext();
 
     EvaluateResult Evaluate(std::string_view source, const std::string& filename = "<embed>");
+    // Runs a script compiled earlier (Isolate::CompileScript) in this realm, as many times and in as many realms
+    // as the host likes: the tree is shared, and each realm gets functions of its own.
+    EvaluateResult EvaluateScript(const Script& script);
 
     // Loads and runs `source` as the module at `url`, with the imports it makes fetched through the
     // Isolate's module hooks. The promise it returns is fulfilled with the module's namespace once it and
@@ -359,6 +398,8 @@ private:
     friend class Task;
     friend class Isolate;
     Realm(Isolate& isolate, std::unique_ptr<Engine> engine);
+
+    EvaluateResult describe(const Engine::Result& result, const std::string& filename);
 
     Isolate* isolate_;
     std::unique_ptr<Engine> engine_;
@@ -414,6 +455,14 @@ public:
     // async function's body are not placed.
     void SetSourcePositionTracking(bool on);
 
+    // Parses `source` once into a Script that can be run in any realm of this Isolate, any number of times. A
+    // SyntaxError is in the result, not thrown. With a `cache` from an earlier compile of this very text
+    // (Script::SerializeCache) the function bodies it records are stepped over instead of parsed, which is most of
+    // what a parse costs; a cache that is not for this text, or is damaged, is ignored (`cacheUsed` says which). The
+    // compiling is on the Isolate's thread: it shares the heap and the name table with everything that runs.
+    CompileResult CompileScript(std::string_view source, const std::string& filename,
+                                std::span<const uint8_t> cache = {});
+
     // Full collection, now. Ordinary collections happen on their own at the
     // interpreter's safepoints.
     void CollectGarbage();
@@ -450,6 +499,7 @@ private:
     std::shared_ptr<const SerializationHooks> serialization_hooks_;
     std::shared_ptr<const TimerProvider> timer_provider_;
     std::shared_ptr<const CodeGenerationHooks> code_generation_hooks_;
+    std::vector<std::weak_ptr<Script>> scripts_;     // the compiled scripts that have executables in a realm
     void install_code_generation_host(Realm& realm);
     void install_timer_host(Realm& realm);
     void install_module_host(Realm& realm);

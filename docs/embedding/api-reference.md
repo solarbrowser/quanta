@@ -178,6 +178,34 @@ The hooks, per host object:
 | `isTransferable(realm, object)` | Whether it may be in a transfer list. |
 | `deserialize(realm, data, transferred)` | The object, in `realm`; `data.values` are already cloned there. A value of `data.values` cannot refer back to the object being made. |
 
+## Compiled scripts and the code cache
+
+A page that loads the same library in every frame, or the same script on every visit, should not parse it each time.
+
+```cpp
+CompileResult compiled = isolate->CompileScript(source, "https://example.test/app.js");
+if (!compiled.script) { /* compiled.error, compiled.line, compiled.column: the SyntaxError */ }
+realm1->EvaluateScript(*compiled.script);
+realm2->EvaluateScript(*compiled.script);         // no second parse
+std::vector<uint8_t> cache = compiled.script->SerializeCache();   // keep it beside the text
+
+CompileResult again = isolate->CompileScript(source, url, cache);   // later, or another run of the process
+// again.cacheUsed
+```
+
+| | |
+|---|---|
+| `Isolate::CompileScript(source, filename, cache)` | Parses once into a `Script`. A SyntaxError is in the result. A `cache` that is not for exactly this text, is damaged, or was written by another version of the engine is ignored (`cacheUsed` is then false), and the script compiles all the same. |
+| `Realm::EvaluateScript(script)` | Runs it in the realm, as `Evaluate` would run the text: same result type, same exceptions, same global declarations. Any number of times and in any realm of the Isolate. |
+| `Script::SerializeCache()` | What the parse learned about every function body: where it closes, what it names, what it needs from outside, whether it is strict. |
+| `Script::Filename()`, `SourceSize()` | |
+
+Each realm that runs a script gets functions of its own from the shared tree, so one realm's functions and what they have learned (the inline caches) are never another's, and a realm that is destroyed takes its functions with it while the script goes on in the others. Top-level `let`, `const` and `class` declarations conflict between two runs in the same realm, as two `<script>` elements would.
+
+With a cache the parse steps over each function body it has on record instead of reading it; a body is read back out of the text when a function first runs. On a 9 MB script (TypeScript's compiler) the compile went from 250 ms to 90 ms, with a 950 KB cache. The cache is trusted: a body it steps over is not checked again, so a cache is only for text that compiled before, kept by whoever keeps the text. The text's hash and length and a checksum of the cache are checked.
+
+A `Script` belongs to the thread of the Isolate that compiled it (its reference counts are not atomic, and the name table is the thread's); there is no compiling on another thread. Drop it before the Isolate goes.
+
 ## Exotic objects, WindowProxy and cross-origin objects
 
 `NewExoticObject(ctx, hooks, prototype)` is an object whose internal methods are the host's: `ExoticHooks` has one optional hook for each of [[GetOwnProperty]], [[DefineOwnProperty]], [[HasProperty]], [[Get]], [[Set]], [[Delete]], [[OwnPropertyKeys]], [[GetPrototypeOf]], [[SetPrototypeOf]], [[IsExtensible]] and [[PreventExtensions]], and a missing one is the ordinary behaviour of the object itself. Each hook gets the context of whoever is running, so an error it raises belongs to the caller's realm. A getter or setter is called with the object as `this` (the receiver is always the object itself). The hooks must not capture cells, and they live as long as the object.

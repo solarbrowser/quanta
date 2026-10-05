@@ -368,7 +368,7 @@ Value Program::evaluate(Context& ctx) {
     {
         const bool is_eval = ctx.get_type() == Context::Type::Eval;
         bool used_vm = false;
-        Value vm_result = VM::run_script(statements_, ctx, used_vm, is_eval);
+        Value vm_result = VM::run_script(statements_, ctx, used_vm, is_eval, retained_);
         if (used_vm) {
             if (ctx.has_exception()) return Value();
             return is_eval ? vm_result : last_value;

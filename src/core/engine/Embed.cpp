@@ -5,6 +5,7 @@
  */
 
 #include "quanta/Embed.h"
+#include "quanta/parser/ScriptCache.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Iterator.h"
@@ -580,11 +581,24 @@ Value Realm::ImportModule(const std::string& specifier, const std::string& refer
     return capability.promise;
 }
 
+struct Script::Impl {
+    ExecutableRef<ScriptUnit> unit;
+    std::shared_ptr<const std::string> source;
+    std::string filename;
+};
+
 Realm::Realm(Isolate& isolate, std::unique_ptr<Engine> engine)
     : isolate_(&isolate), engine_(std::move(engine)) {}
 
 Realm::~Realm() {
     if (!engine_) return;
+    // The functions this realm made from compiled scripts go with it, whoever else holds the script.
+    if (isolate_ && engine_->realm()) {
+        const uint64_t realm_id = engine_->realm()->id();
+        for (const std::weak_ptr<Script>& weak : isolate_->scripts_) {
+            if (std::shared_ptr<Script> script = weak.lock()) script->impl_->unit->drop_realm(realm_id);
+        }
+    }
     engine_->set_host_realm(nullptr);
     if (isolate_) {
         std::erase(isolate_->realms_, this);
@@ -615,6 +629,10 @@ Realm* Realm::FromContext(Context& ctx) {
 
 EvaluateResult Realm::Evaluate(std::string_view source, const std::string& filename) {
     Engine::Result r = engine_->execute(std::string(source), filename);
+    return describe(r, filename);
+}
+
+EvaluateResult Realm::describe(const Engine::Result& r, const std::string& filename) {
     EvaluateResult out;
     out.ok = r.success;
     out.exception = r.exception_value;
@@ -650,6 +668,55 @@ EvaluateResult Realm::Evaluate(std::string_view source, const std::string& filen
         }
     }
     return out;
+}
+
+// ---- Compiled scripts -------------------------------------------------------------------
+
+Script::Script(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Script::~Script() = default;
+
+const std::string& Script::Filename() const { return impl_->filename; }
+size_t Script::SourceSize() const { return impl_->source->size(); }
+
+std::vector<uint8_t> Script::SerializeCache() const {
+    return Quanta::ScriptCache::serialize(*impl_->unit, *impl_->source);
+}
+
+CompileResult Isolate::CompileScript(std::string_view source, const std::string& filename, std::span<const uint8_t> cache) {
+    CompileResult result;
+    HeapScope heap_scope(isolate_->heap());
+    auto text = std::make_shared<const std::string>(source);
+    Quanta::ScriptCache loaded;
+    const Quanta::ScriptCache* use = nullptr;
+    if (!cache.empty() && Quanta::ScriptCache::deserialize(cache.data(), cache.size(), *text, loaded)) {
+        use = &loaded;
+        result.cacheUsed = true;
+    }
+    ExecutableRef<ScriptUnit> unit;
+    Engine::Result parsed = Engine::parse_script_unit(text, filename, unit, use);
+    if (!parsed.success) {
+        result.error = parsed.error_message;
+        result.line = parsed.line_number;
+        result.column = parsed.column_number;
+        result.cacheUsed = false;
+        return result;
+    }
+    // It will be run more than once: the tree has to outlive each run.
+    static_cast<Program*>(unit->root())->set_retained(true);
+    unit->mark_shared();
+    auto impl = std::make_unique<Script::Impl>();
+    impl->unit = std::move(unit);
+    impl->source = std::move(text);
+    impl->filename = filename;
+    result.script = std::shared_ptr<Script>(new Script(std::move(impl)));
+    std::erase_if(scripts_, [](const std::weak_ptr<Script>& w) { return w.expired(); });
+    scripts_.push_back(result.script);
+    return result;
+}
+
+EvaluateResult Realm::EvaluateScript(const Script& script) {
+    Engine::Result r = engine_->run_script_unit(script.impl_->unit, script.impl_->filename);
+    return describe(r, script.impl_->filename);
 }
 
 std::unique_ptr<Isolate> Isolate::Create() {

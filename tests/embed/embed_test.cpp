@@ -2702,6 +2702,90 @@ static void test_exotic_objects() {
     CHECK(text_of(*c, "Object.getPrototypeOf(loc) === null && Reflect.ownKeys(loc).filter(k => typeof k === 'string').join()") == "href,replace");
 }
 
+// ---- Compiled scripts and the code cache --------------------------------------------------
+
+static std::string big_script(int functions) {
+    std::string src = "var results = [];\n";
+    for (int i = 0; i < functions; i++) {
+        const std::string n = std::to_string(i);
+        src += "function f" + n + "(a, b = 2) { var s = a + b; const g = (y) => y + s;\n"
+               "  class K" + n + " { constructor(v) { this.v = v + s; } get w() { return () => this.v + a; } static m(x) { return x * " + n + "; } }\n"
+               "  function* gen() { yield g(1); yield new K" + n + "(a).w(); }\n"
+               "  async function later() { await null; return s; }\n"
+               "  return [...gen(), K" + n + ".m(2), (function inner() { return typeof later; })()].join(); }\n";
+        if (i % 7 == 0) src += "results.push(f" + n + "(" + n + "));\n";
+    }
+    src += "globalThis.summary = results.join('|');\n";
+    return src;
+}
+
+static void test_compiled_scripts() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    auto text_of = [](Embed::Realm& r, const char* name) {
+        Context& ctx = r.GetContext();
+        return Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), name));
+    };
+
+    // Parsed once, run in two realms: each gets functions of its own, and the state is its own.
+    Embed::CompileResult compiled = isolate->CompileScript(
+        "var counter = 0; function bump() { return ++counter; } var arrow = x => x * 2;"
+        "var made = (function () { var hidden = 10; return () => hidden++; })();"
+        "globalThis.report = [bump(), bump(), arrow(21), made(), made(), typeof Array.prototype.map].join();", "lib.js");
+    CHECK(compiled.script && compiled.error.empty() && !compiled.cacheUsed);
+    CHECK(a->EvaluateScript(*compiled.script).ok && b->EvaluateScript(*compiled.script).ok);
+    CHECK(text_of(*a, "report") == "1,2,42,10,11,function" && text_of(*b, "report") == "1,2,42,10,11,function");
+    CHECK(a->Evaluate("bump()").ok && text_of(*a, "counter") == "3" && text_of(*b, "counter") == "2");   // not shared
+    // Again in the same realm: the declarations are made afresh, the old values replaced.
+    CHECK(a->EvaluateScript(*compiled.script).ok && text_of(*a, "report") == "1,2,42,10,11,function");
+    // A function made in one realm has that realm's prototypes.
+    CHECK(a->Evaluate("globalThis.fromA = made").ok);
+    Embed::Set(b->GetContext(), Value(b->GetContext().get_global_object()), "fromA", Embed::Get(a->GetContext(), Value(a->GetContext().get_global_object()), "made"));
+    CHECK(b->Evaluate("globalThis.proto = Object.getPrototypeOf(fromA) === Function.prototype").ok && text_of(*b, "proto") == "false");
+
+    // A syntax error is in the result, placed.
+    Embed::CompileResult bad = isolate->CompileScript("var ok = 1;\nvar = ;\n", "bad.js");
+    CHECK(!bad.script && bad.error.find("SyntaxError") != std::string::npos && bad.line == 2);
+
+    // The code cache: the same results with it as without, from a parse that steps over the bodies.
+    const std::string source = big_script(300);
+    Embed::CompileResult cold = isolate->CompileScript(source, "big.js");
+    CHECK(cold.script && !cold.cacheUsed);
+    std::vector<uint8_t> cache = cold.script->SerializeCache();
+    CHECK(cache.size() > 1000);
+    CHECK(a->EvaluateScript(*cold.script).ok);
+    const std::string expected = text_of(*a, "summary");
+    CHECK(expected.size() > 100);
+
+    Embed::CompileResult warm = isolate->CompileScript(source, "big.js", cache);
+    CHECK(warm.script && warm.cacheUsed);
+    CHECK(b->EvaluateScript(*warm.script).ok);
+    CHECK(text_of(*b, "summary") == expected);
+    // The cache of the cached compile is the same one.
+    CHECK(warm.script->SerializeCache() == cache);
+    // And its functions still do what they did after being materialized by a run.
+    CHECK(b->Evaluate("f5(1)").ok && b->Evaluate("results.length").ok);
+    CHECK(a->Evaluate("f5(1)").ok);
+
+    // A cache for other text, a damaged cache and a truncated one are ignored, and the script still compiles.
+    Embed::CompileResult other = isolate->CompileScript(big_script(299), "big.js", cache);
+    CHECK(other.script && !other.cacheUsed);
+    std::vector<uint8_t> damaged = cache;
+    damaged[damaged.size() / 2] ^= 0x55;
+    Embed::CompileResult refused = isolate->CompileScript(source, "big.js", damaged);
+    CHECK(refused.script && !refused.cacheUsed);
+    std::vector<uint8_t> truncated(cache.begin(), cache.begin() + cache.size() / 3);
+    CHECK(!isolate->CompileScript(source, "big.js", truncated).cacheUsed);
+
+    // A realm that is gone takes its functions with it; the script runs on in the others.
+    std::unique_ptr<Embed::Realm> c = isolate->CreateRealm();
+    CHECK(c->EvaluateScript(*warm.script).ok);
+    c.reset();
+    isolate->CollectGarbage();
+    CHECK(a->EvaluateScript(*warm.script).ok && text_of(*a, "summary") == expected);
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -2753,6 +2837,7 @@ int main() {
     test_code_generation();
     test_named_properties_object();
     test_exotic_objects();
+    test_compiled_scripts();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

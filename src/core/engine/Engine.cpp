@@ -647,87 +647,97 @@ void Engine::setup_built_in_functions() {
 void Engine::setup_error_types() {
 }
 
-Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> shared_source,
-                                        const std::string& filename) {
+// The parse half of running a script: the tree, owned by a unit, or the SyntaxError. Needs the heap of the Isolate
+// that will run it to be active, and nothing of any realm.
+Engine::Result Engine::parse_script_unit(std::shared_ptr<const std::string> shared_source, const std::string& filename,
+                                     ExecutableRef<ScriptUnit>& unit_out, const ScriptCache* cache) {
     const std::string& source = *shared_source;
+    (void)filename;
+    // Streamed, not tokenized in full: a script's tokens are the largest
+    // thing a parse holds and the parser only ever looks a little way
+    // around where it is, so they are pulled in as it asks for them and
+    // the ones it has passed are handed back.
+    // One buffer, shared: the lexer addresses tokens into it by offset
+    // and the parser hands it to the unit for re-reading a body later, and
+    // for a multi-megabyte script each copy of it is that much again.
+    Lexer::LexerOptions lex_opts;
+    auto tokens = Lexer::stream(shared_source, lex_opts);
+    const std::vector<std::string>* lex_errors = tokens.lex_errors();
+    
+    // Moved, not copied: Parser takes the sequence by value, and for a
+    // multi-megabyte script it runs to tens of megabytes -- copying it
+    // meant two of them alive at once, which is most of what the parse
+    // peaked at. Nothing reads `tokens` after this.
+    Parser parser(std::move(tokens));
+    parser.set_source(shared_source);
+    // The tree is owned by a unit, so the function literals inside it lend
+    // their bodies to their executables instead of each taking a copy. The
+    // unit outlives this call whenever a closure escaped it.
+    auto program_unit = parser.parse_program_unit(cache);
+    auto* program = static_cast<Program*>(program_unit->root());
+
+    // Asked after the parse, not before it: streaming means the lexer has
+    // only reached as far as the parser asked it to.
+    if (lex_errors && !lex_errors->empty()) {
+        std::string error_msg = (*lex_errors)[0];
+        if (error_msg.find("SyntaxError") == std::string::npos)
+            error_msg = "SyntaxError: " + error_msg;
+        return Result(error_msg, 0, 0);
+    }
+
+    if (parser.has_errors()) {
+        const auto& errors = parser.get_errors();
+        if (!errors.empty()) {
+            const auto& err = errors[0];
+            std::string msg = err.message;
+            if (msg.find("SyntaxError") == std::string::npos)
+                msg = "SyntaxError: " + msg;
+
+            size_t err_line = err.position.line;
+            size_t err_col  = err.position.column;
+
+            std::vector<std::string> src_lines;
+            {
+                std::istringstream ss(source);
+                std::string l;
+                while (std::getline(ss, l)) src_lines.push_back(l);
+            }
+
+            std::string decorated = msg + "\n";
+            // Show 1 line before, the error line, 1 line after
+            size_t first = (err_line >= 2) ? err_line - 2 : 0;
+            size_t last  = std::min((size_t)src_lines.size(), err_line + 1);
+            std::string line_num_width = std::to_string(last + 1);
+            size_t w = line_num_width.size();
+            for (size_t li = first; li < last; li++) {
+                size_t ln = li + 1;
+                std::string num = std::to_string(ln);
+                std::string prefix = std::string(w - num.size(), ' ') + num +
+                                    (ln == err_line ? " > | " : "   | ");
+                decorated += prefix + src_lines[li] + "\n";
+                if (ln == err_line && err_col > 0) {
+                    std::string indent(prefix.size() + err_col - 1, ' ');
+                    decorated += indent + "^\n";
+                }
+            }
+
+            return Result(decorated, static_cast<uint32_t>(err_line), static_cast<uint32_t>(err_col));
+        }
+        return Result("SyntaxError: Parse error");
+    }
+    
+    unit_out = std::move(program_unit);
+    if (!program) return Result("Parse error in " + filename);
+    return Result(Value());
+}
+
+// The run half: the unit's program evaluated in this realm's global context.
+Engine::Result Engine::run_script_unit(const ExecutableRef<ScriptUnit>& program_unit, const std::string& filename) {
     HeapScope heap_scope(heap_);
     RealmScope realm_scope(realm_.get());
     try {
-        execution_count_++;
-        
-        // Streamed, not tokenized in full: a script's tokens are the largest
-        // thing a parse holds and the parser only ever looks a little way
-        // around where it is, so they are pulled in as it asks for them and
-        // the ones it has passed are handed back.
-        // One buffer, shared: the lexer addresses tokens into it by offset
-        // and the parser hands it to the unit for re-reading a body later, and
-        // for a multi-megabyte script each copy of it is that much again.
-        Lexer::LexerOptions lex_opts;
-        auto tokens = Lexer::stream(shared_source, lex_opts);
-        const std::vector<std::string>* lex_errors = tokens.lex_errors();
-        
-        // Moved, not copied: Parser takes the sequence by value, and for a
-        // multi-megabyte script it runs to tens of megabytes -- copying it
-        // meant two of them alive at once, which is most of what the parse
-        // peaked at. Nothing reads `tokens` after this.
-        Parser parser(std::move(tokens));
-        parser.set_source(shared_source);
-        // The tree is owned by a unit, so the function literals inside it lend
-        // their bodies to their executables instead of each taking a copy. The
-        // unit outlives this call whenever a closure escaped it.
-        auto program_unit = parser.parse_program_unit();
         auto* program = static_cast<Program*>(program_unit->root());
-
-        // Asked after the parse, not before it: streaming means the lexer has
-        // only reached as far as the parser asked it to.
-        if (lex_errors && !lex_errors->empty()) {
-            std::string error_msg = (*lex_errors)[0];
-            if (error_msg.find("SyntaxError") == std::string::npos)
-                error_msg = "SyntaxError: " + error_msg;
-            return Result(error_msg, 0, 0);
-        }
-
-        if (parser.has_errors()) {
-            const auto& errors = parser.get_errors();
-            if (!errors.empty()) {
-                const auto& err = errors[0];
-                std::string msg = err.message;
-                if (msg.find("SyntaxError") == std::string::npos)
-                    msg = "SyntaxError: " + msg;
-
-                size_t err_line = err.position.line;
-                size_t err_col  = err.position.column;
-
-                std::vector<std::string> src_lines;
-                {
-                    std::istringstream ss(source);
-                    std::string l;
-                    while (std::getline(ss, l)) src_lines.push_back(l);
-                }
-
-                std::string decorated = msg + "\n";
-                // Show 1 line before, the error line, 1 line after
-                size_t first = (err_line >= 2) ? err_line - 2 : 0;
-                size_t last  = std::min((size_t)src_lines.size(), err_line + 1);
-                std::string line_num_width = std::to_string(last + 1);
-                size_t w = line_num_width.size();
-                for (size_t li = first; li < last; li++) {
-                    size_t ln = li + 1;
-                    std::string num = std::to_string(ln);
-                    std::string prefix = std::string(w - num.size(), ' ') + num +
-                                        (ln == err_line ? " > | " : "   | ");
-                    decorated += prefix + src_lines[li] + "\n";
-                    if (ln == err_line && err_col > 0) {
-                        std::string indent(prefix.size() + err_col - 1, ' ');
-                        decorated += indent + "^\n";
-                    }
-                }
-
-                return Result(decorated, static_cast<uint32_t>(err_line), static_cast<uint32_t>(err_col));
-            }
-            return Result("SyntaxError: Parse error");
-        }
-        
+        if (program) program->prepare_rerun();
         if (!program) {
             return Result("Parse error in " + filename);
         }
@@ -791,6 +801,23 @@ Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> share
             return Result("Context not initialized");
         }
         
+    } catch (const std::exception& e) {
+        return Result(std::string(e.what()));
+    } catch (...) {
+        return Result("Unknown engine error");
+    }
+}
+
+Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> shared_source,
+                                        const std::string& filename) {
+    HeapScope heap_scope(heap_);
+    RealmScope realm_scope(realm_.get());
+    try {
+        execution_count_++;
+        ExecutableRef<ScriptUnit> unit;
+        Result parsed = parse_script_unit(shared_source, filename, unit, nullptr);
+        if (!parsed.success) return parsed;
+        return run_script_unit(unit, filename);
     } catch (const std::exception& e) {
         return Result(std::string(e.what()));
     } catch (...) {

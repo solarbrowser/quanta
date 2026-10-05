@@ -8999,7 +8999,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 }
 
 Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
-                 Context& ctx, bool& used_vm, bool track_completion) {
+                 Context& ctx, bool& used_vm, bool track_completion, bool keep_ast) {
     used_vm = false;
     bool outer_with = false;
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
@@ -9019,7 +9019,7 @@ Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
     // the statements. Letting them go here rather than when the script ends is
     // the whole point -- a top level is where most of a file's nodes are, and
     // they would otherwise stand for the length of the program.
-    if (!chunk->keeps_ast_nodes()) {
+    if (!keep_ast && !chunk->keeps_ast_nodes()) {
         bool borrowed = false;
         if (chunk->closures) {
             for (const auto& t : *chunk->closures) {

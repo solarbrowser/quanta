@@ -1,4 +1,5 @@
 #include "quanta/parser/ScriptUnit.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/lexer/Lexer.h"
 

@@ -491,7 +491,9 @@ public:
     // stamped with an owner and their executables can borrow their bodies
     // instead of copying them. Callers that still hand a bare tree to
     // parse_program() keep the copying behaviour.
-    ExecutableRef<ScriptUnit> parse_program_unit();
+    // With a cache of an earlier parse of the same text, the function bodies it knows are stepped over instead of
+    // read (see ScriptCache); null parses everything.
+    ExecutableRef<ScriptUnit> parse_program_unit(const class ScriptCache* cache = nullptr);
     std::unique_ptr<ASTNode> parse_statement();
     std::unique_ptr<ASTNode> parse_expression();
     

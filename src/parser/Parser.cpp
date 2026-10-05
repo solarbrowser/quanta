@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "quanta/parser/Parser.h"
+#include "quanta/parser/ScriptCache.h"
 #include "quanta/parser/ScriptUnit.h"
 // For closure_needs_outer_environment: the one question about a body that
 // has to be answered while the body is still here, because a later parse
@@ -150,7 +151,7 @@ bool Parser::release_ok() const {
            (in_program_unit_ || options_.function_depth >= 1);
 }
 
-ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
+ExecutableRef<ScriptUnit> Parser::parse_program_unit(const ScriptCache* cache) {
     // The unit has to exist before the parse so BuildScope can stamp literals
     // as they are built; the root is handed over once the parse finishes.
     auto unit = ScriptUnit::create(nullptr);
@@ -158,7 +159,17 @@ ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
     {
         ScriptUnit::BuildScope scope(unit.get());
         in_program_unit_ = true;
+        const bool saved_lazy = lazy_inner_bodies_;
+        const int saved_lazy_depth = lazy_base_depth_;
+        if (cache) {
+            // Every body is on record: each is stepped over where it stands, whatever it nests.
+            for (const ScriptCache::Entry& e : cache->entries) unit->set_scope_info_at(e.open, e.info);
+            lazy_inner_bodies_ = true;
+            lazy_base_depth_ = 0;
+        }
         program = parse_program();
+        lazy_inner_bodies_ = saved_lazy;
+        lazy_base_depth_ = saved_lazy_depth;
         in_program_unit_ = false;
     }
     // The literals inside recorded ranges into this text, so the unit keeps it.

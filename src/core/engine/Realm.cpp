@@ -10,6 +10,8 @@
 
 namespace Quanta {
 
+constinit thread_local uint32_t Realm::death_epoch_ = 0;
+
 void Realm::trace(Visitor& v) const {
     v.visit_object(object_proto);
     v.visit_object(array_proto);

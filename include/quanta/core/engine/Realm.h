@@ -7,6 +7,8 @@
 #ifndef QUANTA_ENGINE_REALM_H
 #define QUANTA_ENGINE_REALM_H
 
+#include <atomic>
+#include <cstdint>
 #include <cstddef>
 #include <unordered_map>
 
@@ -31,11 +33,16 @@ class Realm {
 public:
     static constexpr size_t kPrimitiveKinds = 5;  // String, Number, Boolean, BigInt, Symbol
 
-    explicit Realm(Engine* engine = nullptr) : engine_(engine) {}
+    explicit Realm(Engine* engine = nullptr) : engine_(engine), id_(next_id()) {}
     Realm(const Realm&) = delete;
     Realm& operator=(const Realm&) = delete;
 
     Engine* engine() const { return engine_; }
+    // Never reused, unlike the address: what says which realm a thing was made for once the realm may be gone.
+    uint64_t id() const { return id_; }
+    // Bumped whenever a realm goes: a thing remembered for "the realm that was running" by address alone is
+    // good only while this is what it was, since the address of a dead realm can be a new one's.
+    static uint32_t death_epoch() { return death_epoch_; }
 
     // The realm's global Context. A native function made while this realm is current
     // keeps it as its closure context, which is how a call to it finds the realm to
@@ -46,6 +53,7 @@ public:
     // live cell can still reach it (see Engine::retire_into).
     bool dead() const { return dead_; }
     void retire() {
+        ++death_epoch_;
         dead_ = true;
         engine_ = nullptr;
         // Fast paths that trust these also trust the watch that clears them, and a
@@ -119,6 +127,12 @@ public:
 
 private:
     Engine* engine_;
+    uint64_t id_;
+    static constinit thread_local uint32_t death_epoch_;
+    static uint64_t next_id() {
+        static std::atomic<uint64_t> counter{0};
+        return ++counter;
+    }
     bool dead_ = false;
 };
 
