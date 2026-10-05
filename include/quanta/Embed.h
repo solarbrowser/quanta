@@ -252,6 +252,27 @@ struct TimerProvider {
     std::function<void(Realm* realm, int64_t id)> cancel;
 };
 
+// ---- Compiling strings ------------------------------------------------------------------
+//
+// eval, the Function constructors and string timer handlers compile text at run time, which a
+// Content-Security-Policy may forbid (`unsafe-eval`) and Trusted Types may require to come from a policy. The
+// hooks are the ECMAScript host hooks for that: HostGetCodeForEval, and HostEnsureCanCompileStrings together
+// with the string replacement the Trusted Types default policy makes. With no hooks everything may be compiled.
+using CompileKind = Quanta::CompileKind;
+
+struct CodeGenerationHooks {
+    // eval(x) where x is an object: the code of it (a TrustedScript's), or nothing to have eval hand x back as it
+    // does any non-string.
+    std::function<std::optional<std::string>(Realm* realm, const Value& object)> codeForEval;
+    // The strings about to be compiled, for the host to replace in place: `originals` are the values the caller
+    // passed (the parameters and then the body for a Function; the one argument for eval) and `parts` their
+    // strings. Returning a message refuses with a TypeError. Optional.
+    std::function<std::optional<std::string>(Realm* realm, CompileKind kind, const std::vector<Value>& originals,
+                                             std::vector<std::string>& parts)> transform;
+    // The final strings: a message refuses with an EvalError (what a CSP without 'unsafe-eval' gives).
+    std::function<std::optional<std::string>(Realm* realm, CompileKind kind, const std::vector<std::string>& parts)> ensureCanCompile;
+};
+
 // One global environment: a document's, or a frame's. It has its own intrinsics
 // (its own Array.prototype, its own %ThrowTypeError%, ...), so an array made in one
 // is not `instanceof Array` in another, as between frames.
@@ -285,6 +306,11 @@ public:
     Value EvaluateModule(std::string_view source, const std::string& url);
     // The same for a module the hooks fetch: `import(specifier)` from the module at `referrerUrl`.
     Value ImportModule(const std::string& specifier, const std::string& referrerUrl = "", const std::string& type = "");
+
+    // For a host that compiles strings itself (its own setTimeout, an `eval`-like API): runs the realm's
+    // code-generation hooks on `code`, which they may replace. False with an exception pending when they refuse it.
+    // `original` is the value the script passed, for Trusted Types to look at.
+    bool PrepareCodeString(CompileKind kind, const Value& original, std::string& code);
 
     // Queues `fn` as a task of this realm after `delayMs`, labelled `source`, through the timer provider if
     // there is one and otherwise the built-in loop (RunDueTimers). Returns the task, which can be cancelled.
@@ -339,6 +365,8 @@ public:
     void SetModuleHooks(ModuleHooks hooks);
     // Who runs timers. Without a provider the built-in setTimeout and setInterval are serviced by RunDueTimers.
     void SetTimerProvider(TimerProvider provider);
+    // What may be compiled from a string (eval, Function, string timers). Without hooks, anything.
+    void SetCodeGenerationHooks(CodeGenerationHooks hooks);
     // How host objects are cloned. Without hooks they are a DataCloneError.
     void SetSerializationHooks(SerializationHooks hooks);
     // With a handler set the engine no longer prints unhandled rejections either.
@@ -392,6 +420,8 @@ private:
     std::shared_ptr<const ModuleHooks> module_hooks_;
     std::shared_ptr<const SerializationHooks> serialization_hooks_;
     std::shared_ptr<const TimerProvider> timer_provider_;
+    std::shared_ptr<const CodeGenerationHooks> code_generation_hooks_;
+    void install_code_generation_host(Realm& realm);
     void install_timer_host(Realm& realm);
     void install_module_host(Realm& realm);
     void install_serialization_host(Realm& realm);

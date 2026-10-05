@@ -32,6 +32,11 @@ void register_function_builtins(Context& ctx) {
     auto function_constructor = ObjectFactory::create_native_constructor_with_new_target("Function",
         [home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
+            std::vector<Value> converted;
+            if (home_ctx->get_engine() && home_ctx->get_engine()->code_generation_host()) {
+                if (!prepare_function_source(ctx, home_ctx->get_engine(), CompileKind::Function, args, converted)) return Value();
+                args = std::span<const Value>(converted);
+            }
             std::string params = "";
             // The body is read where it already is when it is a string: a body
             // handed to this constructor can be megabytes, and converting it

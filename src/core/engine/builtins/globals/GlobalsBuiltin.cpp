@@ -673,12 +673,19 @@ void register_global_builtins(Context& ctx) {
     auto eval_fn = ObjectFactory::create_native_function("eval",
         [home_engine](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.empty()) return Value();
-            if (!args[0].is_string()) return args[0];
-
-            std::string code = args[0].to_string();
+            Engine* engine = home_engine;
+            std::string code;
+            if (engine && engine->code_generation_host()) {
+                // The host says what object counts as code, may replace it, and may refuse it.
+                bool proceed = true;
+                if (!prepare_eval_source(ctx, engine, ctx.is_direct_eval_call(), args[0], code, proceed)) return Value();
+                if (!proceed) return args[0];
+            } else {
+                if (!args[0].is_string()) return args[0];
+                code = args[0].to_string();
+            }
             if (code.empty()) return Value();
 
-            Engine* engine = home_engine;
             if (!engine) return Value();
 
             bool strict = ctx.is_strict_mode();
@@ -2210,11 +2217,31 @@ void register_global_builtins(Context& ctx) {
     }
     
     auto schedule_timer_fn = [](Context& ctx, std::span<const Value> args, bool repeating) -> Value {
-        if (args.empty() || !args[0].is_function()) {
+        // A string handler, in a realm whose host decides what may be compiled: it is checked, and runs as a
+        // classic script when the timer fires (HTML "timer initialization steps").
+        Value string_handler;
+        if (!args.empty() && !args[0].is_function()) {
+            Engine* engine = ctx.get_engine();
+            if (engine && engine->code_generation_host() && !args[0].is_nullish() && !args[0].is_symbol()) {
+                std::string code = args[0].to_string();
+                if (ctx.has_exception()) return Value();
+                if (!prepare_string_source(ctx, engine, CompileKind::Timer, args[0], code)) return Value();
+                auto run = ObjectFactory::create_native_function("",
+                    [engine, code](Context& call_ctx, std::span<const Value>, Value) -> Value {
+                        Engine::Result r = engine->execute(code, "<timer>");
+                        if (!r.success && !r.exception_value.is_undefined()) {
+                            HostHooks::report_uncaught(call_ctx, r.exception_value, "timer");
+                        }
+                        return Value();
+                    }, 0);
+                string_handler = Value(run.release());
+            }
+        }
+        if (args.empty() || (!args[0].is_function() && !string_handler.is_function())) {
             // Non-callable first arg: HTML-spec-leniency no-op rather than throw.
             return Value(static_cast<double>(0));
         }
-        Function* cb = args[0].as_function();
+        Function* cb = string_handler.is_function() ? string_handler.as_function() : args[0].as_function();
         double delay = args.size() > 1 ? args[1].to_number() : 0.0;
         if (std::isnan(delay) || delay < 0) delay = 0.0;
         std::vector<Value> bound(args.size() > 2 ? args.begin() + 2 : args.end(), args.end());

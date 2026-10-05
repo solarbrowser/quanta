@@ -16,6 +16,7 @@
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/engine/StructuredClone.h"
 #include "quanta/core/engine/TimerHost.h"
+#include "quanta/core/engine/CodeGeneration.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/parser/AST.h"
 #include <string>
@@ -88,6 +89,7 @@ private:
     std::shared_ptr<ModuleHost> module_host_;
     std::shared_ptr<SerializationHost> serialization_host_;
     std::shared_ptr<TimerHost> timer_host_;
+    std::shared_ptr<CodeGenerationHost> code_generation_host_;
 
     bool initialized_;
     uint64_t execution_count_;
@@ -314,6 +316,9 @@ public:
     void set_module_host(std::shared_ptr<ModuleHost> host) { module_host_ = std::move(host); }
     // Where structured clone hands host objects; none means they cannot be cloned.
     // Who runs setTimeout and friends; none means the engine's own loop.
+    // Who decides what may be compiled from a string; none means anything.
+    CodeGenerationHost* code_generation_host() const { return code_generation_host_.get(); }
+    void set_code_generation_host(std::shared_ptr<CodeGenerationHost> host) { code_generation_host_ = std::move(host); }
     TimerHost* timer_host() const { return timer_host_.get(); }
     void set_timer_host(std::shared_ptr<TimerHost> host) { timer_host_ = std::move(host); }
     SerializationHost* serialization_host() const { return serialization_host_.get(); }

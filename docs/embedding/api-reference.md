@@ -178,6 +178,19 @@ The hooks, per host object:
 | `isTransferable(realm, object)` | Whether it may be in a transfer list. |
 | `deserialize(realm, data, transferred)` | The object, in `realm`; `data.values` are already cloned there. A value of `data.values` cannot refer back to the object being made. |
 
+## Compiling strings
+
+`eval`, the `Function` constructors (`Function`, `GeneratorFunction`, `AsyncFunction`, `AsyncGeneratorFunction`) and string timer handlers compile text at run time. A Content-Security-Policy without `unsafe-eval` forbids that, and Trusted Types requires the text to come from a policy. `Isolate::SetCodeGenerationHooks` is where the host answers; with no hooks everything compiles.
+
+| | |
+|---|---|
+| `codeForEval(realm, object)` | HostGetCodeForEval: `eval(x)` with an object `x`. The code of it (a `TrustedScript`'s) to have `eval` run that, or nothing to have `eval` hand `x` back as it does any non-string. |
+| `transform(realm, kind, originals, parts)` | The place for the Trusted Types default policy. `originals` are the values the script passed (a `Function`'s parameters and then its body; `eval`'s one argument), `parts` their strings, which the host may replace in place. A returned message refuses with a `TypeError`. Optional. |
+| `ensureCanCompile(realm, kind, parts)` | HostEnsureCanCompileStrings, on the final strings. A returned message refuses with an `EvalError`, which is what a CSP without `unsafe-eval` gives. |
+| `Realm::PrepareCodeString(kind, original, code)` | The same two steps for a host that compiles strings itself (its own `setTimeout`, an inline handler it treats like one). False with the exception pending when refused; `code` may have been replaced. |
+
+`kind` is `DirectEval`, `IndirectEval`, `Function`, `GeneratorFunction`, `AsyncFunction`, `AsyncGeneratorFunction` or `Timer`. The `Function` constructors convert each argument to a string once, before the hooks see them, as `CreateDynamicFunction` does. A string handler passed to the built-in `setTimeout` or `setInterval` goes through the hooks with kind `Timer` and then runs as a classic script when the timer fires; without hooks it is ignored, as before.
+
 ## Iterators
 
 | | |

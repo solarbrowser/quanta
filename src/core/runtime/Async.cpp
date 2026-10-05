@@ -897,6 +897,11 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
     auto async_generator_function_constructor = ObjectFactory::create_native_constructor_with_new_target("AsyncGeneratorFunction",
         [async_gen_home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
+            std::vector<Value> converted;
+            if (async_gen_home_ctx->get_engine() && async_gen_home_ctx->get_engine()->code_generation_host()) {
+                if (!prepare_function_source(ctx, async_gen_home_ctx->get_engine(), CompileKind::AsyncGeneratorFunction, args, converted)) return Value();
+                args = std::span<const Value>(converted);
+            }
             // GetPrototypeFromConstructor(newTarget, "%AsyncGeneratorFunction.prototype%"):
             // see the "AsyncFunction" constructor's identical resolution below in this file.
             Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
@@ -1382,6 +1387,11 @@ void setup_async_functions(Context& ctx) {
     auto async_function_constructor = ObjectFactory::create_native_constructor_with_new_target("AsyncFunction",
         [home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
+            std::vector<Value> converted;
+            if (home_ctx->get_engine() && home_ctx->get_engine()->code_generation_host()) {
+                if (!prepare_function_source(ctx, home_ctx->get_engine(), CompileKind::AsyncFunction, args, converted)) return Value();
+                args = std::span<const Value>(converted);
+            }
             std::string params_str = "";
             std::string body_str = "";
 

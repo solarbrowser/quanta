@@ -470,6 +470,11 @@ void Generator::setup_generator_prototype(Context& ctx) {
     auto generator_function_constructor = ObjectFactory::create_native_constructor_with_new_target("GeneratorFunction",
         [gen_home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
+            std::vector<Value> converted;
+            if (gen_home_ctx->get_engine() && gen_home_ctx->get_engine()->code_generation_host()) {
+                if (!prepare_function_source(ctx, gen_home_ctx->get_engine(), CompileKind::GeneratorFunction, args, converted)) return Value();
+                args = std::span<const Value>(converted);
+            }
             // GetPrototypeFromConstructor(newTarget, "%GeneratorFunction.prototype%"):
             // newTarget's own "prototype" if it's an object; otherwise the default
             // comes from newTarget's OWN realm (GetFunctionRealm), falling back to

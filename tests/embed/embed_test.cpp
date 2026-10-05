@@ -2364,6 +2364,107 @@ static void test_realms_after_modules() {
     std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
 }
 
+// ---- Compiling strings ----------------------------------------------------------------
+
+static void test_code_generation() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    Context& ca = a->GetContext();
+    auto text_of = [](Context& ctx, const char* name) {
+        return Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), name));
+    };
+
+    // Without hooks, anything compiles.
+    CHECK(a->Evaluate("globalThis.plain = eval('1 + 1') + new Function('return 2')()").ok);
+    CHECK(text_of(ca, "plain") == "4");
+
+    bool deny = false;
+    std::vector<std::string> checked;     // "kind:part|part" for each string the policy saw
+    std::vector<std::string> transformed;
+    Embed::CodeGenerationHooks hooks;
+    // A "TrustedScript" is an object with `trusted` set: it stands for its `code`.
+    hooks.codeForEval = [](Embed::Realm* realm, const Value& object) -> std::optional<std::string> {
+        Context& ctx = realm->GetContext();
+        if (!Embed::ToBoolean(Embed::Get(ctx, object, "trusted"))) return std::nullopt;
+        return Embed::ToWtf8(ctx, Embed::Get(ctx, object, "code"));
+    };
+    // The default policy: the body "swap-me" becomes "return 'swapped'".
+    hooks.transform = [&](Embed::Realm*, Embed::CompileKind kind, const std::vector<Value>& originals,
+                          std::vector<std::string>& parts) -> std::optional<std::string> {
+        transformed.push_back(std::to_string(static_cast<int>(kind)) + ":" + std::to_string(originals.size()));
+        if (!parts.empty() && parts.back() == "swap-me") parts.back() = "return 'swapped'";
+        if (!parts.empty() && parts.back() == "refuse-me") return "policy refused it";
+        return std::nullopt;
+    };
+    hooks.ensureCanCompile = [&](Embed::Realm*, Embed::CompileKind kind, const std::vector<std::string>& parts) -> std::optional<std::string> {
+        std::string line = std::to_string(static_cast<int>(kind)) + ":";
+        for (size_t i = 0; i < parts.size(); i++) line += (i ? "|" : "") + parts[i];
+        checked.push_back(line);
+        if (deny) return "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed";
+        return std::nullopt;
+    };
+    isolate->SetCodeGenerationHooks(std::move(hooks));
+
+    // eval: the kind says direct or indirect; an object is code only if the host says so.
+    CHECK(a->Evaluate("globalThis.e1 = eval('40 + 2'); globalThis.e2 = (0, eval)('40 + 3');").ok);
+    CHECK(text_of(ca, "e1") == "42" && text_of(ca, "e2") == "43");
+    CHECK(checked.size() == 2 && checked[0] == "0:40 + 2" && checked[1] == "1:40 + 3");
+    CHECK(a->Evaluate("globalThis.e3 = eval({ trusted: true, code: '6 * 7' }); const o = { trusted: false }; globalThis.e4 = eval(o) === o;").ok);
+    CHECK(text_of(ca, "e3") == "42" && text_of(ca, "e4") == "true");
+    CHECK(checked.back() == "0:6 * 7");
+
+    // The default policy can replace the string, or refuse it with a TypeError.
+    CHECK(a->Evaluate("globalThis.t1 = new Function('swap-me')()").ok);
+    CHECK(text_of(ca, "t1") == "swapped");
+    CHECK(a->Evaluate("globalThis.t2 = (() => { try { new Function('refuse-me'); } catch (e) { return e.name + ':' + e.message; } })()").ok);
+    CHECK(text_of(ca, "t2") == "TypeError:policy refused it");
+
+    // The Function constructors: every argument converted once, parameters first, the body last.
+    checked.clear();
+    CHECK(a->Evaluate("globalThis.conv = 0; const p = { toString() { conv++; return 'x'; } };"
+                      " globalThis.f1 = new Function(p, 'y', 'return x + y')('a', 'b');"
+                      " const GF = Object.getPrototypeOf(function* () {}).constructor;"
+                      " const AF = Object.getPrototypeOf(async function () {}).constructor;"
+                      " const AGF = Object.getPrototypeOf(async function* () {}).constructor;"
+                      " globalThis.f2 = new GF('yield 1')().next().value;"
+                      " AF('return 1'); AGF('yield 1');").ok);
+    CHECK(text_of(ca, "f1") == "ab" && text_of(ca, "conv") == "1" && text_of(ca, "f2") == "1");
+    CHECK(checked.size() == 4 && checked[0] == "2:x|y|return x + y" && checked[1] == "3:yield 1" &&
+          checked[2] == "4:return 1" && checked[3] == "5:yield 1");
+
+    // Refused: an EvalError carrying the host's message, and nothing was compiled.
+    deny = true;
+    CHECK(a->Evaluate("globalThis.d = []; for (const f of [() => eval('1'), () => (0, eval)('1'), () => new Function('1'),"
+                      " () => setTimeout('globalThis.ran = 1', 0)]) { try { f(); d.push('no'); } catch (e) { d.push(e.name); } }"
+                      " globalThis.dm = (() => { try { eval('1'); } catch (e) { return e.message; } })();").ok);
+    CHECK(text_of(ca, "d") == "EvalError,EvalError,EvalError,EvalError");
+    CHECK(text_of(ca, "dm").rfind("Refused to evaluate", 0) == 0);
+    // Not a string, not code: eval hands it back without asking.
+    CHECK(a->Evaluate("globalThis.d2 = eval(5)").ok && text_of(ca, "d2") == "5");
+    deny = false;
+
+    // A string timer handler runs as a classic script when the timer fires.
+    std::vector<Embed::Task> queue;
+    isolate->SetTimerProvider({[&](Embed::Task task) { queue.push_back(task); }, nullptr});
+    a = nullptr;
+    a = isolate->CreateRealm();
+    Context& cb = a->GetContext();
+    checked.clear();
+    CHECK(a->Evaluate("globalThis.ran = 0; setTimeout('globalThis.ran = 41 + 1', 0)").ok);
+    CHECK(queue.size() == 1 && checked.size() == 1 && checked[0] == "6:globalThis.ran = 41 + 1");
+    queue[0].Run();
+    CHECK(text_of(cb, "ran") == "42");
+
+    // A host with its own compile paths asks the same hooks.
+    std::string code = "swap-me";
+    CHECK(a->PrepareCodeString(Embed::CompileKind::Timer, Embed::FromUtf8(cb, "swap-me"), code) && code == "return 'swapped'");
+    deny = true;
+    code = "anything";
+    CHECK(!a->PrepareCodeString(Embed::CompileKind::Timer, Embed::FromUtf8(cb, "anything"), code) && Embed::HasException(cb));
+    cb.clear_exception();
+    queue.clear();
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -2412,6 +2513,7 @@ int main() {
     test_structured_clone();
     test_realms_after_modules();
     test_timer_provider();
+    test_code_generation();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

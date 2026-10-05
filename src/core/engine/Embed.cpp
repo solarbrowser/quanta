@@ -417,6 +417,55 @@ bool Task::IsRepeating() const { return impl_ && impl_->repeating; }
 double Task::DelayMs() const { return impl_ ? impl_->delay_ms : 0; }
 int Task::NestingLevel() const { return impl_ ? impl_->nesting : 0; }
 
+class EmbedCodeGenerationHost : public Quanta::CodeGenerationHost {
+public:
+    EmbedCodeGenerationHost(Realm* realm, std::shared_ptr<const CodeGenerationHooks> hooks)
+        : realm_(realm), hooks_(std::move(hooks)) {}
+
+    bool code_for_eval(Context&, const Value& object, std::string& code) override {
+        if (!hooks_->codeForEval) return false;
+        std::optional<std::string> found = hooks_->codeForEval(realm_, object);
+        if (!found) return false;
+        code = std::move(*found);
+        return true;
+    }
+    bool transform(Context&, CompileKind kind, const std::vector<Value>& originals, std::vector<std::string>& parts,
+                   std::string& error) override {
+        if (!hooks_->transform) return true;
+        std::optional<std::string> refusal = hooks_->transform(realm_, kind, originals, parts);
+        if (refusal) error = *refusal;
+        return !refusal;
+    }
+    bool ensure_can_compile(Context&, CompileKind kind, const std::vector<std::string>& parts, std::string& error) override {
+        if (!hooks_->ensureCanCompile) return true;
+        std::optional<std::string> refusal = hooks_->ensureCanCompile(realm_, kind, parts);
+        if (refusal) error = *refusal;
+        return !refusal;
+    }
+
+private:
+    Realm* realm_;
+    std::shared_ptr<const CodeGenerationHooks> hooks_;
+};
+
+void Isolate::install_code_generation_host(Realm& realm) {
+    if (code_generation_hooks_) {
+        realm.engine_->set_code_generation_host(std::make_shared<EmbedCodeGenerationHost>(&realm, code_generation_hooks_));
+    }
+}
+
+void Isolate::SetCodeGenerationHooks(CodeGenerationHooks hooks) {
+    code_generation_hooks_ = std::make_shared<const CodeGenerationHooks>(std::move(hooks));
+    for (Realm* realm : realms_) install_code_generation_host(*realm);
+}
+
+bool Realm::PrepareCodeString(CompileKind kind, const Value& original, std::string& code) {
+    Context& ctx = GetContext();
+    RealmScope realm_scope(engine_->realm());
+    RunningContext running(ctx);
+    return Quanta::prepare_string_source(ctx, engine_.get(), kind, original, code);
+}
+
 void Isolate::install_timer_host(Realm& realm) {
     if (timer_provider_) realm.engine_->set_timer_host(std::make_shared<EmbedTimerHost>(&realm, timer_provider_));
 }
@@ -577,6 +626,7 @@ std::unique_ptr<Realm> Isolate::CreateRealm(const RealmOptions& options) {
     install_module_host(*realm);
     install_serialization_host(*realm);
     install_timer_host(*realm);
+    install_code_generation_host(*realm);
     return realm;
 }
 
