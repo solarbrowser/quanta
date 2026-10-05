@@ -1095,6 +1095,11 @@ static void test_legacy_platform_objects() {
     CHECK(js_true("delete ro[9] && !Reflect.deleteProperty(ro, 'id')"));
     CHECK(js_true("(() => { try { Object.defineProperty(ro, 0, { value: 1 }); } catch (e) { return e instanceof TypeError; } })()"));
 
+    // [[PreventExtensions]] of a legacy platform object answers false.
+    CHECK(js_true("Reflect.preventExtensions(items) === false && Reflect.isExtensible(items)"));
+    CHECK(js_true("(() => { try { Object.preventExtensions(items); } catch (e) { return e instanceof TypeError; } })()"));
+    CHECK(js_true("(() => { try { Object.freeze(ro); } catch (e) { return e instanceof TypeError; } })()"));
+
     // A name a prototype already has is the prototype's, unless [LegacyOverrideBuiltIns].
     CHECK(js_true("typeof ro.forEach === 'string'"));  // ReadOnlyList.prototype has no forEach yet: the name shows
     r.Evaluate("ReadOnlyList.prototype.forEach = Array.prototype.forEach;");
@@ -2465,6 +2470,94 @@ static void test_code_generation() {
     queue.clear();
 }
 
+// ---- Named properties object ----------------------------------------------------------
+
+static void test_named_properties_object() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    Context& ca = a->GetContext();
+    auto text_of = [](Context& ctx, const char* expr, Embed::Realm& r) {
+        r.Evaluate(std::string("globalThis.__r = String(") + expr + ")");
+        return Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "__r"));
+    };
+    Embed::Realm& r = *a;
+
+    // Window.prototype -> (named properties object) -> EventTarget.prototype -> Object.prototype
+    CHECK(r.Evaluate("function EventTarget() {} globalThis.WindowProto = Object.create(EventTarget.prototype);"
+                     " Object.setPrototypeOf(globalThis, WindowProto); globalThis.EventTargetProto = EventTarget.prototype;").ok);
+    std::map<std::string, std::string> names{{"foo", "FOO"}, {"bar", "BAR"}, {"baz", "BAZ"}, {"toString", "TOSTRING"}};
+    for (bool unenumerable : {true, false}) {
+        Embed::NamedPropertiesHooks hooks;
+        hooks.unenumerable = unenumerable;
+        hooks.get = [&](Embed::Realm* realm, const std::string& name, Value& out) {
+            auto it = names.find(name);
+            if (it == names.end()) return false;
+            out = Embed::FromUtf8(realm->GetContext(), it->second);
+            return true;
+        };
+        hooks.names = [&](Embed::Realm*) {
+            std::vector<std::string> out;
+            for (auto& [k, v] : names) out.push_back(k);
+            return out;
+        };
+        Value global(ca.get_global_object());
+        Value event_target_proto = Embed::Get(ca, global, "EventTargetProto");
+        Value window_proto = Embed::Get(ca, global, "WindowProto");
+        Value named = Embed::NewNamedPropertiesObject(ca, global, event_target_proto, std::move(hooks));
+        CHECK(!Embed::HasException(ca) && named.is_object());
+        CHECK(Embed::SetPrototypeOf(ca, window_proto, named));
+        Embed::Set(ca, global, "named", named);
+
+        // Reading: through the global, bare, and with `in`.
+        CHECK(text_of(ca, "foo + globalThis.bar + (typeof baz)", r) == "FOOBARstring");
+        CHECK(text_of(ca, "('foo' in globalThis) + ',' + ('nope' in globalThis)", r) == "true,false");
+        CHECK(text_of(ca, "globalThis.nope", r) == "undefined");
+        CHECK(text_of(ca, "Object.hasOwn(globalThis, 'foo')", r) == "false");
+
+        // Shadowing: a prototype above the named properties object owns toString; one below it (WindowProto)
+        // is nearer, so it wins as well.
+        CHECK(text_of(ca, "typeof globalThis.toString", r) == "function");
+        r.Evaluate("WindowProto.baz = 'from-window-proto';");
+        CHECK(text_of(ca, "baz", r) == "from-window-proto");
+        r.Evaluate("delete WindowProto.baz;");
+        CHECK(text_of(ca, "baz", r) == "BAZ");
+
+        // The descriptor and the keys of the object itself.
+        CHECK(text_of(ca, "JSON.stringify(Object.getOwnPropertyDescriptor(named, 'foo'))", r) ==
+              std::string("{\"value\":\"FOO\",\"writable\":true,\"enumerable\":") + (unenumerable ? "false" : "true") + ",\"configurable\":true}");
+        CHECK(text_of(ca, "Object.getOwnPropertyDescriptor(named, 'toString')", r) == "undefined");   // shadowed by Object.prototype
+        CHECK(text_of(ca, "JSON.stringify(Reflect.ownKeys(named))", r) == "[\"bar\",\"baz\",\"foo\"]");
+        CHECK(text_of(ca, "(() => { const seen = []; for (const k in globalThis) if (['foo', 'bar', 'baz'].includes(k)) seen.push(k); return seen.sort().join(); })()", r) ==
+              (unenumerable ? "" : "bar,baz,foo"));
+        CHECK(text_of(ca, "Object.keys(globalThis).includes('foo')", r) == "false");   // not own properties of the global
+
+        // It takes no property of its own and keeps its place.
+        CHECK(text_of(ca, "Reflect.defineProperty(named, 'foo', { value: 1 }) + ',' + Reflect.defineProperty(named, 'other', { value: 1 })", r) == "false,false");
+        CHECK(text_of(ca, "Reflect.deleteProperty(named, 'foo')", r) == "false");
+        CHECK(text_of(ca, "Reflect.preventExtensions(named) + ',' + Reflect.isExtensible(named)", r) == "false,true");
+        CHECK(text_of(ca, "(() => { try { Object.preventExtensions(named); } catch (e) { return e.name; } })()", r) == "TypeError");
+        CHECK(text_of(ca, "Reflect.setPrototypeOf(named, null) + ',' + Reflect.setPrototypeOf(named, EventTargetProto)", r) == "false,true");
+        CHECK(text_of(ca, "Object.getPrototypeOf(named) === EventTargetProto && Object.getPrototypeOf(WindowProto) === named", r) == "true");
+
+        // Assigning to a name makes an ordinary own property of the global, which then shadows it.
+        r.Evaluate("globalThis.foo = 'mine';");
+        CHECK(text_of(ca, "foo + ',' + Object.hasOwn(globalThis, 'foo')", r) == "mine,true");
+        CHECK(text_of(ca, "Object.getOwnPropertyDescriptor(named, 'foo')", r) == "undefined");
+        CHECK(text_of(ca, "JSON.stringify(Reflect.ownKeys(named))", r) == "[\"bar\",\"baz\"]");
+        r.Evaluate("delete globalThis.foo;");
+        CHECK(text_of(ca, "foo", r) == "FOO");
+
+        // The names are the host's to keep current.
+        names["late"] = "LATE";
+        CHECK(text_of(ca, "late", r) == "LATE");
+        names.erase("late");
+        CHECK(text_of(ca, "typeof late", r) == "undefined");
+
+        // Unhook it for the next round.
+        r.Evaluate("Object.setPrototypeOf(WindowProto, EventTargetProto);");
+    }
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -2514,6 +2607,7 @@ int main() {
     test_realms_after_modules();
     test_timer_provider();
     test_code_generation();
+    test_named_properties_object();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

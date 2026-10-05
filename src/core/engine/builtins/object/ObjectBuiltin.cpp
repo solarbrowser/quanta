@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/TypedArray.h"
+#include "quanta/core/runtime/DOMObject.h"
 #include <cmath>
 #include <sstream>
 #include <algorithm>
@@ -1474,6 +1475,8 @@ void register_object_builtins(Context& ctx) {
     // TypedArray [[PreventExtensions]] returns false for views over a resizable
     // buffer (their index set can still change), so seal/freeze/preventExtensions throw.
     auto rejects_prevent_extensions = [](Object* obj) -> bool {
+        // A legacy platform object's [[PreventExtensions]] answers false as well.
+        if (DOMObject::rejects_prevent_extensions(obj)) return true;
         if (!obj->is_typed_array()) return false;
         ArrayBuffer* buf = static_cast<TypedArrayBase*>(obj)->buffer();
         return buf && buf->is_resizable();
@@ -1515,7 +1518,7 @@ void register_object_builtins(Context& ctx) {
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             if (rejects_prevent_extensions(obj)) {
-                ctx.throw_type_error("Cannot freeze a typed array backed by a resizable buffer");
+                ctx.throw_type_error("Cannot freeze this object");
                 return Value();
             }
             if (obj->get_type() == Object::ObjectType::Proxy) {
@@ -1570,7 +1573,7 @@ void register_object_builtins(Context& ctx) {
 
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             if (rejects_prevent_extensions(obj)) {
-                ctx.throw_type_error("Cannot prevent extensions on a typed array backed by a resizable buffer");
+                ctx.throw_type_error("Cannot prevent extensions on this object");
                 return Value();
             }
             if (obj->get_type() == Object::ObjectType::Proxy) {

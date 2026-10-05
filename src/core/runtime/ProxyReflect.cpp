@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/DOMObject.h"
 #include <span>
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -1448,6 +1449,7 @@ Value Reflect::reflect_prevent_extensions(Context& ctx, std::span<const Value> a
         if (ctx.has_exception()) return Value();
         return Value(result);
     }
+    if (DOMObject::rejects_prevent_extensions(target)) return Value(false);
     target->prevent_extensions();
     return Value(true);
 }

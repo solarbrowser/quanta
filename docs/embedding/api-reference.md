@@ -178,6 +178,27 @@ The hooks, per host object:
 | `isTransferable(realm, object)` | Whether it may be in a transfer list. |
 | `deserialize(realm, data, transferred)` | The object, in `realm`; `data.values` are already cloned there. A value of `data.values` cannot refer back to the object being made. |
 
+## Named properties on a global
+
+`window.foo` for an element with `id="foo"`: WebIDL gives a global with a named getter an object in its prototype chain that answers for those names (Window.prototype, then the named properties object, then EventTarget.prototype). `NewNamedPropertiesObject` makes that object; the host wires it into the chain and keeps the names current.
+
+```cpp
+NamedPropertiesHooks hooks;
+hooks.get = [&](Realm* realm, const std::string& name, Value& out) { /* the element with that id */ };
+hooks.names = [&](Realm* realm) { /* the ids, in tree order */ };
+Value named = NewNamedPropertiesObject(ctx, global, eventTargetPrototype, std::move(hooks));
+SetPrototypeOf(ctx, windowPrototype, named);
+```
+
+| | |
+|---|---|
+| `NewNamedPropertiesObject(ctx, global, parentPrototype, hooks)` | The object, with `parentPrototype` as its prototype for good. The hooks must not capture cells, and are not called once the realm is destroyed. |
+| `NamedPropertiesHooks::get`, `names` | The named getter of the global and its supported property names. `unenumerable` (the default) is `[LegacyUnenumerableNamedProperties]`. |
+
+A name is visible when `get` knows it and neither the global nor anything above it in the chain, other than the named properties object, has a property of that name. A visible name reads as a writable, configurable data property of the named properties object, so reading `foo` finds it (as a variable too) and assigning `foo = 1` makes an ordinary own property of the global that shadows it. The object itself refuses to be given or lose a property, to stop being extensible and to change its prototype.
+
+`Object.preventExtensions`, `Object.seal`, `Object.freeze` and `Reflect.preventExtensions` also fail on every legacy platform object (a `DOMObject` with indexed or named hooks), as WebIDL says.
+
 ## Compiling strings
 
 `eval`, the `Function` constructors (`Function`, `GeneratorFunction`, `AsyncFunction`, `AsyncGeneratorFunction`) and string timer handlers compile text at run time. A Content-Security-Policy without `unsafe-eval` forbids that, and Trusted Types requires the text to come from a policy. `Isolate::SetCodeGenerationHooks` is where the host answers; with no hooks everything compiles.

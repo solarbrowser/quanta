@@ -40,6 +40,14 @@ class DOMObject;
 //   static std::vector<std::string> NamedKeys(Context&, T&);   // the supported names
 //   static constexpr bool LegacyOverrideBuiltIns = true;                // [LegacyOverrideBuiltIns]
 //   static constexpr bool LegacyUnenumerableNamedProperties = true;     // [LegacyUnenumerableNamedProperties]
+//   static Object* NamedPropertiesSubject(T&);   // makes the object a named properties object, see below
+//
+// A named properties object is what sits in a global's prototype chain (Window.prototype -> the named
+// properties object -> EventTarget.prototype) and answers for the global's named properties. Its
+// NamedPropertiesSubject is that global: the visibility of a name is judged against the global (not shadowed
+// by one of its own properties or by any prototype above it that is not itself a named properties object), the
+// properties it reports are writable and configurable, and it refuses [[DefineOwnProperty]], [[Delete]] and
+// [[PreventExtensions]] (and keeps its prototype).
 //
 // An exception a hook raises is reported through the context's flag, as in any native.
 struct DOMLegacyHooks {
@@ -53,6 +61,7 @@ struct DOMLegacyHooks {
     std::vector<std::string> (*named_keys)(Context&, DOMObject*) = nullptr;
     bool override_builtins = false;
     bool unenumerable_named = false;
+    Object* (*subject)(DOMObject*) = nullptr;
 };
 
 // What the collector needs to know about one concrete DOMObject type: how to
@@ -132,6 +141,9 @@ constexpr DOMLegacyHooks dom_make_legacy_hooks() {
     }
     if constexpr (requires(Context& c, T& t) { { T::NamedKeys(c, t) } -> std::convertible_to<std::vector<std::string>>; }) {
         h.named_keys = [](Context& c, DOMObject* o) -> std::vector<std::string> { return T::NamedKeys(c, *static_cast<T*>(o)); };
+    }
+    if constexpr (requires(T& t) { { T::NamedPropertiesSubject(t) } -> std::convertible_to<Object*>; }) {
+        h.subject = [](DOMObject* o) -> Object* { return T::NamedPropertiesSubject(*static_cast<T*>(o)); };
     }
     if constexpr (requires { T::LegacyOverrideBuiltIns; }) h.override_builtins = T::LegacyOverrideBuiltIns;
     if constexpr (requires { T::LegacyUnenumerableNamedProperties; }) h.unenumerable_named = T::LegacyUnenumerableNamedProperties;
@@ -224,6 +236,8 @@ public:
     std::vector<std::string> legacy_get_enumerable_keys() const;
     PropertyDescriptor legacy_get_property_descriptor(const std::string& key) const;
     bool legacy_set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
+    // [[PreventExtensions]] of a legacy platform object (and of a named properties object) answers false.
+    static bool rejects_prevent_extensions(const Object* object);
 
 private:
     template <class T, class... A>

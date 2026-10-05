@@ -282,6 +282,69 @@ Value StructuredClone(Context& ctx, const Value& value, const SerializeOptions& 
     return Quanta::structured_clone(ctx, value, options);
 }
 
+// ---- Named properties objects ---------------------------------------------------------
+
+namespace {
+
+// The engine-side object: a DOMObject whose legacy hooks make it a named properties object (see DOMLegacyHooks).
+// [LegacyUnenumerableNamedProperties] is a property of the type, so there is one type for each answer.
+template <bool Unenumerable>
+struct NamedPropertiesHost : DOMObject {
+    static constexpr bool LegacyUnenumerableNamedProperties = Unenumerable;
+
+    NamedPropertiesHooks hooks;
+    Quanta::Realm* realm = nullptr;
+    Object* global = nullptr;
+
+    void Visit(Visitor& v) { v.Mark(global); }
+
+    static Embed::Realm* host_realm(NamedPropertiesHost& self) {
+        if (!self.realm || self.realm->dead() || !self.realm->engine()) return nullptr;
+        return static_cast<Embed::Realm*>(self.realm->engine()->host_realm());
+    }
+    static bool NamedGetter(Context&, NamedPropertiesHost& self, const std::string& name, Value& out) {
+        Embed::Realm* realm = host_realm(self);
+        return realm && self.hooks.get && self.hooks.get(realm, name, out);
+    }
+    static std::vector<std::string> NamedKeys(Context&, NamedPropertiesHost& self) {
+        Embed::Realm* realm = host_realm(self);
+        return realm && self.hooks.names ? self.hooks.names(realm) : std::vector<std::string>();
+    }
+    static Object* NamedPropertiesSubject(NamedPropertiesHost& self) { return self.global; }
+};
+
+template <bool Unenumerable>
+Object* make_named_properties_object(Context& ctx, Object* global, Object* parent, NamedPropertiesHooks hooks) {
+    auto* object = Heap::Allocate<NamedPropertiesHost<Unenumerable>>();
+    object->hooks = std::move(hooks);
+    object->realm = ctx.realm();
+    object->global = global;
+    object->initialize_prototype(parent);
+    // The prototype of a named properties object is immutable.
+    object->set_internal_slot("__immutableProto__", Value(true));
+    return object;
+}
+
+}
+
+Value NewNamedPropertiesObject(Context& ctx, const Value& global, const Value& parentPrototype, NamedPropertiesHooks hooks) {
+    Object* subject = global.as_object_or_null();
+    if (!subject) {
+        ctx.throw_type_error("NewNamedPropertiesObject: the global is not an object");
+        return Value();
+    }
+    Object* parent = parentPrototype.is_null() || parentPrototype.is_undefined() ? nullptr : parentPrototype.as_object_or_null();
+    if (!parent && !(parentPrototype.is_null() || parentPrototype.is_undefined())) {
+        ctx.throw_type_error("NewNamedPropertiesObject: the prototype is not an object");
+        return Value();
+    }
+    RealmScope realm_scope(ctx.realm());
+    const bool unenumerable = hooks.unenumerable;
+    Object* object = unenumerable ? make_named_properties_object<true>(ctx, subject, parent, std::move(hooks))
+                                  : make_named_properties_object<false>(ctx, subject, parent, std::move(hooks));
+    return Value(object);
+}
+
 // ---- Tasks ------------------------------------------------------------------------
 
 struct Task::Impl {

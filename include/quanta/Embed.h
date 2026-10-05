@@ -252,6 +252,31 @@ struct TimerProvider {
     std::function<void(Realm* realm, int64_t id)> cancel;
 };
 
+// ---- Named properties objects ---------------------------------------------------------------
+//
+// `window.foo` for an element with id="foo": the global answers for names the document defines, by way of an
+// object in its prototype chain (Window.prototype -> the named properties object -> EventTarget.prototype),
+// which is what WebIDL says a global with a named getter has. The host makes the object, wires it into the
+// chain, and keeps the names it answers for current.
+struct NamedPropertiesHooks {
+    // [[GetOwnProperty]] for a name: the value, or false when the name is not one the global answers for.
+    std::function<bool(Realm* realm, const std::string& name, Value& out)> get;
+    // The supported property names, in tree order for the document.
+    std::function<std::vector<std::string>(Realm* realm)> names;
+    // [LegacyUnenumerableNamedProperties]: the properties are not enumerable.
+    bool unenumerable = true;
+};
+
+// A named properties object for `global`, whose [[Prototype]] is `parentPrototype` (EventTarget.prototype, or
+// null) and cannot be changed. Put it between the global's interface prototype and that parent:
+//   SetPrototypeOf(ctx, windowPrototype, named). It holds the hooks for as long as the object lives: they must
+// not capture cells (a Value or a Persistent), and are not called once the realm is destroyed.
+// A name is visible when `get` knows it and neither `global` nor anything in its chain above the named properties
+// object has a property of that name; those properties are writable and configurable, so assigning to one makes
+// an ordinary own property of the global; defining or deleting one, preventing extensions or changing the
+// prototype fails.
+Value NewNamedPropertiesObject(Context& ctx, const Value& global, const Value& parentPrototype, NamedPropertiesHooks hooks);
+
 // ---- Compiling strings ------------------------------------------------------------------
 //
 // eval, the Function constructors and string timer handlers compile text at run time, which a

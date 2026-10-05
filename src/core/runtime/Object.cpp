@@ -1200,6 +1200,11 @@ Value Object::get_property_default(const std::string& key) const {
             }
             return Value(); // setter-only accessor: undefined, don't fall through to get_own_property
         }
+        // A host object in the chain answers for its own properties (a named properties object's names), which
+        // the plain own-property read does not know.
+        if (current->get_type() == ObjectType::Custom && current->has_own_property(key)) {
+            return current->get_property(key);
+        }
         result = current->get_own_property(key);
         if (!result.is_undefined()) {
             return result;
