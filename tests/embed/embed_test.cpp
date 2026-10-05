@@ -2817,6 +2817,24 @@ static void test_frame_files_and_module_promises() {
     CHECK(files.size() == 1 && files[0] == "https://page.test/lib.js");
     queue.clear();
 
+    // A module's functions too.
+    {
+        Embed::ModuleHooks mod;
+        mod.resolve = [](Embed::Realm*, const std::string& specifier, const std::string&, std::string& out, std::string&) { out = "http://host/" + specifier; return true; };
+        mod.fetch = [](Embed::Realm*, const std::string& url, const std::string&, std::function<void(Embed::ModuleSource)> done) {
+            done(url == "http://host/lib.js" ? Embed::ModuleSource::Script("export function boom() { null.x; }") : Embed::ModuleSource::Failure("404"));
+        };
+        isolate->SetModuleHooks(std::move(mod));
+        r = nullptr;
+        r = isolate->CreateRealm();
+        Value done = r->EvaluateModule("import { boom } from 'lib.js'; globalThis.libBoom = boom;", "http://host/main.js");
+        isolate->PerformMicrotaskCheckpoint();
+        CHECK(Embed::Inspect(r->GetContext(), done).promise_state == Embed::PromiseState::Fulfilled);
+        Embed::EvaluateResult from_host = r->Evaluate("libBoom()", "host-call");
+        CHECK(!from_host.ok && !from_host.stack.empty() && from_host.stack[0].function == "boom");
+        if (!from_host.stack.empty()) CHECK(from_host.stack[0].filename == "http://host/lib.js");
+    }
+
     // A module promise is the host's: a rejection is not reported before it can react.
     int unhandled = 0, handled = 0;
     isolate->SetPromiseRejectionHandler([&](Embed::Realm*, const Value&, const Value&, Embed::RejectionEvent event) {

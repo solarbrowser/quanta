@@ -80,6 +80,12 @@ const std::string* CallStackFrame::file() const {
                 if (!unit->filename().empty()) return &unit->filename();
             }
         }
+        // A function with no unit (a module's, an eval's) was made inside the context it closes over, which
+        // knows the file it was running.
+        if (Context* closure = function_ptr->get_closure_context()) {
+            const std::string& file_name = closure->get_current_filename();
+            if (!file_name.empty() && file_name != "<unknown>") return &file_name;
+        }
     }
     return filename;
 }
