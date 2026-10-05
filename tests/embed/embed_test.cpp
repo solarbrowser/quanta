@@ -2786,6 +2786,62 @@ static void test_compiled_scripts() {
     CHECK(a->EvaluateScript(*warm.script).ok && text_of(*a, "summary") == expected);
 }
 
+// ---- Frames and module promises -------------------------------------------------------------
+
+static void test_frame_files_and_module_promises() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> r = isolate->CreateRealm();
+
+    // A function reports the script it was written in, whoever calls it.
+    CHECK(r->Evaluate("function boom() { null.x; }\nfunction viaTimer(cb) { cb(); }", "https://page.test/app.js").ok);
+    isolate->SetSourcePositionTracking(true);   // adds the frame of the calling script itself
+    Embed::EvaluateResult called = r->Evaluate("boom()", "host-call");
+    isolate->SetSourcePositionTracking(false);
+    CHECK(!called.ok && called.stack.size() >= 2);
+    if (called.stack.size() >= 2) {
+        CHECK(called.stack[0].function == "boom" && called.stack[0].filename == "https://page.test/app.js");
+        CHECK(called.stack[0].line == 1);
+        CHECK(called.stack.back().filename == "host-call");
+    }
+    CHECK(called.filename == "https://page.test/app.js");
+    // From a timer the host runs, too.
+    std::vector<Embed::Task> queue;
+    std::vector<std::string> files;
+    isolate->SetUncaughtExceptionHandler([&](const Embed::UncaughtException& e) { files.push_back(e.info.filename); });
+    isolate->SetTimerProvider({[&](Embed::Task task) { queue.push_back(task); }, nullptr});
+    r = nullptr;
+    r = isolate->CreateRealm();
+    CHECK(r->Evaluate("function late() { undefined.y; }", "https://page.test/lib.js").ok);
+    CHECK(r->Evaluate("setTimeout(late, 0)", "inline-script").ok);
+    queue[0].Run();
+    CHECK(files.size() == 1 && files[0] == "https://page.test/lib.js");
+    queue.clear();
+
+    // A module promise is the host's: a rejection is not reported before it can react.
+    int unhandled = 0, handled = 0;
+    isolate->SetPromiseRejectionHandler([&](Embed::Realm*, const Value&, const Value&, Embed::RejectionEvent event) {
+        (event == Embed::RejectionEvent::Unhandled ? unhandled : handled)++;
+    });
+    Embed::ModuleHooks hooks;
+    hooks.resolve = [](Embed::Realm*, const std::string& specifier, const std::string&, std::string& out, std::string&) { out = "http://host/" + specifier; return true; };
+    hooks.fetch = [](Embed::Realm*, const std::string& url, const std::string&, std::function<void(Embed::ModuleSource)> done) { done(Embed::ModuleSource::Failure("404 " + url)); };
+    isolate->SetModuleHooks(std::move(hooks));
+    r = nullptr;
+    r = isolate->CreateRealm();
+    Value p = r->EvaluateModule("import './missing.js';", "http://host/main.js");
+    isolate->PerformMicrotaskCheckpoint();
+    CHECK(Embed::Inspect(r->GetContext(), p).promise_state == Embed::PromiseState::Rejected);
+    CHECK(unhandled == 0 && handled == 0);
+    Value q = r->ImportModule("also-missing.js", "http://host/main.js");
+    isolate->PerformMicrotaskCheckpoint();
+    CHECK(unhandled == 0 && handled == 0);
+    (void)q;
+    // An ordinary rejected promise still is reported.
+    CHECK(r->Evaluate("Promise.reject(new Error('x'))").ok);
+    isolate->PerformMicrotaskCheckpoint();
+    CHECK(unhandled == 1);
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -2838,6 +2894,7 @@ int main() {
     test_named_properties_object();
     test_exotic_objects();
     test_compiled_scripts();
+    test_frame_files_and_module_promises();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

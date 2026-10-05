@@ -23,6 +23,7 @@
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/Symbol.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -153,6 +154,27 @@ std::unique_ptr<Function> make_native(const char* name, NativeFn fn, int length)
 }
 
 // ---- Lifecycle ------------------------------------------------------------
+
+// The values the host keeps alive on this thread (Persistent, ValueList). They are roots, and a root that is still
+// there when its Isolate goes keeps cells of the dead heap standing, to be found by whatever runs next: the
+// Isolate's end lets go of every one (they read as undefined from then on), whoever still holds the handle.
+namespace {
+std::vector<std::vector<Value>*>& embed_held_values() {
+    static thread_local std::vector<std::vector<Value>*> held;
+    return held;
+}
+void embed_hold(std::vector<Value>* values) { embed_held_values().push_back(values); }
+void embed_release(std::vector<Value>* values) {
+    auto& held = embed_held_values();
+    auto it = std::find(held.begin(), held.end(), values);
+    if (it != held.end()) { *it = held.back(); held.pop_back(); }
+}
+void embed_let_go_of_held_values() {
+    for (std::vector<Value>* values : embed_held_values()) {
+        for (Value& v : *values) v = Value();
+    }
+}
+}
 
 namespace {
 constinit thread_local bool g_isolate_live = false;
@@ -568,6 +590,7 @@ Value Realm::EvaluateModule(std::string_view source, const std::string& url) {
     PromiseCapability capability = NewPromiseCapability(ctx);
     if (ctx.has_exception()) return Value();
     Promise* promise = static_cast<Promise*>(capability.promise.as_object());
+    promise->mark_handled();
     Run([&] { engine_->get_module_loader()->import_source(url, std::string(source), promise); });
     return capability.promise;
 }
@@ -577,6 +600,7 @@ Value Realm::ImportModule(const std::string& specifier, const std::string& refer
     PromiseCapability capability = NewPromiseCapability(ctx);
     if (ctx.has_exception()) return Value();
     Promise* promise = static_cast<Promise*>(capability.promise.as_object());
+    promise->mark_handled();
     Run([&] { engine_->get_module_loader()->import_specifier(specifier, referrerUrl, type, promise); });
     return capability.promise;
 }
@@ -704,6 +728,7 @@ CompileResult Isolate::CompileScript(std::string_view source, const std::string&
     // It will be run more than once: the tree has to outlive each run.
     static_cast<Program*>(unit->root())->set_retained(true);
     unit->mark_shared();
+    unit->set_filename(filename);
     auto impl = std::make_unique<Script::Impl>();
     impl->unit = std::move(unit);
     impl->source = std::move(text);
@@ -740,6 +765,7 @@ Isolate::~Isolate() {
     realms_.clear();
     HostHooks::set_uncaught_handler({});
     HostHooks::set_rejection_tracker({});
+    embed_let_go_of_held_values();
     isolate_.reset();
     g_isolate_live = false;
 }
@@ -1268,7 +1294,8 @@ bool PreventExtensions(Context& ctx, const Value& object) {
 struct Persistent::Slot {
     std::vector<Value> values;
     ValueVectorRoot root;
-    explicit Slot(const Value& value) : values{value}, root(&values) {}
+    explicit Slot(const Value& value) : values{value}, root(&values) { embed_hold(&values); }
+    ~Slot() { embed_release(&values); }
 };
 
 Persistent::Persistent(Context&, const Value& value) : slot_(std::make_unique<Slot>(value)) {}
@@ -1283,7 +1310,8 @@ void Persistent::Reset() { slot_.reset(); }
 struct ValueList::Impl {
     std::vector<Value> values;
     ValueVectorRoot root;
-    Impl() : root(&values) {}
+    Impl() : root(&values) { embed_hold(&values); }
+    ~Impl() { embed_release(&values); }
 };
 
 ValueList::ValueList() : impl_(std::make_unique<Impl>()) {}
@@ -1649,6 +1677,11 @@ PromiseCapability NewPromiseCapability(Context& ctx) {
     Value pair = Promise::withResolvers(ctx, {}, Value(promise_ctor));
     if (ctx.has_exception()) return {};
     return {Get(ctx, pair, "promise"), Get(ctx, pair, "resolve"), Get(ctx, pair, "reject")};
+}
+
+void MarkPromiseHandled(const Value& promise) {
+    Object* object = promise.as_object_or_null();
+    if (object && object->get_type() == Object::ObjectType::Promise) static_cast<Promise*>(object)->mark_handled();
 }
 
 // ---- Inspecting values ---------------------------------------------------------

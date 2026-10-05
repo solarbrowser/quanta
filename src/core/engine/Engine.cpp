@@ -737,6 +737,7 @@ Engine::Result Engine::run_script_unit(const ExecutableRef<ScriptUnit>& program_
     RealmScope realm_scope(realm_.get());
     try {
         auto* program = static_cast<Program*>(program_unit->root());
+        program_unit->set_filename(filename);
         if (program) program->prepare_rerun();
         if (!program) {
             return Result("Parse error in " + filename);

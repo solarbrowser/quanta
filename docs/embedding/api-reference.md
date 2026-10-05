@@ -26,7 +26,7 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 | `Realm::GetContext()` | The realm's global context -- what `DefineClass` and `DefineGlobal` take. |
 | `Realm::Run(fn)` | Runs host code inside the realm: it is the realm that is running, and its context the one engine code that wants a running context finds. For a host that calls into script, or makes values, from outside any native function, so that what it makes belongs to this realm. |
 | `Realm::FromContext(ctx)` | The `Realm` a context belongs to; null for one made some other way (`$262.createRealm`) or destroyed. |
-| `Realm::Evaluate(source, filename)` | Runs a script in the realm and drains the job queue once. Returns `{ok, exception, error, filename, line, column, stack}`: a syntax error is placed in the source (and `exception` is the `SyntaxError`), an exception thrown by script has the position and frames of its stack. With `Isolate::SetSourcePositionTracking(true)` a frame is placed at the call it is making; without, at where its function is declared. There is no completion value: the engine does not produce one for scripts, so a script that wants to hand something back sets a global or calls a function the host defined. |
+| `Realm::Evaluate(source, filename)` | Runs a script in the realm and drains the job queue once. Returns `{ok, exception, error, filename, line, column, stack}`: a syntax error is placed in the source (and `exception` is the `SyntaxError`), an exception thrown by script has the position and frames of its stack. With `Isolate::SetSourcePositionTracking(true)` a frame is placed at the call it is making; without, at where its function is declared. A frame's file is the script its function was written in (the name given to the `Evaluate` or `CompileScript` that ran it), whatever called it: a timer callback, or a call from another `Evaluate`. There is no completion value: the engine does not produce one for scripts, so a script that wants to hand something back sets a global or calls a function the host defined. |
 | `~Realm()` | Destroys the realm: its timers and queued jobs go at once, and what it made is freed once nothing else can reach it. |
 | `Runtime::Create()` | An Isolate with one Realm in it. `GetContext`, `Evaluate`, `CollectGarbage`, `PerformMicrotaskCheckpoint`, `RunDueTimers` and `NextTimerDelayMs` are those of the Isolate or the Realm. |
 
@@ -114,7 +114,7 @@ A record conversion is `keys = OwnPropertyKeys(...)`, then for each key `GetOwnE
 | | |
 |---|---|
 | `Persistent(ctx, value)` | Holds `value` and everything it reaches against collection, whichever realm made it: a `fetch` in flight keeps its promise and result objects here. Move-only. |
-| `Persistent::Get()` | The value; undefined once reset. |
+| `Persistent::Get()` | The value; undefined once reset, and from the moment its Isolate is destroyed, whoever still holds the handle: a handle kept past its Isolate would keep the dead heap's cells standing, so the Isolate lets go of every `Persistent` and `ValueList` it has. |
 | `Persistent::Reset()`, `IsEmpty()` | Let it go / ask whether it holds one. Destroying a `Persistent` resets it. |
 | `ValueList` | A list of values the collector sees, for calls that return more than one cell (`OwnPropertyKeys`). `size()`, `operator[]`, range-for, `Append`. |
 
@@ -151,7 +151,7 @@ A realm runs ES modules through `Isolate::SetModuleHooks`; without hooks it read
 | `Realm::EvaluateModule(source, url)` | Runs `source` as the module at `url` and returns a promise: fulfilled with the namespace once it and everything it imports have run, rejected with what stopped it (a failed fetch, a `SyntaxError`, a thrown value). |
 | `Realm::ImportModule(specifier, referrerUrl, type)` | The same for a module the hooks fetch. |
 
-`InspectError` on a rejection places it in the module it came from: a `SyntaxError` has the file and the line of the parse error. An exception a module body throws has the file and line of the throw when `SetSourcePositionTracking(true)`, and otherwise only the message, as everywhere else. After fetching over the network call `PerformMicrotaskCheckpoint` as for any other promise job.
+A rejection of those promises is not reported as unhandled before the host can react to it. `InspectError` on a rejection places it in the module it came from: a `SyntaxError` has the file and the line of the parse error. An exception a module body throws has the file and line of the throw when `SetSourcePositionTracking(true)`, and otherwise only the message, as everywhere else. After fetching over the network call `PerformMicrotaskCheckpoint` as for any other promise job.
 
 A realm destroyed while modules are fetching drops them: answering `done` afterwards does nothing. The modules a destroyed realm loaded are kept for the life of the process (a closure or a namespace object another realm holds reaches them).
 
@@ -279,6 +279,7 @@ A name is visible when `get` knows it and neither the global nor anything above 
 | | |
 |---|---|
 | `NewPromiseCapability(ctx)` | `{promise, resolve, reject}`. |
+| `MarkPromiseHandled(promise)` | A promise the host waits on itself: its rejection is not reported as unhandled, and attaching a reaction later reports nothing either. `Realm::EvaluateModule` and `ImportModule` return promises that are already so. |
 | `ReportExternalAllocation(bytes)` | Memory owned outside the heap. See [event-loop.md](event-loop.md). |
 
 ## Inspecting values

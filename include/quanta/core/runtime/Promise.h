@@ -88,9 +88,12 @@ public:
     // is still pending.
     Value take_settled_value();
 
+    // The promise has someone waiting on it that the engine does not know of (the host's): its rejection is
+    // not reported as unhandled, and attaching a reaction later reports nothing either.
+    void mark_handled();
+
 private:
     void execute_handlers();
-    void mark_handled();
 };
 
 // get_type()-based replacement for dynamic_cast<Promise*> -- see as_function() in Object.h.

@@ -233,6 +233,10 @@ public:
     // function's text is contained in every ancestor's, so copying meant the
     // same bytes stored once per nesting level.
     const std::string& source() const { return source_ ? *source_ : empty_source(); }
+    // The name the script was given when it was run or compiled, which is what a frame of one of its functions
+    // reports, wherever that function is called from. Empty until it has one.
+    const std::string& filename() const { return filename_; }
+    void set_filename(const std::string& name) { if (filename_.empty()) filename_ = name; }
     // The buffer itself, for a re-lex that must not copy it.
     const std::shared_ptr<const std::string>& source_ref() const { return source_; }
 
@@ -381,6 +385,7 @@ private:
     std::unordered_map<uint64_t, ExecutableRef<FunctionExecutable>> ctor_executables_;
     mutable uint32_t ref_count_ = 0;
     bool shared_ = false;
+    std::string filename_;
 
     static constinit thread_local ScriptUnit* building_;
 };

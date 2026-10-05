@@ -366,7 +366,9 @@ public:
     // everything it imports have run (waiting for any top-level await), and rejected with the error that
     // stopped it: a failed fetch, a SyntaxError, an exception, each of them placed in the module it is
     // from (InspectError tells which, and the line). Undefined, with an exception pending, if it could
-    // not start. A URL that has been loaded in this realm is not loaded again.
+    // not start. A URL that has been loaded in this realm is not loaded again. The promise is the host's to wait
+    // on: it is marked handled (MarkPromiseHandled), so a rejection is not reported until a page's own script
+    // leaves it unhandled.
     Value EvaluateModule(std::string_view source, const std::string& url);
     // The same for a module the hooks fetch: `import(specifier)` from the module at `referrerUrl`.
     Value ImportModule(const std::string& specifier, const std::string& referrerUrl = "", const std::string& type = "");
@@ -872,6 +874,10 @@ struct PromiseCapability {
     Value reject;
 };
 PromiseCapability NewPromiseCapability(Context& ctx);
+// A promise the host is waiting on itself: it is marked handled, so that its rejection is not reported as one nobody
+// handled (and no `rejectionhandled` follows when the host attaches its reaction). What EvaluateModule and
+// ImportModule return is already so.
+void MarkPromiseHandled(const Value& promise);
 
 // ---- Inspecting values ---------------------------------------------------------
 //

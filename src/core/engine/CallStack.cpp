@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/CallStack.h"
+#include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
 #include "quanta/core/vm/Interpreter.h"
@@ -72,14 +73,25 @@ Position CallStackFrame::position() const {
     return function_ptr ? function_ptr->body_start_position() : Position(1, 1, 0);
 }
 
+const std::string* CallStackFrame::file() const {
+    if (function_ptr && !function_ptr->is_native()) {
+        if (const FunctionExecutable* exe = function_ptr->get_executable().get()) {
+            if (const ScriptUnit* unit = exe->script_unit()) {
+                if (!unit->filename().empty()) return &unit->filename();
+            }
+        }
+    }
+    return filename;
+}
+
 std::string CallStackFrame::to_string() const {
     const Position pos = position();
     std::string out = "at ";
     out += name().empty() ? "<anonymous>" : name();
 
-    if (filename && !filename->empty()) {
+    if (const std::string* file_name = file(); file_name && !file_name->empty()) {
         out += " (";
-        out += *filename;
+        out += *file_name;
         if (pos.line > 0) {
             out += ":";
             out += std::to_string(pos.line);
@@ -214,7 +226,7 @@ std::string CallStack::current_filename() const {
     if (depth_ == 0) {
         return "<unknown>";
     }
-    const std::string* f = frames_[depth_ - 1].filename;
+    const std::string* f = frames_[depth_ - 1].file();
     return (f && !f->empty()) ? *f : "<unknown>";
 }
 
@@ -242,9 +254,9 @@ std::string CallStack::format_frame(const CallStackFrame& frame, size_t index, c
     const Position frame_pos = actual ? *actual : frame.position();
     out += frame.name().empty() ? "<anonymous>" : frame.name();
 
-    if (frame.filename && !frame.filename->empty()) {
+    if (const std::string* file_name = frame.file(); file_name && !file_name->empty()) {
         out += " (";
-        out += *frame.filename;
+        out += *file_name;
         if (frame_pos.line > 0) {
             out += ":";
             out += std::to_string(frame_pos.line);

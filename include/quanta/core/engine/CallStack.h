@@ -41,6 +41,11 @@ struct CallStackFrame {
     Position position() const;
 
     std::string to_string() const;
+
+    // The file to report for this frame: the script its function was written in, which is not the one that called
+    // it (a timer callback, a function called from another Evaluate). The caller's, when the function does not
+    // know its own.
+    const std::string* file() const;
 };
 
 /**

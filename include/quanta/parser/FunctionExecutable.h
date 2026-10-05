@@ -448,6 +448,8 @@ public:
     static void drop_feedback_of(const class Realm* realm);
     // The realm that parsed this, and so the one its functions belong to.
     class Realm* owner_realm() const { return owner_realm_; }
+    // The unit whose tree this function was written in; none for one built another way (eval, new Function).
+    const ScriptUnit* script_unit() const { return unit_.get(); }
 
     // Retraces this executable's chunks only if something could have changed
     // since the last time THIS METHOD traced them this major epoch: constants
