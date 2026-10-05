@@ -14,6 +14,7 @@
 #include "quanta/core/engine/Realm.h"
 #include "quanta/core/engine/Isolate.h"
 #include "quanta/core/modules/ModuleLoader.h"
+#include "quanta/core/engine/StructuredClone.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/parser/AST.h"
 #include <string>
@@ -84,6 +85,7 @@ private:
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
     std::shared_ptr<ModuleHost> module_host_;
+    std::shared_ptr<SerializationHost> serialization_host_;
 
     bool initialized_;
     uint64_t execution_count_;
@@ -308,6 +310,9 @@ public:
     // How this realm's modules are named, fetched and decorated by the host (see ModuleHost). Null: the
     // file system, as the CLI does.
     void set_module_host(std::shared_ptr<ModuleHost> host) { module_host_ = std::move(host); }
+    // Where structured clone hands host objects; none means they cannot be cloned.
+    SerializationHost* serialization_host() const { return serialization_host_.get(); }
+    void set_serialization_host(std::shared_ptr<SerializationHost> host) { serialization_host_ = std::move(host); }
     ModuleHost* module_host() const { return module_host_.get(); }
     
     void register_default_export(const std::string& filename, const Value& value);

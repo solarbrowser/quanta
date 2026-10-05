@@ -232,6 +232,56 @@ private:
 
 }
 
+namespace {
+
+class EmbedSerializationHost : public Quanta::SerializationHost {
+public:
+    EmbedSerializationHost(Realm* realm, std::shared_ptr<const SerializationHooks> hooks)
+        : realm_(realm), hooks_(std::move(hooks)) {}
+
+    bool serialize(Context&, Object* object, const Mode& mode, HostObjectData& out, std::string& error) override {
+        if (!hooks_->serialize) return false;
+        return hooks_->serialize(realm_, Value(object), mode, out, error);
+    }
+    bool is_transferable(Context&, Object* object) override {
+        return hooks_->isTransferable && hooks_->isTransferable(realm_, Value(object));
+    }
+    Value deserialize(Context& ctx, const HostObjectData& data, bool transferred) override {
+        if (!hooks_->deserialize) {
+            ctx.throw_type_error("Cannot deserialize the host object '" + data.tag + "'");
+            return Value();
+        }
+        return hooks_->deserialize(realm_, data, transferred);
+    }
+
+private:
+    Realm* realm_;
+    std::shared_ptr<const SerializationHooks> hooks_;
+};
+
+}
+
+void Isolate::install_serialization_host(Realm& realm) {
+    if (serialization_hooks_) realm.engine_->set_serialization_host(std::make_shared<EmbedSerializationHost>(&realm, serialization_hooks_));
+}
+
+void Isolate::SetSerializationHooks(SerializationHooks hooks) {
+    serialization_hooks_ = std::make_shared<const SerializationHooks>(std::move(hooks));
+    for (Realm* realm : realms_) install_serialization_host(*realm);
+}
+
+bool Serialize(Context& ctx, const Value& value, const SerializeOptions& options, SerializedData& out) {
+    return Quanta::structured_serialize(ctx, value, options, out);
+}
+
+Value Deserialize(Context& ctx, SerializedData& data) {
+    return Quanta::structured_deserialize(ctx, data);
+}
+
+Value StructuredClone(Context& ctx, const Value& value, const SerializeOptions& options) {
+    return Quanta::structured_clone(ctx, value, options);
+}
+
 void Isolate::install_module_host(Realm& realm) {
     if (module_hooks_) realm.engine_->set_module_host(std::make_shared<EmbedModuleHost>(&realm, module_hooks_));
 }
@@ -366,6 +416,7 @@ std::unique_ptr<Realm> Isolate::CreateRealm(const RealmOptions& options) {
     realm->engine_->set_host_realm(realm.get());
     realms_.push_back(realm.get());
     install_module_host(*realm);
+    install_serialization_host(*realm);
     return realm;
 }
 

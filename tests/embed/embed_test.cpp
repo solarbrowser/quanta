@@ -2104,6 +2104,160 @@ static void test_modules() {
     isolate->CollectGarbage();
 }
 
+// ---- Structured clone ----------------------------------------------------------------
+
+namespace {
+struct Blobby : DOMObject {
+    std::string text;
+    Value payload;   // a JS value the host object holds
+    void Visit(Visitor& v) { v.Mark(payload); }
+};
+}
+
+static Object* g_blobby_proto = nullptr;
+
+static Value blobby_construct(Context& ctx, Value, Args args, Value newTarget) {
+    Object* proto = PrototypeFromNewTarget(ctx, newTarget);
+    if (HasException(ctx)) return Undefined();
+    Blobby* b = Heap::Allocate<Blobby>();
+    b->initialize_prototype(proto ? proto : g_blobby_proto);
+    if (!args.empty()) b->text = ToWtf8(ctx, args[0]);
+    if (args.size() > 1) b->payload = args[1];
+    return FromObject(b);
+}
+
+static Value blobby_text(Context& ctx, Value thisValue, Args, Value) {
+    Blobby* b = DOMObject::Cast<Blobby>(thisValue);
+    if (!b) { ThrowTypeError(ctx, "Illegal invocation"); return Undefined(); }
+    return FromWtf8(ctx, b->text);
+}
+
+static Value blobby_payload(Context& ctx, Value thisValue, Args, Value) {
+    Blobby* b = DOMObject::Cast<Blobby>(thisValue);
+    if (!b) { ThrowTypeError(ctx, "Illegal invocation"); return Undefined(); }
+    return b->payload;
+}
+
+static void test_structured_clone() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    Context& ca = a->GetContext();
+    Context& cb = b->GetContext();
+
+    isolate->SetSerializationHooks({
+        [](Embed::Realm*, const Value& object, const Embed::SerializationMode& mode, Embed::HostObjectData& out, std::string& error) {
+            Blobby* blob = DOMObject::Cast<Blobby>(object);
+            if (!blob) { error = "not a Blobby"; return false; }
+            if (mode.for_storage) { error = "Blobby is not storable"; return false; }
+            out.tag = "Blobby";
+            out.bytes.assign(blob->text.begin(), blob->text.end());
+            if (!blob->payload.is_undefined()) out.values.push_back(blob->payload);
+            return true;
+        },
+        nullptr,
+        [](Embed::Realm* realm, const Embed::HostObjectData& data, bool) {
+            Blobby* blob = Heap::Allocate<Blobby>();
+            blob->initialize_prototype(g_blobby_proto);
+            blob->text.assign(data.bytes.begin(), data.bytes.end());
+            if (!data.values.empty()) blob->payload = data.values[0];
+            (void)realm;
+            return FromObject(blob);
+        }});
+
+    ClassRef blobby = DefineClass(ca, "Blobby", blobby_construct, 1);
+    g_blobby_proto = blobby.prototype;
+    DefineMethod(blobby.prototype, "text", blobby_text, 0);
+    DefineMethod(blobby.prototype, "payload", blobby_payload, 0);
+    DefineGlobal(ca, "Blobby", blobby.constructor);
+
+    auto text_of = [](Context& ctx, const char* name) {
+        return Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), name));
+    };
+
+    // A graph made in A arrives in B with B's own prototypes, identity and cycles kept.
+    CHECK(a->Evaluate("globalThis.src = { n: 1, list: [1, , 3], m: new Map([['k', new Set([1, 2])]]), d: new Date(7),"
+                      " r: /x+/gi, big: 5n, s: 'lone\\ud800', u: new Float64Array([1.5, 2.5]), e: new RangeError('bad', { cause: 9 }) };"
+                      " src.self = src; src.list.push(src.m);").ok);
+    SerializedData data;
+    CHECK(Embed::Serialize(ca, Embed::Get(ca, Value(ca.get_global_object()), "src"), {}, data));
+    Value arrived = Embed::Deserialize(cb, data);
+    CHECK(!Embed::HasException(cb));
+    Embed::Set(cb, Value(cb.get_global_object()), "dst", arrived);
+    CHECK(b->Evaluate("globalThis.report = [dst.self === dst, dst.list.length, 1 in dst.list, dst.list[3] === dst.m,"
+                      " dst.m.get('k').has(2), dst.d.getTime(), dst.r.flags, typeof dst.big, dst.s.length, dst.u[1],"
+                      " dst.e.name, dst.e.message, dst.e.cause, Object.getPrototypeOf(dst) === Object.prototype,"
+                      " dst.e instanceof RangeError].join()").ok);
+    CHECK(text_of(cb, "report") == "true,4,false,true,true,7,gi,bigint,5,2.5,RangeError,bad,9,true,true");
+
+    // Not cloneable: the exception says so.
+    Value fn = Embed::Get(ca, Value(ca.get_global_object()), "Blobby");   // a function
+    SerializedData none;
+    CHECK(!Embed::Serialize(ca, fn, {}, none) && Embed::HasException(ca));
+    Embed::ErrorInfo bad = Embed::InspectError(ca, ca.get_exception());
+    ca.clear_exception();
+    CHECK(bad.name == "DataCloneError");
+
+    // A transferred buffer moves; its source is detached; it can be received once.
+    CHECK(a->Evaluate("globalThis.buf = new Uint8Array([9, 8, 7]).buffer;").ok);
+    Value buf = Embed::Get(ca, Value(ca.get_global_object()), "buf");
+    Embed::SerializeOptions transfer;
+    transfer.transfer.push_back(buf);
+    SerializedData moved;
+    CHECK(Embed::Serialize(ca, buf, transfer, moved));
+    CHECK(Embed::IsDetached(buf));
+    Value got = Embed::Deserialize(cb, moved);
+    CHECK(!Embed::HasException(cb) && Embed::BytesOf(got) && (*Embed::BytesOf(got))[0] == 9);
+    Value again = Embed::Deserialize(cb, moved);
+    CHECK(Embed::HasException(cb));
+    cb.clear_exception();
+    (void)again;
+
+    // A SharedArrayBuffer is the same memory on both sides.
+    CHECK(a->Evaluate("globalThis.shared = new Int32Array(new SharedArrayBuffer(8)); shared[0] = 5;").ok);
+    SerializedData sab;
+    CHECK(Embed::Serialize(ca, Embed::Get(ca, Value(ca.get_global_object()), "shared"), {}, sab));
+    Embed::Set(cb, Value(cb.get_global_object()), "shared", Embed::Deserialize(cb, sab));
+    CHECK(a->Evaluate("shared[1] = 41;").ok && b->Evaluate("globalThis.sum = shared[0] + shared[1];").ok);
+    CHECK(text_of(cb, "sum") == "46");
+
+    // Host objects go through the hooks, with the values they hold cloned along (and cycles through them).
+    CHECK(a->Evaluate("globalThis.hb = new Blobby('hi', { n: [1, 2] }); globalThis.hb2 = structuredClone(hb);"
+                      " globalThis.hostReport = [hb2 !== hb, hb2 instanceof Blobby, hb2.text(), hb2.payload().n[1],"
+                      " hb2.payload() !== hb.payload()].join()").ok);
+    CHECK(text_of(ca, "hostReport") == "true,true,hi,2,true");
+    CHECK(a->Evaluate("globalThis.hostTransfer = (() => { try { structuredClone({ x: new Blobby('a') }, { transfer: [new Blobby('b')] }); return 'no'; } catch (e) { return e.name; } })()").ok);
+    CHECK(text_of(ca, "hostTransfer") == "DataCloneError");
+
+    // structuredClone from script: arguments, transfer lists.
+    EvaluateResult r = a->Evaluate("structuredClone()");
+    CHECK(!r.ok);
+    CHECK(a->Evaluate("globalThis.t = (() => { const x = new ArrayBuffer(4); const y = structuredClone(x, { transfer: [x] });"
+                      " return [x.byteLength, y.byteLength].join(); })()").ok);
+    CHECK(text_of(ca, "t") == "0,4");
+    CHECK(a->Evaluate("globalThis.t2 = (() => { try { structuredClone(1, { transfer: [{}] }); } catch (e) { return e.name; } })()").ok);
+    CHECK(text_of(ca, "t2") == "DataCloneError");
+
+    // Across threads: the data holds nothing of this heap.
+    SerializedData across;
+    CHECK(a->Evaluate("globalThis.wire = { v: [1, 2, 3], sab: new Int32Array(new SharedArrayBuffer(4)) };").ok);
+    CHECK(Embed::Serialize(ca, Embed::Get(ca, Value(ca.get_global_object()), "wire"), {}, across));
+    std::string seen;
+    std::thread worker([&] {
+        std::unique_ptr<Embed::Isolate> other = Embed::Isolate::Create();
+        std::unique_ptr<Embed::Realm> w = other->CreateRealm();
+        Context& cw = w->GetContext();
+        Value v = Embed::Deserialize(cw, across);
+        Embed::Set(cw, Value(cw.get_global_object()), "wire", v);
+        w->Evaluate("wire.sab[0] = 77; globalThis.seen = wire.v.join()");
+        seen = Embed::ToWtf8(cw, Embed::Get(cw, Value(cw.get_global_object()), "seen"));
+    });
+    worker.join();
+    CHECK(seen == "1,2,3");
+    CHECK(a->Evaluate("globalThis.fromThread = wire.sab[0]").ok);
+    CHECK(text_of(ca, "fromThread") == "77");
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -2149,6 +2303,7 @@ int main() {
     test_inspect();
     test_source_positions();
     test_modules();
+    test_structured_clone();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

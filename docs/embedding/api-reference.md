@@ -155,6 +155,29 @@ A realm runs ES modules through `Isolate::SetModuleHooks`; without hooks it read
 
 A realm destroyed while modules are fetching drops them: answering `done` afterwards does nothing. The modules a destroyed realm loaded are kept for the life of the process (a closure or a namespace object another realm holds reaches them).
 
+## Structured clone
+
+`structuredClone(value, { transfer })` is a global of every realm (a host that wants its own overwrites it). The same algorithm is there for `postMessage`, `MessageChannel`, `history.state` and workers, as StructuredSerializeWithTransfer and StructuredDeserializeWithTransfer.
+
+| | |
+|---|---|
+| `Serialize(ctx, value, options, out)` | Into a `SerializedData`. `options.transfer` is the transfer list, `options.for_storage` is for `history.state` and IndexedDB (a `SharedArrayBuffer` or a host object that says so is then refused). False with the exception pending: a `DataCloneError`, or what a getter threw. |
+| `Deserialize(ctx, data)` | Into the realm of `ctx`, whichever realm or Isolate made it: the objects have that realm's prototypes. Undefined with an exception pending on failure. |
+| `StructuredClone(ctx, value, options)` | Both, in one realm. |
+| `Isolate::SetSerializationHooks(hooks)` | How a host object (a `DOMObject`) is cloned; without hooks it is a `DataCloneError`. |
+
+A `SerializedData` holds no reference to any heap: it can be moved to another thread and deserialized by another Isolate. A `SharedArrayBuffer` in it is the same memory on both sides. A transferred `ArrayBuffer` is moved out of its source, which is detached, and can be received once.
+
+What is cloned: primitives (a lone surrogate, `-0` and `BigInt` included), `Boolean`/`Number`/`String`/`BigInt` objects, `Date`, `RegExp` (without `lastIndex`), `ArrayBuffer` (resizable too), `SharedArrayBuffer`, typed arrays and `DataView` (length-tracking ones stay so), `Map`, `Set`, `Error` and its native subclasses (name, message, `cause`, stack), `Array` (holes and extra properties kept) and plain objects, the own enumerable string-keyed properties only. A class instance arrives as a plain object. Identity and cycles are kept, and a getter that deletes a later property is honoured. Anything else (a function, a symbol, a Proxy, a `WeakMap`, a promise, a module namespace) is a `DataCloneError`: a `DOMException` of that name if the realm has a global `DOMException`, otherwise an `Error` whose `name` is `DataCloneError`. Nesting deeper than a couple of thousand levels is a `RangeError`.
+
+The hooks, per host object:
+
+| | |
+|---|---|
+| `serialize(realm, object, mode, out, error)` | Fill `out.tag`, `out.bytes` and `out.values` (JS values it holds, cloned along with it, with identity kept: they must be reachable from `object`). False, with `error`, if it is not serializable. With `mode.transferring` the object is in the transfer list: move its state out and leave it unusable, with no values. |
+| `isTransferable(realm, object)` | Whether it may be in a transfer list. |
+| `deserialize(realm, data, transferred)` | The object, in `realm`; `data.values` are already cloned there. A value of `data.values` cannot refer back to the object being made. |
+
 ## Iterators
 
 | | |

@@ -163,6 +163,42 @@ struct ModuleHooks {
                                              const std::string& referrer, const std::string& type)> dynamicImport;
 };
 
+// ---- Structured clone ------------------------------------------------------------------
+//
+// StructuredSerializeWithTransfer and StructuredDeserializeWithTransfer, for structuredClone, postMessage,
+// MessageChannel, history.state and workers. A SerializedData holds no reference to any heap: it can be sent
+// to another Isolate, on another thread, and deserialized there. A SharedArrayBuffer in it is the same
+// memory on both sides; a transferred ArrayBuffer is moved (the source is detached) and can be received once.
+//
+// The engine clones primitives, BigInt, wrapper objects, Date, RegExp, ArrayBuffer (also resizable), views,
+// Map, Set, Error, Array and plain objects (their own enumerable properties, cycles and identity kept), and
+// raises a DataCloneError (a DOMException if the realm has one, else an Error named so) for the rest: functions,
+// symbols, Proxies, WeakMaps, promises, ... A host object is cloned only if the hooks say how.
+using SerializedData = Quanta::SerializedData;
+using SerializeOptions = Quanta::SerializeOptions;
+using HostObjectData = Quanta::HostObjectData;
+using SerializationMode = Quanta::SerializationHost::Mode;
+
+struct SerializationHooks {
+    // The state of a host object, as bytes and the JS values it holds (an ImageData's pixel array); false, with
+    // the message for the DataCloneError, if it is not serializable. With mode.transferring the object is in the
+    // transfer list: take its state out and leave it unusable (a MessagePort), and give no values.
+    std::function<bool(Realm* realm, const Value& object, const SerializationMode& mode, HostObjectData& out,
+                       std::string& error)> serialize;
+    // Whether `object` may be in a transfer list.
+    std::function<bool(Realm* realm, const Value& object)> isTransferable;
+    // The object `data` stands for, in `realm`: undefined with an exception pending if it cannot be made.
+    // `data.values` are already cloned into the realm. `transferred` for an object that was in a transfer list.
+    std::function<Value(Realm* realm, const HostObjectData& data, bool transferred)> deserialize;
+};
+
+// False with a DataCloneError (or another exception: a getter that threw) pending.
+bool Serialize(Context& ctx, const Value& value, const SerializeOptions& options, SerializedData& out);
+// Into the realm of `ctx`. Undefined with an exception pending on failure.
+Value Deserialize(Context& ctx, SerializedData& data);
+// Both at once, in one realm: what structuredClone does.
+Value StructuredClone(Context& ctx, const Value& value, const SerializeOptions& options = {});
+
 // One global environment: a document's, or a frame's. It has its own intrinsics
 // (its own Array.prototype, its own %ThrowTypeError%, ...), so an array made in one
 // is not `instanceof Array` in another, as between frames.
@@ -243,6 +279,8 @@ public:
     // How this Isolate's realms load modules. Without hooks a realm reads them from the file system, as
     // the CLI does. Takes effect for the realms that exist and the ones made after.
     void SetModuleHooks(ModuleHooks hooks);
+    // How host objects are cloned. Without hooks they are a DataCloneError.
+    void SetSerializationHooks(SerializationHooks hooks);
     // With a handler set the engine no longer prints unhandled rejections either.
     void SetPromiseRejectionHandler(PromiseRejectionHandler handler);
 
@@ -292,7 +330,9 @@ private:
     UncaughtExceptionHandler uncaught_;
     PromiseRejectionHandler rejection_;
     std::shared_ptr<const ModuleHooks> module_hooks_;
+    std::shared_ptr<const SerializationHooks> serialization_hooks_;
     void install_module_host(Realm& realm);
+    void install_serialization_host(Realm& realm);
 };
 
 // An Isolate with one Realm in it, for a host that has no use for more than one.

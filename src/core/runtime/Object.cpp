@@ -2415,17 +2415,16 @@ std::vector<std::string> Object::get_own_property_keys_default() const {
         raw_keys.insert(raw_keys.begin(), "length");
     }
 
-    // Elements (numeric array slots)
+    // Elements (numeric array slots). An index may already be named by a descriptor or the sparse overflow:
+    // those are looked up in a set, not rescanned for every element.
+    std::unordered_set<uint32_t> named_indices;
+    for (const auto& k : raw_keys) {
+        uint32_t idx;
+        if (is_array_index(k, &idx)) named_indices.insert(idx);
+    }
     for (uint32_t i = 0; i < elements_length(); ++i) {
-        if (!(*element_ptr(i)).is_undefined()) {
-            std::string key = std::to_string(i);
-            bool already = false;
-            for (const auto& k : raw_keys) {
-                if (k == key) { already = true; break; }
-            }
-            if (!already) {
-                raw_keys.push_back(key);
-            }
+        if (!(*element_ptr(i)).is_undefined() && !named_indices.count(i)) {
+            raw_keys.push_back(std::to_string(i));
         }
     }
 
