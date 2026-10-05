@@ -202,7 +202,7 @@ void Engine::retire_into(Engine& heir) {
     // loader that made it: the loader and its modules are left, as the heap's cells are, to the process.
     if (module_loader_) {
         module_loader_->outlive_realm(&heir);
-        (void)module_loader_.release();
+        isolate_->retired_module_loaders_.push_back(std::move(module_loader_));
     }
 
     realm_->retire();
@@ -278,7 +278,7 @@ void Engine::shutdown() {
         // Its modules go the same way, for the same reason (see retire_into).
         if (module_loader_ && !isolate_->closing()) {
             module_loader_->outlive_realm(nullptr);
-            (void)module_loader_.release();
+            isolate_->retired_module_loaders_.push_back(std::move(module_loader_));
         }
         realm_->retire();
         global_context_->adopt_realm(std::move(realm_));

@@ -15,6 +15,7 @@ namespace Quanta {
 class Engine;
 class Heap;
 class Context;
+class ModuleLoader;
 
 // One GC heap and the realms (Engines) that live in it. A browser makes one
 // Isolate per thread and one Engine in it per document; $262.createRealm and
@@ -55,6 +56,9 @@ private:
     // Global Contexts of realms that are gone, kept until the heap that refers to
     // them is.
     std::vector<std::unique_ptr<Context>> retired_contexts_;
+    // Module loaders of realms that are gone, whose modules a live realm can still reach. They hold bytecode that
+    // roots the heap's cells, so they go before the heap is collected, as a loader does with its engine.
+    std::vector<std::unique_ptr<ModuleLoader>> retired_module_loaders_;
 };
 
 }

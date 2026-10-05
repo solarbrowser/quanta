@@ -11,6 +11,7 @@
 #include "quanta/Embed.h"
 #include "quanta/core/gc/Collector.h"
 
+#include <cstring>
 #include <chrono>
 #include <functional>
 #include <map>
@@ -2258,6 +2259,111 @@ static void test_structured_clone() {
     CHECK(text_of(ca, "fromThread") == "77");
 }
 
+// ---- Host-controlled timers ------------------------------------------------------------
+
+static void test_timer_provider() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+    Context& ca = a->GetContext();
+
+    std::vector<Embed::Task> queue;
+    std::vector<int64_t> cancelled;
+    std::vector<std::string> origins;
+    isolate->SetUncaughtExceptionHandler([&](const Embed::UncaughtException& e) { origins.push_back(e.origin); });
+
+    // Without a provider the built-in loop runs a task queued by the host.
+    int built_in = 0;
+    a->EnqueueTask("native", [&] { built_in++; });
+    isolate->RunDueTimers();
+    CHECK(built_in == 1);
+
+    isolate->SetTimerProvider({
+        [&](Embed::Task task) { queue.push_back(task); },
+        [&](Embed::Realm*, int64_t id) { cancelled.push_back(id); }});
+    auto text_of = [](Context& ctx, const char* name) {
+        return Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), name));
+    };
+
+    // setTimeout is the host's: nothing runs until it says so, and the built-in loop knows nothing of it.
+    CHECK(a->Evaluate("globalThis.log = []; globalThis.id1 = setTimeout((x, y) => { log.push('t' + x + y);"
+                      " Promise.resolve().then(() => log.push('micro')); }, 25, 'a', 'b');"
+                      " globalThis.id2 = setInterval(() => log.push('i'), 10);").ok);
+    CHECK(queue.size() == 2);
+    CHECK(!isolate->RunDueTimers() && !isolate->NextTimerDelayMs());
+    CHECK(queue[0].Source() == "setTimeout" && queue[0].DelayMs() == 25 && !queue[0].IsRepeating());
+    CHECK(queue[0].GetRealm() == a.get() && queue[0].NestingLevel() == 1);
+    CHECK(queue[1].Source() == "setInterval" && queue[1].IsRepeating() && queue[1].Id() != queue[0].Id());
+    CHECK(text_of(ca, "id1") == std::to_string(queue[0].Id()));
+
+    // Running a task runs its callback with its arguments, then the microtasks it queued.
+    Embed::Task timeout = queue[0], interval = queue[1];
+    timeout.Run();
+    CHECK(text_of(ca, "log") == "tab,micro");
+    CHECK(timeout.IsCancelled());
+    timeout.Run();   // spent
+    CHECK(text_of(ca, "log") == "tab,micro");
+
+    // An interval stays armed, one level deeper each time; clearInterval cancels it and tells the host.
+    CHECK(interval.NestingLevel() == 1);
+    interval.Run();
+    interval.Run();
+    CHECK(text_of(ca, "log") == "tab,micro,i,i" && interval.NestingLevel() == 3 && !interval.IsCancelled());
+    CHECK(a->Evaluate("clearInterval(id2)").ok);
+    CHECK(interval.IsCancelled() && cancelled.size() == 1 && cancelled[0] == interval.Id());
+    interval.Run();
+    CHECK(text_of(ca, "log") == "tab,micro,i,i");
+
+    // A timer made inside a timer is one level deeper.
+    queue.clear();
+    CHECK(a->Evaluate("setTimeout(function f() { globalThis.depth = (globalThis.depth || 0) + 1; if (depth < 5) setTimeout(f, 0); }, 0)").ok);
+    for (int i = 0; i < 5 && !queue.empty(); i++) {
+        Embed::Task next = queue.front();
+        queue.erase(queue.begin());
+        CHECK(next.NestingLevel() == i + 1);
+        next.Run();
+    }
+    CHECK(text_of(ca, "depth") == "5");
+    CHECK(queue.empty());
+
+    // A throwing callback is reported, with the task's origin, and does not stop the host.
+    queue.clear();
+    origins.clear();
+    CHECK(a->Evaluate("setTimeout(() => { throw new Error('late'); }, 0)").ok);
+    queue[0].Run();
+    CHECK(origins.size() == 1 && origins[0] == "timer");
+
+    // Host code as a task of a realm: labelled, run in the realm, cancellable.
+    queue.clear();
+    int ran = 0;
+    Embed::Task native = a->EnqueueTask("postMessage", [&] { ran++; }, 3);
+    CHECK(queue.size() == 1 && queue[0].Source() == "postMessage" && queue[0].DelayMs() == 3 && queue[0].Id() == 0);
+    Embed::Task cancelled_task = a->EnqueueTask("never", [&] { ran += 100; });
+    cancelled_task.Cancel();
+    native.Run();
+    cancelled_task.Run();
+    CHECK(ran == 1);
+
+    // A realm that is destroyed cancels its tasks.
+    queue.clear();
+    Context& cb = b->GetContext();
+    CHECK(b->Evaluate("globalThis.hit = 0; setTimeout(() => { hit++; }, 0)").ok);
+    Embed::Task orphan = queue[0];
+    b.reset();
+    orphan.Run();
+    CHECK(orphan.IsCancelled());
+    (void)cb;
+    queue.clear();
+}
+
+// Realms made and dropped without running anything, in an Isolate that follows one that ran modules: the
+// suspended fibers and module loaders the first left behind must not keep its heap's cells alive into this one.
+static void test_realms_after_modules() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -2304,6 +2410,8 @@ int main() {
     test_source_positions();
     test_modules();
     test_structured_clone();
+    test_realms_after_modules();
+    test_timer_provider();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

@@ -282,6 +282,165 @@ Value StructuredClone(Context& ctx, const Value& value, const SerializeOptions& 
     return Quanta::structured_clone(ctx, value, options);
 }
 
+// ---- Tasks ------------------------------------------------------------------------
+
+struct Task::Impl {
+    Realm* realm = nullptr;
+    std::weak_ptr<class EmbedTimerHost> host;
+    int64_t key = 0;        // in the host's table
+    int64_t id = 0;         // what script holds; 0 for a task the host made
+    std::string source;
+    bool repeating = false;
+    double delay_ms = 0;
+    int nesting = 0;
+    bool cancelled = false;
+    Persistent callback;
+    ValueList args;
+    std::function<void()> native;
+};
+
+namespace {
+void release_task(Task::Impl& impl) {
+    impl.cancelled = true;
+    impl.callback.Reset();
+    impl.args = ValueList();
+    impl.native = nullptr;
+}
+}
+
+class EmbedTimerHost : public Quanta::TimerHost, public std::enable_shared_from_this<EmbedTimerHost> {
+public:
+    EmbedTimerHost(Realm* realm, std::shared_ptr<const TimerProvider> provider)
+        : realm_(realm), provider_(std::move(provider)) {}
+    ~EmbedTimerHost() override {
+        for (auto& [key, impl] : tasks_) release_task(*impl);
+    }
+
+    void schedule(Request&& r) override {
+        auto impl = std::make_shared<Task::Impl>();
+        impl->realm = realm_;
+        impl->host = weak_from_this();
+        impl->key = impl->id = r.id;
+        impl->source = r.source;
+        impl->repeating = r.repeating;
+        impl->delay_ms = r.delay_ms;
+        impl->nesting = r.nesting_level;
+        impl->callback = Persistent(*r.ctx, Value(r.callback));
+        for (const Value& v : r.args) impl->args.Append(v);
+        tasks_[impl->key] = impl;
+        if (provider_->schedule) provider_->schedule(Task(impl));
+    }
+
+    void cancel(Context&, int64_t id) override {
+        auto it = tasks_.find(id);
+        if (it == tasks_.end()) return;
+        release_task(*it->second);
+        tasks_.erase(it);
+        if (provider_->cancel) provider_->cancel(realm_, id);
+    }
+
+    Task enqueue(const std::string& source, std::function<void()> fn, double delay_ms) {
+        auto impl = std::make_shared<Task::Impl>();
+        impl->realm = realm_;
+        impl->host = weak_from_this();
+        impl->key = Quanta::next_timer_id();
+        impl->source = source;
+        impl->delay_ms = delay_ms;
+        impl->nesting = Quanta::timer_nesting_level() + 1;
+        impl->native = std::move(fn);
+        tasks_[impl->key] = impl;
+        Task task(impl);
+        if (provider_->schedule) provider_->schedule(task);
+        return task;
+    }
+
+    void forget(int64_t key) { tasks_.erase(key); }
+
+private:
+    Realm* realm_;
+    std::shared_ptr<const TimerProvider> provider_;
+    std::unordered_map<int64_t, std::shared_ptr<Task::Impl>> tasks_;
+};
+
+void Task::Run() {
+    std::shared_ptr<Impl> impl = impl_;
+    if (!impl || impl->cancelled) return;
+    std::shared_ptr<EmbedTimerHost> host = impl->host.lock();
+    if (!host) return;
+    Realm* realm = impl->realm;
+    Context& ctx = realm->GetContext();
+    {
+        HeapScope heap_scope(realm->engine_->get_heap());
+        RealmScope realm_scope(realm->engine_->realm());
+        RunningContext running(ctx);
+        const int saved = Quanta::timer_nesting_level();
+        Quanta::set_timer_nesting_level(impl->nesting);
+        if (impl->native) {
+            std::function<void()> fn = impl->native;
+            fn();
+        } else {
+            std::vector<Value> args(impl->args.begin(), impl->args.end());
+            Call(ctx, impl->callback.Get(), Undefined(), Args(args.data(), args.size()));
+        }
+        Quanta::set_timer_nesting_level(saved);
+        if (ctx.has_exception()) {
+            Value exception = ctx.get_exception();
+            ctx.clear_exception();
+            HostHooks::report_uncaught(ctx, exception, impl->native ? impl->source.c_str() : "timer");
+        }
+    }
+    if (!impl->cancelled) {
+        if (impl->repeating) {
+            impl->nesting++;
+        } else {
+            release_task(*impl);
+            host->forget(impl->key);
+        }
+    }
+    if (realm->isolate_ && HostHooks::js_stack_empty()) realm->isolate_->PerformMicrotaskCheckpoint();
+}
+
+void Task::Cancel() {
+    if (!impl_ || impl_->cancelled) return;
+    if (auto host = impl_->host.lock()) host->forget(impl_->key);
+    release_task(*impl_);
+}
+
+bool Task::IsCancelled() const { return !impl_ || impl_->cancelled; }
+Realm* Task::GetRealm() const { return impl_ ? impl_->realm : nullptr; }
+int64_t Task::Id() const { return impl_ ? impl_->id : 0; }
+const std::string& Task::Source() const {
+    static const std::string none;
+    return impl_ ? impl_->source : none;
+}
+bool Task::IsRepeating() const { return impl_ && impl_->repeating; }
+double Task::DelayMs() const { return impl_ ? impl_->delay_ms : 0; }
+int Task::NestingLevel() const { return impl_ ? impl_->nesting : 0; }
+
+void Isolate::install_timer_host(Realm& realm) {
+    if (timer_provider_) realm.engine_->set_timer_host(std::make_shared<EmbedTimerHost>(&realm, timer_provider_));
+}
+
+void Isolate::SetTimerProvider(TimerProvider provider) {
+    timer_provider_ = std::make_shared<const TimerProvider>(std::move(provider));
+    for (Realm* realm : realms_) install_timer_host(*realm);
+}
+
+Task Realm::EnqueueTask(const std::string& source, std::function<void()> fn, double delayMs) {
+    if (auto* host = dynamic_cast<EmbedTimerHost*>(engine_->timer_host())) {
+        return host->enqueue(source, std::move(fn), delayMs);
+    }
+    // The built-in loop takes a function: wrap the task in one.
+    Context& ctx = GetContext();
+    Value wrapper = NewFunction(ctx, source, 0, [fn = std::move(fn)](Context&, Value, Args, Value) {
+        fn();
+        return Undefined();
+    });
+    if (ctx.has_exception() || !wrapper.is_function()) return Task();
+    EventLoop::instance().schedule_timer(ctx, wrapper.as_function(), {}, delayMs, false);
+    return Task();
+}
+
 void Isolate::install_module_host(Realm& realm) {
     if (module_hooks_) realm.engine_->set_module_host(std::make_shared<EmbedModuleHost>(&realm, module_hooks_));
 }
@@ -417,6 +576,7 @@ std::unique_ptr<Realm> Isolate::CreateRealm(const RealmOptions& options) {
     realms_.push_back(realm.get());
     install_module_host(*realm);
     install_serialization_host(*realm);
+    install_timer_host(*realm);
     return realm;
 }
 

@@ -2218,6 +2218,12 @@ void register_global_builtins(Context& ctx) {
         double delay = args.size() > 1 ? args[1].to_number() : 0.0;
         if (std::isnan(delay) || delay < 0) delay = 0.0;
         std::vector<Value> bound(args.size() > 2 ? args.begin() + 2 : args.end(), args.end());
+        if (Engine* engine = ctx.get_engine(); engine && engine->timer_host()) {
+            int64_t id = next_timer_id();
+            engine->timer_host()->schedule({engine->get_global_context(), cb, std::move(bound), delay, repeating,
+                                            timer_nesting_level() + 1, id, repeating ? "setInterval" : "setTimeout"});
+            return Value(static_cast<double>(id));
+        }
         int64_t id = EventLoop::instance().schedule_timer(ctx, cb, std::move(bound), delay, repeating);
         return Value(static_cast<double>(id));
     };
@@ -2231,7 +2237,9 @@ void register_global_builtins(Context& ctx) {
         });
     auto clear_timer_fn = [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
         if (!args.empty()) {
-            EventLoop::instance().clear_timer(static_cast<int64_t>(args[0].to_number()));
+            int64_t id = static_cast<int64_t>(args[0].to_number());
+            if (Engine* engine = ctx.get_engine(); engine && engine->timer_host()) engine->timer_host()->cancel(ctx, id);
+            else EventLoop::instance().clear_timer(id);
         }
         return Value();
     };

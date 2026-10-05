@@ -23,6 +23,7 @@ Isolate::~Isolate() {
     // They go with it, each tearing down fully: there is no one left to inherit.
     closing_ = true;
     for (Engine* engine : std::vector<Engine*>(engines_)) delete engine;
+    retired_module_loaders_.clear();
     // The collections below allocate nothing but do consult the active heap.
     HeapScope heap_scope(heap_);
     // A collection that is already half done would trace into what is about to go.

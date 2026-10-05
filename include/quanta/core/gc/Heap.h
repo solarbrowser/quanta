@@ -81,6 +81,8 @@ public:
     // names would follow pointers into contexts that were freed with it. Only
     // the precise roots still reach it.
     static void set_retiring(Heap* heap) { retiring_ = heap; }
+    // True while a heap is being retired: everything in it is dying, so nothing may keep it alive.
+    static bool is_retiring() { return retiring_ != nullptr; }
 
     static bool test_mark(const ProbeResult& p) {
         if (!p.cell) return true;  // non-cell: nothing to mark

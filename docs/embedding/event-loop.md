@@ -26,6 +26,31 @@ isolate->NextTimerDelayMs();      // ms until the next one (0 if due); nullopt i
 
 A job queued by a timer callback runs right after that callback. A host that implements its own timers (as a Web API would) has no use for these two and can ignore them.
 
+## Taking the timers over
+
+A browser has an event loop of its own: task sources, background tabs whose timers are throttled, `requestAnimationFrame` ordering. `SetTimerProvider` hands the built-in `setTimeout`, `setInterval` and `setImmediate` to it:
+
+```cpp
+isolate->SetTimerProvider({
+    /* schedule */ [&](Embed::Task task) { loop.Post(task.DelayMs(), task); },
+    /* cancel   */ [&](Embed::Realm*, int64_t id) { loop.Remove(id); }});   // optional
+```
+
+From then on the engine's own loop knows nothing of those timers: `RunDueTimers` does not fire them. Each request arrives as a `Task`, a cheap handle that keeps the callback and its arguments alive:
+
+| | |
+|---|---|
+| `Run()` | Runs the callback in its realm, then performs a microtask checkpoint when no script is running. An exception goes to the uncaught exception handler (origin `"timer"`). A no-op once the task is cancelled or its realm is gone. A one-shot task is spent afterwards; a repeating one stays armed, and the host schedules its next run. |
+| `Cancel()`, `IsCancelled()` | `clearTimeout` and `clearInterval` cancel the task and call the provider's `cancel`. A host cancels a task it will not run. A realm that is destroyed cancels all of its tasks. |
+| `GetRealm()`, `Id()`, `Source()` | The realm the task belongs to, what script was handed back by `setTimeout`, and its task source (`"setTimeout"`, `"setInterval"`, or the label given to `EnqueueTask`). |
+| `DelayMs()`, `IsRepeating()` | What script asked for. The engine does no clamping: that is the host's, with the nesting level. |
+| `NestingLevel()` | The HTML "timer nesting level" for the next run: a timer made inside a timer task starts one deeper, and a repeating task gains one with each run. At 5 or more the host clamps the delay to 4 ms. |
+
+`Realm::EnqueueTask(source, fn, delayMs)` queues host code as a task of a realm the same way, for a host that makes its own timers and wants them to run in the realm with the right nesting and error reporting. With no provider it goes through the built-in loop (`RunDueTimers`), and the task handle is empty then.
+
+Drop the `Task` handles before the Isolate goes.
+
+
 ## Promises
 
 `NewPromiseCapability(ctx)` returns a pending promise and its two settling functions, exactly as `new Promise` hands them to its executor:

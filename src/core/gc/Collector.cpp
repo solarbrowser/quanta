@@ -610,7 +610,8 @@ void scan_stacks(MarkVisitor& v) {
                 scan_range(v, co, control_end);
             }
         }
-        if (rec.extra_roots) rec.extra_roots(v);
+        // A fiber of the heap being retired is going with it, and what it holds with it.
+        if (rec.extra_roots && !Heap::is_retiring()) rec.extra_roots(v);
     });
 }
 
@@ -975,7 +976,7 @@ void run_minor_collection() {
     for (Environment* e : remembered_envs()) v.visit_environment(e);
     // See FiberRegistry::Record::owner_cell for why these are minor roots.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
-        if (rec.owner_cell) v.visit_object(rec.owner_cell);
+        if (rec.owner_cell && !Heap::is_retiring()) v.visit_object(rec.owner_cell);
     });
     scan_stacks(v);
     auto t1 = std::chrono::steady_clock::now();
@@ -1115,7 +1116,7 @@ void scan_major_roots(MarkVisitor& v) {
     scan_stacks(v);
     // See FiberRegistry::Record::owner_cell for why these are roots here too.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
-        if (rec.owner_cell) v.visit_object(rec.owner_cell);
+        if (rec.owner_cell && !Heap::is_retiring()) v.visit_object(rec.owner_cell);
     });
     // revisit_context, not visit_context: root contexts must be re-traced
     // every slice, not only the first.

@@ -15,6 +15,7 @@
 #include "quanta/core/engine/Isolate.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/engine/StructuredClone.h"
+#include "quanta/core/engine/TimerHost.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/parser/AST.h"
 #include <string>
@@ -86,6 +87,7 @@ private:
     std::unique_ptr<ModuleLoader> module_loader_;
     std::shared_ptr<ModuleHost> module_host_;
     std::shared_ptr<SerializationHost> serialization_host_;
+    std::shared_ptr<TimerHost> timer_host_;
 
     bool initialized_;
     uint64_t execution_count_;
@@ -311,6 +313,9 @@ public:
     // file system, as the CLI does.
     void set_module_host(std::shared_ptr<ModuleHost> host) { module_host_ = std::move(host); }
     // Where structured clone hands host objects; none means they cannot be cloned.
+    // Who runs setTimeout and friends; none means the engine's own loop.
+    TimerHost* timer_host() const { return timer_host_.get(); }
+    void set_timer_host(std::shared_ptr<TimerHost> host) { timer_host_ = std::move(host); }
     SerializationHost* serialization_host() const { return serialization_host_.get(); }
     void set_serialization_host(std::shared_ptr<SerializationHost> host) { serialization_host_ = std::move(host); }
     ModuleHost* module_host() const { return module_host_.get(); }

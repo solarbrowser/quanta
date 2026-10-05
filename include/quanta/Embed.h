@@ -199,6 +199,59 @@ Value Deserialize(Context& ctx, SerializedData& data);
 // Both at once, in one realm: what structuredClone does.
 Value StructuredClone(Context& ctx, const Value& value, const SerializeOptions& options = {});
 
+// ---- Tasks and timers ------------------------------------------------------------------
+//
+// A task is a piece of script (a timer's callback) or host code that a realm asks to have run later. The
+// engine's own loop runs them by itself under RunDueTimers; a host that has an event loop of its own (task
+// sources, throttled background tabs, requestAnimationFrame ordering) takes them over with SetTimerProvider and
+// fires each one from its own queue, when it sees fit.
+//
+// A Task is a handle, cheap to copy; the callback and arguments behind it stay alive for as long as it can
+// still run. Drop the handles before the Isolate goes. A realm that is destroyed cancels every task it has.
+class Task {
+public:
+    Task() = default;
+    explicit operator bool() const { return impl_ != nullptr; }
+
+    // Runs it in its realm, then performs a microtask checkpoint when no script is running (HTML "clean up
+    // after running script"). An exception it throws goes to the uncaught exception handler. A no-op for a
+    // cancelled task or a destroyed realm. A one-shot task is spent afterwards; a repeating one stays armed
+    // until cancelled, and the host schedules its next run.
+    void Run();
+    // Drops it and what it holds. clearTimeout does this; a host does it to a task it will not run.
+    void Cancel();
+    bool IsCancelled() const;
+
+    Realm* GetRealm() const;
+    // What script was given back by setTimeout; clearTimeout names it. 0 for EnqueueTask.
+    int64_t Id() const;
+    // "setTimeout", "setInterval", or the label EnqueueTask was given: the task source.
+    const std::string& Source() const;
+    bool IsRepeating() const;
+    // The delay script asked for, in milliseconds, and the HTML "timer nesting level" for the next run: with
+    // 5 or more, the host clamps the delay to 4 ms. It grows by one with each run of a repeating task.
+    double DelayMs() const;
+    int NestingLevel() const;
+
+    struct Impl;   // opaque
+
+private:
+    friend class Realm;
+    friend class Isolate;
+    friend class EmbedTimerHost;
+    explicit Task(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+    std::shared_ptr<Impl> impl_;
+};
+
+struct TimerProvider {
+    // setTimeout, setInterval, setImmediate and EnqueueTask asked for a task. The host keeps it and calls
+    // Run() when it is time (and again, for a repeating one, after the delay).
+    std::function<void(Task task)> schedule;
+    // clearTimeout or clearInterval named `id`, whose task is cancelled already: the host takes it out of
+    // its queue. Optional.
+    std::function<void(Realm* realm, int64_t id)> cancel;
+};
+
 // One global environment: a document's, or a frame's. It has its own intrinsics
 // (its own Array.prototype, its own %ThrowTypeError%, ...), so an array made in one
 // is not `instanceof Array` in another, as between frames.
@@ -233,6 +286,10 @@ public:
     // The same for a module the hooks fetch: `import(specifier)` from the module at `referrerUrl`.
     Value ImportModule(const std::string& specifier, const std::string& referrerUrl = "", const std::string& type = "");
 
+    // Queues `fn` as a task of this realm after `delayMs`, labelled `source`, through the timer provider if
+    // there is one and otherwise the built-in loop (RunDueTimers). Returns the task, which can be cancelled.
+    Task EnqueueTask(const std::string& source, std::function<void()> fn, double delayMs = 0);
+
     // Runs host code inside this realm: it is the realm that is running, and its context the
     // one engine code that wants a running context finds. What a host that calls into script
     // (or makes values) from outside any native function needs, so that what it makes belongs
@@ -244,6 +301,7 @@ public:
     static Realm* FromContext(Context& ctx);
 
 private:
+    friend class Task;
     friend class Isolate;
     Realm(Isolate& isolate, std::unique_ptr<Engine> engine);
 
@@ -279,6 +337,8 @@ public:
     // How this Isolate's realms load modules. Without hooks a realm reads them from the file system, as
     // the CLI does. Takes effect for the realms that exist and the ones made after.
     void SetModuleHooks(ModuleHooks hooks);
+    // Who runs timers. Without a provider the built-in setTimeout and setInterval are serviced by RunDueTimers.
+    void SetTimerProvider(TimerProvider provider);
     // How host objects are cloned. Without hooks they are a DataCloneError.
     void SetSerializationHooks(SerializationHooks hooks);
     // With a handler set the engine no longer prints unhandled rejections either.
@@ -331,6 +391,8 @@ private:
     PromiseRejectionHandler rejection_;
     std::shared_ptr<const ModuleHooks> module_hooks_;
     std::shared_ptr<const SerializationHooks> serialization_hooks_;
+    std::shared_ptr<const TimerProvider> timer_provider_;
+    void install_timer_host(Realm& realm);
     void install_module_host(Realm& realm);
     void install_serialization_host(Realm& realm);
 };
