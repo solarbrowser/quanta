@@ -2835,6 +2835,19 @@ static void test_frame_files_and_module_promises() {
         if (!from_host.stack.empty()) CHECK(from_host.stack[0].filename == "http://host/lib.js");
     }
 
+    // A strict script is strict for itself, not for the scripts that run after it in the realm.
+    {
+        std::unique_ptr<Embed::Realm> s = isolate->CreateRealm();
+        CHECK(s->Evaluate("'use strict'; var s = 1;", "a.js").ok);
+        Embed::EvaluateResult sloppy = s->Evaluate("leaked = 2; leaked", "b.js");
+        CHECK(sloppy.ok);
+        CHECK(!s->Evaluate("'use strict'; leaked2 = 2;", "c.js").ok);       // a strict one still is
+        CHECK(s->Evaluate("leaked3 = 3; leaked3", "d.js").ok);               // and the next is not
+        Embed::CompileResult strict_script = isolate->CompileScript("'use strict'; undeclared = 1;", "e.js");
+        CHECK(strict_script.script && !s->EvaluateScript(*strict_script.script).ok);
+        CHECK(s->Evaluate("leaked4 = 4; leaked4", "f.js").ok);
+    }
+
     // A module promise is the host's: a rejection is not reported before it can react.
     int unhandled = 0, handled = 0;
     isolate->SetPromiseRejectionHandler([&](Embed::Realm*, const Value&, const Value&, Embed::RejectionEvent event) {

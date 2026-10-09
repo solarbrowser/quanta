@@ -746,6 +746,14 @@ Engine::Result Engine::run_script_unit(const ExecutableRef<ScriptUnit>& program_
         if (global_context_) {
             global_context_->set_current_filename(filename);
 
+            // A script that is strict is strict for itself: the realm's global context is what the next script
+            // runs in, and it must not start out strict because an earlier one was.
+            struct StrictRestore {
+                Context* ctx;
+                bool was;
+                ~StrictRestore() { ctx->set_strict_mode(was); }
+            } strict_restore{global_context_.get(), global_context_->is_strict_mode()};
+
             Value result = program->evaluate(*global_context_);
 
             run_event_loop_to_completion(*global_context_);
