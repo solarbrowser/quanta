@@ -332,7 +332,7 @@ public:
     bool ordinary_has_property(const std::string& key) const;
     bool ordinary_has_own_property(const std::string& key) const;
     Value ordinary_get(const std::string& key) const;
-    bool ordinary_set(const std::string& key, const Value& value);
+    bool ordinary_set(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool ordinary_delete(const std::string& key);
     std::vector<std::string> ordinary_own_keys() const;
     PropertyDescriptor ordinary_get_own_property(const std::string& key) const;

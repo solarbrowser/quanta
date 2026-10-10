@@ -1095,6 +1095,11 @@ static void test_legacy_platform_objects() {
     CHECK(js_true("delete ro[9] && !Reflect.deleteProperty(ro, 'id')"));
     CHECK(js_true("(() => { try { Object.defineProperty(ro, 0, { value: 1 }); } catch (e) { return e instanceof TypeError; } })()"));
 
+    // A property of its own on an object that has indexed or named access reads back (no setter: it is ordinary).
+    CHECK(js_true("(ro.x = 1, ro.x === 1) && Object.hasOwn(ro, 'x') && (ro[5] = 'a', ro[5] === undefined)"));
+    CHECK(js_true("(items.y = 2, String(items.y) === '2') && Object.keys(items).includes('0')"));
+    CHECK(js_true("(ov.z = 3, ov.z === 3) && delete ro.x && ro.x === undefined"));
+
     // [[PreventExtensions]] of a legacy platform object answers false.
     CHECK(js_true("Reflect.preventExtensions(items) === false && Reflect.isExtensible(items)"));
     CHECK(js_true("(() => { try { Object.preventExtensions(items); } catch (e) { return e instanceof TypeError; } })()"));

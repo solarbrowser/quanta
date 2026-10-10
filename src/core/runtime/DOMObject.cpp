@@ -154,7 +154,7 @@ struct OrdinaryScope {
 bool DOMObject::ordinary_has_property(const std::string& key) const { OrdinaryScope s(this); return has_property_default(key); }
 bool DOMObject::ordinary_has_own_property(const std::string& key) const { OrdinaryScope s(this); return has_own_property_default(key); }
 Value DOMObject::ordinary_get(const std::string& key) const { OrdinaryScope s(this); return get_property_default(key); }
-bool DOMObject::ordinary_set(const std::string& key, const Value& value) { OrdinaryScope s(this); return set_property_default(key, value); }
+bool DOMObject::ordinary_set(const std::string& key, const Value& value, PropertyAttributes attrs) { OrdinaryScope s(this); return set_property_default(key, value, attrs); }
 bool DOMObject::ordinary_delete(const std::string& key) { OrdinaryScope s(this); return delete_property_default(key); }
 std::vector<std::string> DOMObject::ordinary_own_keys() const { OrdinaryScope s(this); return get_own_property_keys_default(); }
 PropertyDescriptor DOMObject::ordinary_get_own_property(const std::string& key) const { OrdinaryScope s(this); return get_property_descriptor_default(key); }
@@ -185,7 +185,7 @@ static bool named_visible(const DOMObject* self, const DOMLegacyHooks& h, Contex
         }
         return true;
     }
-    if (self->has_own_property_default(key)) return false;
+    if (self->ordinary_has_own_property(key)) return false;
     if (h.override_builtins) return true;
     for (Object* proto = self->get_prototype(); proto; proto = proto->get_prototype()) {
         if (proto->has_own_property(key)) return false;
@@ -204,7 +204,7 @@ static std::vector<std::string> visible_named_keys(const DOMObject* self, const 
         return names;
     }
     for (std::string& name : h.named_keys(ctx, const_cast<DOMObject*>(self))) {
-        if (self->has_own_property_default(name)) continue;
+        if (self->ordinary_has_own_property(name)) continue;
         bool shadowed = false;
         if (!h.override_builtins) {
             for (Object* proto = self->get_prototype(); proto && !shadowed; proto = proto->get_prototype()) {
@@ -243,8 +243,8 @@ static bool legacy_own(const DOMObject* self, const DOMLegacyHooks& h, Context& 
             return true;
         }
     }
-    if (self->has_own_property_default(key)) {
-        out = self->get_property_descriptor_default(key);
+    if (self->ordinary_has_own_property(key)) {
+        out = self->ordinary_get_own_property(key);
         return true;
     }
     return false;
@@ -253,7 +253,7 @@ static bool legacy_own(const DOMObject* self, const DOMLegacyHooks& h, Context& 
 };
 
 #define QUANTA_LEGACY_PROLOGUE(fallback)                                                         \
-    const DOMLegacyHooks* hooks = type_ ? type_->legacy : nullptr;                               \
+    const DOMLegacyHooks* hooks = (type_ && g_ordinary_self != this) ? type_->legacy : nullptr;  \
     Context* ctx = hooks ? hook_context() : nullptr;                                             \
     if (!hooks || !ctx) return fallback;
 
@@ -288,7 +288,7 @@ bool DOMObject::legacy_has_property(const std::string& key) const {
     }
     PropertyDescriptor desc;
     if (DOMLegacyAccess::legacy_own(this, *hooks, *ctx, key, false, desc)) return true;
-    return has_property_default(key);
+    return ordinary_has_property(key);
 }
 
 Value DOMObject::legacy_get_property(const std::string& key) const {
@@ -297,7 +297,7 @@ Value DOMObject::legacy_get_property(const std::string& key) const {
         if (exotic_ctx) return exotic->get(*exotic_ctx, const_cast<DOMObject*>(this), key);
     }
     QUANTA_LEGACY_PROLOGUE(get_property_default(key))
-    if (is_symbol_key(key)) return get_property_default(key);
+    if (is_symbol_key(key)) return ordinary_get(key);
     uint32_t index = 0;
     bool ignore_named = false;
     if (hooks->indexed_get && array_index(key, index)) {
@@ -309,7 +309,7 @@ Value DOMObject::legacy_get_property(const std::string& key) const {
         Value value;
         if (DOMLegacyAccess::named_visible(this, *hooks, *ctx, key, &value)) return value;
     }
-    return get_property_default(key);
+    return ordinary_get(key);
 }
 
 bool DOMObject::legacy_set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
@@ -319,7 +319,7 @@ bool DOMObject::legacy_set_property(const std::string& key, const Value& value, 
     }
     QUANTA_LEGACY_PROLOGUE(set_property_default(key, value, attrs))
     if (hooks->subject) return false;   // a named properties object takes no property of its own
-    if (is_symbol_key(key)) return set_property_default(key, value, attrs);
+    if (is_symbol_key(key)) return ordinary_set(key, value, attrs);
     uint32_t index = 0;
     if ((hooks->indexed_get || hooks->indexed_set) && array_index(key, index)) {
         if (!hooks->indexed_set) return false;
@@ -332,7 +332,7 @@ bool DOMObject::legacy_set_property(const std::string& key, const Value& value, 
     }
     // A named property with no setter cannot be replaced by an ordinary one.
     if (hooks->named_get && DOMLegacyAccess::named_visible(this, *hooks, *ctx, key, nullptr)) return false;
-    return set_property_default(key, value, attrs);
+    return ordinary_set(key, value, attrs);
 }
 
 bool DOMObject::legacy_delete_property(const std::string& key) {
@@ -342,7 +342,7 @@ bool DOMObject::legacy_delete_property(const std::string& key) {
     }
     QUANTA_LEGACY_PROLOGUE(delete_property_default(key))
     if (hooks->subject) return false;
-    if (is_symbol_key(key)) return delete_property_default(key);
+    if (is_symbol_key(key)) return ordinary_delete(key);
     uint32_t index = 0;
     if (hooks->indexed_get && array_index(key, index)) {
         Value value;
@@ -354,7 +354,7 @@ bool DOMObject::legacy_delete_property(const std::string& key) {
         if (!hooks->named_delete) return false;
         return hooks->named_delete(*ctx, this, key);
     }
-    return delete_property_default(key);
+    return ordinary_delete(key);
 }
 
 std::vector<std::string> DOMObject::legacy_get_own_property_keys() const {
@@ -369,7 +369,7 @@ std::vector<std::string> DOMObject::legacy_get_own_property_keys() const {
         for (uint32_t i = 0; i < length; i++) keys.push_back(std::to_string(i));
     }
     for (std::string& name : DOMLegacyAccess::visible_named_keys(this, *hooks, *ctx)) keys.push_back(std::move(name));
-    for (std::string& key : get_own_property_keys_default()) keys.push_back(std::move(key));
+    for (std::string& key : ordinary_own_keys()) keys.push_back(std::move(key));
     return keys;
 }
 
@@ -416,7 +416,7 @@ PropertyDescriptor DOMObject::legacy_get_property_descriptor(const std::string& 
     QUANTA_LEGACY_PROLOGUE(get_property_descriptor_default(key))
     PropertyDescriptor desc;
     if (DOMLegacyAccess::legacy_own(this, *hooks, *ctx, key, false, desc)) return desc;
-    return get_property_descriptor_default(key);
+    return ordinary_get_own_property(key);
 }
 
 bool DOMObject::legacy_set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
@@ -426,7 +426,7 @@ bool DOMObject::legacy_set_property_descriptor(const std::string& key, const Pro
     }
     QUANTA_LEGACY_PROLOGUE(set_property_descriptor_default(key, desc))
     if (hooks->subject) return false;
-    if (is_symbol_key(key)) return set_property_descriptor_default(key, desc);
+    if (is_symbol_key(key)) return ordinary_define_own_property(key, desc);
     uint32_t index = 0;
     if ((hooks->indexed_get || hooks->indexed_set) && array_index(key, index)) {
         if (!hooks->indexed_set || desc.is_accessor_descriptor()) return false;
@@ -435,7 +435,7 @@ bool DOMObject::legacy_set_property_descriptor(const std::string& key, const Pro
     }
     if (hooks->named_get || hooks->named_set) {
         const bool supported = hooks->named_get && DOMLegacyAccess::named_visible(this, *hooks, *ctx, key, nullptr);
-        const bool has_own = has_own_property_default(key);
+        const bool has_own = ordinary_has_own_property(key);
         if (hooks->override_builtins || !has_own) {
             if (supported && !hooks->named_set) return false;
             if (hooks->named_set) {
@@ -445,7 +445,7 @@ bool DOMObject::legacy_set_property_descriptor(const std::string& key, const Pro
             }
         }
     }
-    return set_property_descriptor_default(key, desc);
+    return ordinary_define_own_property(key, desc);
 }
 
 #undef QUANTA_LEGACY_PROLOGUE
