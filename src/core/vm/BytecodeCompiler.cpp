@@ -5359,6 +5359,16 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
             aliases_param = !split_param_scope;
             break;
         }
+        // The rest parameter is a parameter like the others: a nested block's own binding of its name is a
+        // second binding that lives in an environment of its own.
+        if (!nested_lexical_shadows_param && !aliases_param && has_rest && rest_name == info.name && info.is_lexical) {
+            if (!env_mode || !(full_env || env_resident.count(info.name))) return nullptr;
+            nested_lexical_shadows_param = true;
+        }
+        // `var u` where u is the rest parameter reuses its binding, as it does a plain parameter's.
+        if (!nested_lexical_shadows_param && !aliases_param && has_rest && rest_name == info.name && !info.is_lexical) {
+            aliases_param = !split_param_scope;
+        }
         if (nested_lexical_shadows_param || aliases_param) continue;
         if (has_rest && rest_name == info.name) return nullptr;
         bool resident = env_mode && (!selective || env_resident.count(info.name) > 0);

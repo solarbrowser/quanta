@@ -2840,6 +2840,19 @@ static void test_frame_files_and_module_promises() {
         if (!from_host.stack.empty()) CHECK(from_host.stack[0].filename == "http://host/lib.js");
     }
 
+    // A block's own binding of the rest parameter's name, and a var of it.
+    {
+        std::unique_ptr<Embed::Realm> rr = isolate->CreateRealm();
+        CHECK(rr->Evaluate("function a(...u) { { const u = 5; var r = u; } return r + ',' + u.length; }"
+                           "function b(...u) { var u; return u.length; }"
+                           "function c(...u) { { let u = 1; { const u = 2; } } return u.join(); }"
+                           "class K { m(...u) { { const u = [2]; } return u.length; } }"
+                           "var arrow = (...u) => { { const u = [2]; } return u.length; };"
+                           "globalThis.rest = [a(1, 2, 3), b(1, 2), c(7, 8), new K().m(1, 2), arrow(1)].join('|');").ok);
+        Context& cr = rr->GetContext();
+        CHECK(Embed::ToWtf8(cr, Embed::Get(cr, Value(cr.get_global_object()), "rest")) == "5,3|2|7,8|2|1");
+    }
+
     // A strict script is strict for itself, not for the scripts that run after it in the realm.
     {
         std::unique_ptr<Embed::Realm> s = isolate->CreateRealm();
