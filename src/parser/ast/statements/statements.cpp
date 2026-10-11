@@ -270,6 +270,20 @@ void Program::check_global_declaration_conflicts(Context& ctx) {
     }
 }
 
+// Whether a `var` of this name needs no binding made for it. CreateGlobalVarBinding asks the global object for an
+// OWN property: one the name has further up its prototype chain (a named property the document gives a global, an
+// Object.prototype member) is another thing, and the script's var is a property of the global of its own.
+static bool var_already_bound(Context& ctx, const std::string& name) {
+    if (ctx.get_type() != Context::Type::Global) return ctx.has_binding(name);
+    Environment* var_env = ctx.get_variable_environment();
+    if (!var_env || var_env->get_type() != Environment::Type::Object || !var_env->get_binding_object()) {
+        return ctx.has_binding(name);
+    }
+    if (var_env->get_binding_object()->has_own_property(name)) return true;
+    Environment* lexical = ctx.get_script_global_lexical_env();
+    return lexical && lexical->has_own_binding(name);
+}
+
 void Program::hoist_declarations(Context& ctx) {
     if (hoisted_) return;
     hoisted_ = true;
@@ -504,7 +518,7 @@ void Program::scan_for_var_declarations(ASTNode* node, Context& ctx) {
                         if (bn.empty()) continue;
                         const bool have = ctx.get_type() == Context::Type::Eval && pattern_env
                                               ? pattern_env->has_own_binding(bn)
-                                              : ctx.has_binding(bn);
+                                              : var_already_bound(ctx, bn);
                         if (!have) ctx.create_var_binding(bn, Value(), true);
                     }
                     continue;
@@ -520,7 +534,7 @@ void Program::scan_for_var_declarations(ASTNode* node, Context& ctx) {
                 Environment* var_env = ctx.get_variable_environment();
                 const bool exists = ctx.get_type() == Context::Type::Eval && var_env
                                         ? var_env->has_own_binding(name)
-                                        : ctx.has_binding(name);
+                                        : var_already_bound(ctx, name);
                 if (!exists) {
                     ctx.create_var_binding(name, Value(), true);
                 }

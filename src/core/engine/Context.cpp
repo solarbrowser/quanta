@@ -1327,7 +1327,9 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
     // front cost a second lookup of the same name on the declarative side,
     // where one already tells create_if_absent whether to insert.
     if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
-        if (has_own_binding(name)) {
+        // CreateGlobalVarBinding asks for an OWN property: a name the global only has further up its prototype
+        // chain (a document's named property) is not a binding to refuse a declaration for.
+        if (is_with_environment_ ? has_own_binding(name) : binding_object_->has_own_property(name)) {
             return false;
         }
         int attrs_value = 0;

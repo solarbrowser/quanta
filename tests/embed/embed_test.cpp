@@ -2840,6 +2840,57 @@ static void test_frame_files_and_module_promises() {
         if (!from_host.stack.empty()) CHECK(from_host.stack[0].filename == "http://host/lib.js");
     }
 
+    // Named properties of a global that is fronted by a WindowProxy: bare, through the proxy, `in`, and not own.
+    auto make_window = [&](std::unique_ptr<Embed::Realm>& w, bool with_proxy, std::map<std::string, std::string>& ids) {
+        w = isolate->CreateRealm();
+        Context& cw = w->GetContext();
+        w->Evaluate("function EventTarget() {} globalThis.WindowProto = Object.create(EventTarget.prototype);"
+                    "Object.setPrototypeOf(globalThis, WindowProto); var own = 'own'; globalThis.EventTargetProto = EventTarget.prototype;");
+        Embed::NamedPropertiesHooks named_hooks;
+        named_hooks.get = [&ids](Embed::Realm* realm, const std::string& name, Value& out) {
+            auto it = ids.find(name);
+            if (it == ids.end()) return false;
+            out = Embed::FromUtf8(realm->GetContext(), it->second);
+            return true;
+        };
+        named_hooks.names = [&ids](Embed::Realm*) { std::vector<std::string> k; for (auto& [n, v] : ids) k.push_back(n); return k; };
+        Value global(cw.get_global_object());
+        Value named = Embed::NewNamedPropertiesObject(cw, global, Embed::Get(cw, global, "EventTargetProto"), std::move(named_hooks));
+        Embed::SetPrototypeOf(cw, Embed::Get(cw, global, "WindowProto"), named);
+        if (with_proxy) {
+            Embed::CrossOriginHooks window_hooks;
+            window_hooks.sameOrigin = [](Embed::Realm*, Embed::Realm*) { return true; };
+            Embed::NewWindowProxy(*w, window_hooks);
+        }
+    };
+    for (bool with_proxy : {false, true}) {
+        std::unique_ptr<Embed::Realm> w;
+        std::map<std::string, std::string> ids{{"container", "<div>"}, {"own", "shadowed"}, {"toString", "never"}};
+        make_window(w, with_proxy, ids);
+        Context& cw = w->GetContext();
+        Value global(cw.get_global_object());
+        CHECK(w->Evaluate("globalThis.named = [container, window_ = globalThis.container, ('container' in globalThis), own,"
+                          " Object.keys(globalThis).includes('container'), typeof toString, (function () { try { return missing; } catch (e) { return e.name; } })()].join('|')").ok);
+        CHECK(Embed::ToWtf8(cw, Embed::Get(cw, global, "named")) == "<div>|<div>|true|own|false|function|ReferenceError");
+    }
+    // A script that declares a name the document also names: its own var wins, strict or not, with a proxy or without.
+    for (bool with_proxy : {false, true}) {
+        for (const char* source : {"var container = 'mine'; globalThis.seen = container;",
+                                   "'use strict'; var container = 'mine'; globalThis.seen = container;",
+                                   "'use strict'; var container; container = 'mine'; globalThis.seen = container;",
+                                   "function container() {} globalThis.seen = typeof container;"}) {
+            std::unique_ptr<Embed::Realm> w;
+            std::map<std::string, std::string> ids{{"container", "<div>"}};
+            make_window(w, with_proxy, ids);
+            Context& cw = w->GetContext();
+            Embed::EvaluateResult declared = w->Evaluate(source, "decl.js");
+            CHECK(declared.ok);
+            if (!declared.ok) std::fprintf(stderr, "decl (proxy %d): %s | %s\n", with_proxy, source, declared.error.c_str());
+            CHECK(Embed::ToWtf8(cw, Embed::Get(cw, Value(cw.get_global_object()), "seen")) != "<div>");
+            CHECK(w->Evaluate("Object.hasOwn(globalThis, 'container')").ok);
+        }
+    }
+
     // A block's own binding of the rest parameter's name, and a var of it.
     {
         std::unique_ptr<Embed::Realm> rr = isolate->CreateRealm();
