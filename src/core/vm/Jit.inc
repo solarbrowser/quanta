@@ -98,7 +98,7 @@ struct Config {
     bool trace = false;
     bool debug = false;           // stats || trace: the one flag the hot helpers test
     int32_t safepoint_reload = 64;
-    uint32_t mode = 0;             // 0: any hot function, 1: functions with loops only
+    uint32_t mode = 1;             // 1: functions with loops only (default), 0: any hot function
     uint32_t threshold = 6;        // calls before a loop-free function is compiled
     const char* dump_dir = nullptr;
     size_t mapped_bytes = 0;

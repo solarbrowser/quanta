@@ -35,4 +35,4 @@ Which path a function gets is baked into its `FunctionExecutable` once, at compi
 
 `call_tree_walker`'s name is a leftover from when the engine really was one -- see Threaded Dispatch above. It doesn't walk the AST today: like every other path, it compiles to a `BytecodeChunk` and runs it through `VM::run` (`Function::call_tree_walker`, `Function.cpp`). "General path" is what the name actually means now.
 
-See also: [internals/execution.md](../internals/execution.md), [internals/bytecode.md](../internals/bytecode.md).
+See also: [internals/jit.md](../internals/jit.md), [internals/execution.md](../internals/execution.md), [internals/bytecode.md](../internals/bytecode.md).
