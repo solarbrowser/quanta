@@ -24,6 +24,13 @@ class Environment;
 class PropertyDescriptor;
 class Object;
 struct ClosureTemplate;
+struct JitCode;
+// Frees a chunk's baseline-JIT code (Jit.inc). Out of line so this header
+// does not need the JIT's definitions.
+void jit_free_code(JitCode* code) noexcept;
+struct JitCodeDeleter {
+    void operator()(JitCode* p) const noexcept { jit_free_code(p); }
+};
 
 // Register-based, accumulator-centric instruction set (V8 Ignition model).
 // Encoding: u8 opcode + fixed operands -- r: u8 register, k: u16 constant-
@@ -923,6 +930,14 @@ struct BytecodeChunk {
     uint16_t register_count = 0;
     uint8_t parameter_count = 0;    // params occupy regs[0..parameter_count)
 
+    // Baseline JIT (Jit.inc). `jit` is the native translation of `code`, if
+    // there is one; jit_state: 0 not decided yet, 1 compiled, 2 refused (an
+    // op it cannot run, or compiling failed -- the interpreter owns the chunk
+    // for good). jit_hotness counts calls until the decision is made.
+    mutable std::unique_ptr<JitCode, JitCodeDeleter> jit;
+    mutable uint16_t jit_hotness = 0;
+    mutable uint8_t jit_state = 0;
+
     // env_mode: every local lives in ctx.get_lexical_environment() instead of
     // a register. env_params/env_locals seed function entry, via VM::run.
     bool env_mode : 1 = false;
@@ -1089,6 +1104,7 @@ struct BytecodeChunk {
 // else that needs to find instruction boundaries or an embedded jump offset.
 int op_operand_bytes(Op op);
 char op_operand_kind(Op op);
+const char* op_name(Op op);
 
 std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& name);
 

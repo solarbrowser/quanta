@@ -496,5 +496,6 @@ int main(int argc, char* argv[]) {
     // std::_Exit skips all of that and matches how every other $262 host
     // (d8, the SpiderMonkey shell, Node) actually exits.
     std::cout.flush();
+    Quanta::VM::jit_print_stats();
     std::_Exit(code);
 }

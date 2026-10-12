@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/vm/Bytecode.h"
+#include "JitLayout.h"
 #include "quanta/parser/AST.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/parser/FunctionExecutable.h"
@@ -18,8 +19,9 @@ namespace Quanta {
 // carries prebuilt ClosureTemplates, while ast_nodes holds the nodes
 // Op::DefineClass reads as a description of itself.
 #if defined(__GLIBCXX__)
-// 128 plus the position table (a FixedArray: pointer and count).
-static_assert(sizeof(BytecodeChunk) == 144);
+// 128 plus the position table (a FixedArray: pointer and count) plus the
+// baseline JIT's code pointer and its two small counters.
+static_assert(sizeof(BytecodeChunk) == 160);
 #else
 static_assert(sizeof(BytecodeChunk) <= 192);
 #endif
@@ -118,6 +120,9 @@ void BytecodeChunk::trace(Visitor& v) const {
             }
         }
     }
+    // The baseline JIT's own inline caches keep their prototypes, holders and
+    // cached values alive for the same reason the feedback above does.
+    if (jit) jit_trace(jit.get(), v);
 }
 
 namespace {
@@ -233,6 +238,7 @@ const OpInfo& op_info(Op op) {
 
 int op_operand_bytes(Op op) { return op_info(op).operand_bytes; }
 char op_operand_kind(Op op) { return op_info(op).kind; }
+const char* op_name(Op op) { return op_info(op).name; }
 
 #ifdef QUANTA_VALIDATE_BYTECODE
 void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& name) {

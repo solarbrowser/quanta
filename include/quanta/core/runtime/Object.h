@@ -452,6 +452,8 @@ public:
     const void* gc_storage_hint() const { return butterfly_; }
 
     friend class Function;
+    // The baseline JIT (Jit.inc) emits loads of shape_/proto_/butterfly_ directly.
+    friend struct JitObjectLayout;
     Object(const Object& other) = delete;
     Object& operator=(const Object& other) = delete;
     // Never actually invoked (every Object lives behind a GC pointer) --

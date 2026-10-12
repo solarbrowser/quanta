@@ -68,6 +68,9 @@ private:
     bool linked_ = false;
 };
 
+// Prints the baseline JIT's counters (QUANTA_JIT_STATS=1 / QUANTA_JIT_LOG=1); a no-op otherwise.
+void jit_print_stats();
+
 // Whether new calls record where they are (see FrameLink). Frames already running when it is
 // switched on are not in the chain, so a trace made then lacks their positions.
 void set_position_tracking(bool on);

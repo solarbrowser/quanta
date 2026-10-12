@@ -580,6 +580,7 @@ private:
  * Environment for variable bindings
  */
 class Environment {
+    friend struct JitEnvLayout;   // the baseline JIT (Jit.inc) reads binding_object_ and the shadow epoch directly
 public:
     enum class Type {
         Declarative,

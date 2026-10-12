@@ -5,6 +5,16 @@
  */
 
 #include "quanta/core/engine/HostHooks.h"
+#include "JitLayout.h"
+// The baseline JIT (Jit.inc, included further down) needs these at file scope.
+#if defined(__x86_64__) && (defined(__linux__) || defined(__APPLE__))
+#include "X64Asm.h"
+#include <deque>
+#include <functional>
+#include <unordered_map>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <array>
 #include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/runtime/DOMObject.h"
@@ -13,6 +23,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
@@ -1734,6 +1745,12 @@ struct Frame {
     // needs that fast_gate's closure-capture-only use of call_info does not.
     Environment* current_lexical_env = nullptr;
     Environment* current_variable_env = nullptr;
+    // Set by h_JitHalt when a step of the baseline JIT (Jit.inc) has run the
+    // one instruction it was asked for; Frame::pc then names where it stopped.
+    bool jit_halted = false;
+    // Back edges left before the interpreter offers this activation to the baseline
+    // JIT (osr_try, Jit.inc): a loop that has run this long is worth compiling for.
+    int32_t osr_budget = 300;
 };
 
 // The permanent form of the diagnostic's frame_lex_env_diag(f): falls back
@@ -1855,6 +1872,11 @@ inline void frame_set_lexical_env(Frame& f, Environment* env) {
 // only covers the common shape can hand that same pc to a slower one.
 using Handler = Value (*)(Frame&, uint32_t, Value);
 
+// Called at a loop's back edge once Frame::osr_budget runs out. True means the
+// baseline JIT ran the rest of the function and left its result in Frame::acc;
+// false that the interpreter carries on (the budget is then refilled).
+bool osr_try(Frame& f, uint32_t target_pc, const Value& acc);
+
 extern const std::array<Handler, 256> kHandlers;
 
 #define DISPATCH() [[clang::musttail]] return kHandlers[f.code[pc]](f, pc, acc)
@@ -1951,7 +1973,10 @@ Value h_Return(Frame& f, uint32_t pc, Value acc) {
 Value h_Jump(Frame& f, uint32_t pc, Value acc) {
     int16_t off = read_i16(f.code, pc + 1);
     pc += 3 + off;
-    if (off < 0) Collector::safepoint();
+    if (off < 0) {
+        Collector::safepoint();
+        if (__builtin_expect(--f.osr_budget < 0, 0) && osr_try(f, pc, acc)) return f.acc;
+    }
     DISPATCH();
 }
 
@@ -1977,7 +2002,10 @@ Value h_JumpIfSlow(Frame& f, uint32_t pc, Value acc) {
     pc += 3;
     if (acc.to_boolean() == JumpWhen) {
         pc += off;
-        if (off < 0) Collector::safepoint();
+        if (off < 0) {
+            Collector::safepoint();
+            if (__builtin_expect(--f.osr_budget < 0, 0) && osr_try(f, pc, acc)) return f.acc;
+        }
     }
     DISPATCH();
 }
@@ -2001,7 +2029,10 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
         pc += 3;
         if (truthy == JumpWhen) {
             pc += off;
-            if (off < 0) Collector::safepoint();
+            if (off < 0) {
+                Collector::safepoint();
+                if (__builtin_expect(--f.osr_budget < 0, 0) && osr_try(f, pc, acc)) return f.acc;
+            }
         }
         DISPATCH();
     }
@@ -8498,6 +8529,16 @@ Value h_invalid(Frame& f, uint32_t pc, Value acc) {
     return Value();
 }
 
+// The stop byte of a baseline-JIT step (Jit.inc): not an instruction, only a
+// place for the handler chain to end so the generated code can take the frame
+// back. Registered under an opcode value no Op uses.
+Value h_JitHalt(Frame& f, uint32_t pc, Value acc) {
+    f.jit_halted = true;
+    f.pc = pc;
+    f.acc = acc;
+    return acc;
+}
+
 constexpr std::array<Handler, 256> make_handler_table() {
     std::array<Handler, 256> t{};
     for (auto& e : t) e = &h_invalid;
@@ -8692,6 +8733,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CreateRestArray)] = &h_gen_CreateRestArray;
     t[static_cast<uint8_t>(Op::Throw)] = &h_gen_Throw;
     t[static_cast<uint8_t>(Op::ReraiseGeneratorReturn)] = &h_gen_ReraiseGeneratorReturn;
+    t[0xFF] = &h_JitHalt;
     return t;
 }
 const std::array<Handler, 256> kHandlers = make_handler_table();
@@ -8699,6 +8741,25 @@ const std::array<Handler, 256> kHandlers = make_handler_table();
 // Entry point: run() hands the frame over, the table takes it from there.
 Value run_dispatch(Frame& f) {
     return kHandlers[f.code[f.pc]](f, f.pc, f.acc);
+}
+
+#include "Jit.inc"
+
+#ifndef QUANTA_JIT_X64
+// No baseline JIT for this target: every chunk stays with the interpreter.
+namespace jit {
+inline void consider(const BytecodeChunk& chunk) noexcept { chunk.jit_state = 2; }
+inline Value run(Frame& f, JitCode*) { return run_dispatch(f); }
+inline void free_code(JitCode*) noexcept {}
+inline void print_stats() {}
+}
+bool osr_try(Frame& f, uint32_t, const Value&) { f.osr_budget = INT32_MAX; return false; }
+#endif
+
+// Where a frame starts or resumes: in generated code when the chunk has any.
+inline Value run_entry(Frame& f) {
+    if (JitCode* jc = f.chunk.jit.get()) return jit::run(f, jc);
+    return run_dispatch(f);
 }
 
 // What run() does once its register bank exists, whichever kind that is. Always
@@ -8902,9 +8963,11 @@ Value run_dispatch(Frame& f) {
         var_root.emplace(&frame.current_variable_env);
     }
 
+    if (__builtin_expect(chunk.jit_state != 1, 0) && chunk.jit_state != 2) jit::consider(chunk);
+
     for (;;) {
       try {
-        return run_dispatch(frame);
+        return run_entry(frame);
       } catch (const YieldException&) {
             throw;
       } catch (const GeneratorReturnException& gen_ret) {
@@ -9154,4 +9217,19 @@ Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* 
 }
 
 }
+
+void jit_free_code(JitCode* code) noexcept { VM::jit::free_code(code); }
+
+void jit_trace(const JitCode* code, Visitor& v) {
+    for (const JitIC& ic : code->ics) {
+        if (ic.kind == JitIC::Empty || ic.kind == JitIC::Own) continue;
+        v.visit_object(reinterpret_cast<Object*>(ic.proto_word));
+        v.visit_object(ic.holder);
+        v.visit(ic.value);
+    }
+}
+}
+
+namespace Quanta::VM {
+void jit_print_stats() { jit::print_stats(); }
 }
