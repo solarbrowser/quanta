@@ -68,6 +68,18 @@ private:
     bool linked_ = false;
 };
 
+// Answers a call to a function that does nothing but return a constant, `this` or one
+// of this's data properties, without building a frame -- a getter-style accessor, an
+// `isFoo() { return false; }` stub, a method that returns its receiver: the commonest
+// small functions there are, and a call to one cost about five hundred instructions to
+// do a load. Returns true and sets `out` only when the answer is exactly what running
+// the body would give; false (for anything else, including every case in which the
+// body could throw, call something or see a coerced `this`) means: make the call.
+bool try_leaf_call(const BytecodeChunk& chunk, const Value& this_value, Value& out);
+
+// Prints the baseline JIT's counters (QUANTA_JIT_STATS=1 / QUANTA_JIT_LOG=1); a no-op otherwise.
+void jit_print_stats();
+
 // Whether new calls record where they are (see FrameLink). Frames already running when it is
 // switched on are not in the chain, so a trace made then lacks their positions.
 void set_position_tracking(bool on);
@@ -97,6 +109,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val = nullptr, Function* owner = nullptr,
           const Value* initial_acc = nullptr, const CallInfo* call_info = nullptr,
           Environment** final_lexical_env = nullptr);
+
+// run() for the call Function::call_gated makes to a register-mode function: it has an
+// owner, a CallInfo and a `this`, no initial accumulator and no final-environment
+// report, and with all of those decided at compile time it is the cheapest way in.
+Value run_register_call(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
+                        const Value* this_val, Function* owner, const CallInfo* call_info);
 
 // Compiles a generator/async BODY for the suspendable calling convention
 // (bindings already live in ctx; yield/await suspend the fiber from inside

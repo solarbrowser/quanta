@@ -43,6 +43,8 @@ std::vector<Engine*>& engine_registry() {
 }
 }
 
+constinit thread_local size_t Engine::live_engines_ = 0;
+
 const std::vector<Engine*>& Engine::all_engines() {
     return engine_registry();
 }
@@ -110,6 +112,7 @@ Engine::Engine() : initialized_(false), execution_count_(0),
     heap_ = isolate_->heap();
     realm_ = std::make_unique<Realm>(this);
     engine_registry().push_back(this);
+    live_engines_++;
     isolate_->add_engine(this);
 
     config_.strict_mode = false;
@@ -130,6 +133,7 @@ Engine::Engine(const Config& config)
     heap_ = isolate_->heap();
     realm_ = std::make_unique<Realm>(this);
     engine_registry().push_back(this);
+    live_engines_++;
     isolate_->add_engine(this);
 
     start_time_ = std::chrono::high_resolution_clock::now();
@@ -143,6 +147,7 @@ Engine::Engine(Isolate& isolate, const Config& config)
     Heap::set_active(heap_);
     realm_ = std::make_unique<Realm>(this);
     engine_registry().push_back(this);
+    live_engines_++;
     isolate_->add_engine(this);
 
     start_time_ = std::chrono::high_resolution_clock::now();
@@ -151,7 +156,7 @@ Engine::Engine(Isolate& isolate, const Config& config)
 Engine::~Engine() {
     auto& reg = engine_registry();
     for (size_t i = 0; i < reg.size(); i++) {
-        if (reg[i] == this) { reg[i] = reg.back(); reg.pop_back(); break; }
+        if (reg[i] == this) { reg[i] = reg.back(); reg.pop_back(); live_engines_--; break; }
     }
     Engine* heir = nullptr;
     if (isolate_) {

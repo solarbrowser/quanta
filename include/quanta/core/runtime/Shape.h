@@ -40,7 +40,13 @@ namespace Quanta {
 class alignas(32) Shape {
 public:
     // The empty shape every plain object starts from.
-    static Shape* root();
+    // Read from a plain thread_local pointer: this is asked for every object that is
+    // created, and the function-local static it used to be costs a call and an
+    // initialisation guard each time.
+    static Shape* root() {
+        Shape* r = root_instance_;
+        return __builtin_expect(r != nullptr, 1) ? r : create_root();
+    }
 
     // The child shape after adding `key`, memoized so any other object
     // adding the same key from this same shape gets the identical child.
@@ -128,6 +134,8 @@ public:
     static constexpr uint32_t kMaxSlots = 128;
 
 private:
+    static constinit thread_local Shape* root_instance_;
+    static Shape* create_root();
     Shape() = default;
     Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor = false);
 

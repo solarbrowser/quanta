@@ -45,14 +45,16 @@ Shape::Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is
     slots_.set(key, slot_index, is_accessor);
 }
 
-Shape* Shape::root() {
+constinit thread_local Shape* Shape::root_instance_ = nullptr;
+
+Shape* Shape::create_root() {
     // Heap-allocated (leaked, matching "immortal for the thread's lifetime"
     // above) rather than a plain `static thread_local Shape instance` --
     // thread-local storage doesn't reliably honor over-alignment (Shape is
     // alignas(32), Object.h's TaggedShapePtr tag bits), while `new` does
     // (C++17 over-aligned dynamic allocation).
-    static thread_local Shape* instance = new Shape();
-    return instance;
+    if (!root_instance_) root_instance_ = new Shape();
+    return root_instance_;
 }
 
 Shape* Shape::transition_find(void* table, bool is_single, const std::string& key) {

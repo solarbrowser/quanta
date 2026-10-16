@@ -266,6 +266,7 @@ private:
             bits_ = (reinterpret_cast<uintptr_t>(s) & ~kMask) | (bits_ & kMask);
             return *this;
         }
+        uint64_t raw() const { return bits_; }
         ObjectType type() const { return static_cast<ObjectType>(bits_ & kMask); }
         void set_type(ObjectType t) { bits_ = (bits_ & ~kMask) | static_cast<uintptr_t>(t); }
     private:
@@ -440,6 +441,26 @@ public:
     // live in a property or traced field (the existing pin-property
     // discipline).
     void trace(Visitor& v);
+    // Whether trace() is nothing but trace_default(): true of everything except the types
+    // that hold references of their own (functions, typed arrays, hosts, collections,
+    // promises, proxies...). The mark loop uses it to take the inlined walk below.
+    bool traces_by_default() const {
+        switch (get_type()) {
+            case ObjectType::Function: case ObjectType::TypedArray: case ObjectType::Custom:
+            case ObjectType::Map: case ObjectType::Set: case ObjectType::WeakMap:
+            case ObjectType::WeakSet: case ObjectType::WeakRef: case ObjectType::FinalizationRegistry:
+            case ObjectType::DataView: case ObjectType::Promise: case ObjectType::Proxy:
+                return false;
+            default:
+                return true;
+        }
+    }
+    // trace_default() for a collector that wants its visits inlined: V supplies edge_object
+    // and edge_value, which the mark loop makes plain member functions of a final class
+    // instead of virtual calls. Defined in ObjectTrace.h. The rare storage (sparse
+    // overflow, private fields, internal slots, descriptors) stays behind trace_extras().
+    template <class V> void trace_fast(V& v);
+    void trace_extras(Visitor& v);
 
     // Where this object's traced storage lives, for the collector's mark
     // pipeline to request the cache line ahead of time (Collector.cpp,
@@ -452,6 +473,8 @@ public:
     const void* gc_storage_hint() const { return butterfly_; }
 
     friend class Function;
+    // The baseline JIT (Jit.inc) emits loads of shape_/proto_/butterfly_ directly.
+    friend struct JitObjectLayout;
     Object(const Object& other) = delete;
     Object& operator=(const Object& other) = delete;
     // Never actually invoked (every Object lives behind a GC pointer) --
@@ -686,7 +709,7 @@ public:
             materialize_regexp_last_index();
         }
     }
-    bool is_extensible() const;
+    bool is_extensible() const { return !proto_.flag(kNotExtensible); }
     void prevent_extensions();
     void reopen_extensible();
     void seal();
@@ -805,6 +828,9 @@ public:
     // Callers must also check has_descriptor_override(key) before trusting
     // the slot value.
     Shape* get_shape() const { return shape_.get(); }
+    // The shape pointer together with the object-type bits, as stored: one compare of this
+    // against a cached word checks shape and type at once (FeedbackBody::Entry).
+    uint64_t raw_shape_word() const { return shape_.raw(); }
     // Whether a for-in reaching this object would report anything of its own.
     // A prototype that would not contributes nothing to the objects below it,
     // and answering that cheaply is what lets an ordinary for-in skip the
@@ -854,6 +880,10 @@ public:
         if (peek_extras()) return nullptr;
         return get_shape();
     }
+    // The slot a cached (shape, index) names, with no capacity test: a receiver whose shape
+    // matched the one the index was found on has that slot, the same fact Object::trace_fast
+    // relies on to walk the butterfly without checks.
+    Value* shape_slot_for_cached_index(uint32_t index) const { return butterfly_ + index; }
     const Value* get_shape_slot_unchecked(uint32_t index) const {
         return index < shape_capacity() ? shape_slot_ptr(index) : nullptr;
     }
@@ -902,7 +932,26 @@ public:
     // hash lookup and the prototype-chain walk. Caller guarantees every
     // precondition store_in_overflow's "new property" branch would have
     // checked (Ordinary, extensible, no descriptor override, shape lacks key).
-    void add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape);
+    // Inline because the store handlers call it for every property a constructor
+    // or a literal adds, and the work is a shape swap and one slot write; the
+    // butterfly only grows (out of line) when the slot is not already there.
+    // The same without any call: false (and nothing touched) when the butterfly has no room.
+    bool add_shape_property_in_place(const Value& value, Shape* to_shape) {
+        const uint32_t new_count = to_shape->slot_count();
+        if (new_count > shape_capacity()) return false;
+        shape_ = to_shape;
+        *shape_slot_ptr(new_count - 1) = value;
+        if (used_as_prototype()) bump_proto_epoch();
+        return true;
+    }
+    [[gnu::always_inline]] void add_shape_property_cached(const std::string&, const Value& value, Shape* to_shape) {
+        shape_ = to_shape;
+        const uint32_t new_count = to_shape->slot_count();
+        if (new_count > shape_capacity()) ensure_shape_capacity(new_count);
+        *shape_slot_ptr(new_count - 1) = value;
+        // This object may itself be used as another chain's prototype.
+        if (used_as_prototype()) bump_proto_epoch();
+    }
 
     // Accessor sibling of add_shape_property_cached: `to_shape` must come
     // from Shape::transition_accessor(key), reserving two consecutive
@@ -1517,6 +1566,16 @@ private:
     // leaves it reachable after the call returns. Conservative by default:
     // only a native proven to keep nothing clears it.
     bool native_captures_ctx_ : 1 = true;
+    // A native that, given only plain primitives (no object, symbol or BigInt) as
+    // arguments and an acceptable receiver, cannot run script, throw, or look at
+    // the call stack. Such a call needs none of what call_native builds around a
+    // native: the stack frame (which is there for stack traces and the recursion
+    // bound, and nothing here can show up in one), the depth probes, the
+    // new.target scrub. pure_native_string_receiver_ says the receiver matters
+    // and must itself be a string (a String method reading it in place);
+    // otherwise the receiver is ignored (Math.*).
+    bool pure_native_ : 1 = false;
+    bool pure_native_string_receiver_ : 1 = false;
     bool is_constructor_ : 1 = false;  // Whether this function has [[Construct]] internal method
     bool is_arrow_ : 1 = false;        // Arrow functions have lexical this binding
     bool is_class_constructor_ : 1 = false;  // Class constructors must be called with new
@@ -1737,11 +1796,15 @@ public:
     // outside itself, so the scope it was created in need not be held. Only
     // passed where that answer really was computed -- see
     // closure_needs_outer_environment and instantiate_closure.
+    // `context_free` is the other, smaller answer: the scope is held, but
+    // `closure_context` is only the Context the literal happened to run on and
+    // is not kept -- see instantiate_closure.
     Function(const std::string& name,
              ExecutableRef<const FunctionExecutable> executable,
              class Context* closure_context,
              bool create_prototype = true,
-             bool capture_free = false);
+             bool capture_free = false,
+             bool context_free = false);
 
     Function(const std::string& name,
              std::function<Value(Context&, std::span<const Value>, Value)> native_fn,
@@ -1841,6 +1904,17 @@ public:
     // For natives that read and compute only: no closure over the context, no
     // queued job, nothing stored anywhere the call does not own.
     void mark_native_context_safe() { native_captures_ctx_ = false; }
+    bool is_pure_native() const { return pure_native_; }
+    // The whole of a pure native's call when it qualifies for the short path (see
+    // pure_native_): false, with nothing done, when it does not. The caller has
+    // already dealt with a construct invocation and a foreign realm.
+    bool call_pure_native(Context& ctx, std::span<const Value> args, const Value& this_value, Value& out);
+    // See pure_native_. Implies context-safe.
+    void mark_pure_native(bool needs_string_receiver) {
+        pure_native_ = true;
+        pure_native_string_receiver_ = needs_string_receiver;
+        native_captures_ctx_ = false;
+    }
     bool is_constructor() const { return is_constructor_; }
     void set_is_constructor(bool value) { is_constructor_ = value; }
     bool is_arrow() const { return is_arrow_; }
@@ -1990,8 +2064,14 @@ public:
     // GetPrototypeFromConstructor's read. get_property("prototype") answers
     // from prototype_ when it is set, but only after comparing the key against
     // "name" and "length" on the way in.
+    // Whether `.prototype` is simply the field (built, or built on first demand), so that a read
+    // of it can skip get_property's name checks and the descriptor walk.
+    bool has_plain_prototype() const { return prototype_ || prototype_pending_; }
+    // Whether a call must run in another realm than the caller's (a stackless call cannot).
+    bool runs_in_foreign_realm() const;
     Value constructor_prototype() const {
-        if (prototype_ || prototype_pending_) return Value(ensure_prototype());
+        if (prototype_) return Value(prototype_);
+        if (prototype_pending_) return Value(ensure_prototype());
         return get_property("prototype");
     }
 
@@ -2057,11 +2137,29 @@ public:
         return executable_ && executable_->fast_gate && !is_native_ && !is_class_constructor_ &&
                get_function_kind() == FunctionKind::Plain;
     }
+    // Whether a call can be run stackless as an environment-mode function (Interpreter.cpp,
+    // inline_call_enter_env): the same plain compiled function, but one whose body needs an
+    // environment of its own that nothing can capture (it makes no closures), and that
+    // is not a method with a home object or private brands -- those bind more into the call
+    // environment than the stackless entry builds.
+    // The cheap part of the above, for the call handlers' screen: the executable's own bits.
+    bool maybe_env_callable() const { return executable_ && executable_->fast_env_gate && !is_native_; }
+    bool fast_env_callable() const {
+        if (!executable_ || !executable_->fast_env_gate || !executable_->fast_no_closures || is_native_ ||
+            is_class_constructor_ || is_arrow_ || is_param_default_ || get_function_kind() != FunctionKind::Plain) {
+            return false;
+        }
+        const ClassSlots& slots = class_slots();
+        return !slots.home_object && !slots.private_brands;
+    }
     Value call_fast_gate(Context& ctx, std::span<const Value> args, Value this_value);
     // Arguments that live in the caller's VM registers, on the same terms
     // call_register_args states: already GC roots, and valid for the whole call.
     Value construct(Context& ctx, std::span<const Value> args);
     void learn_construct_slot_hint(const Object* built);
+    bool construct_plain(Context& ctx, std::span<const Value> args, Value& out);
+    Value construct_general(Context& ctx, std::span<const Value> args);
+    bool new_target_is_self_or_none(const Context& ctx) const;
     // For a caller that arrived with a vector: its storage is malloc'd and
     // invisible to the stack scan, so it is rooted for the duration.
     Value construct(Context& ctx, const std::vector<Value>& args);
@@ -2138,7 +2236,11 @@ protected:
     // null means the args came from registers and only a native forces a
     // materialization. It also decides the GC root: a vector's storage is
     // malloc'd and invisible to the stack scan, registers are not.
-    Value call_gated(Context& ctx, std::span<const Value> args, Value this_value);
+    // Always inlined into its two callers in Function.cpp: the call that reaches it
+    // already paid for a frame, and a frame of its own for the short form cost
+    // another six saves and restores per call.
+    [[gnu::always_inline]] Value call_gated(Context& ctx, std::span<const Value> args, Value this_value);
+    [[gnu::noinline]] Value call_gated_general(Context& ctx, std::span<const Value> args, Value this_value);
     // own_context: the body must not run on the caller's Context, which the register-mode
     // paths do (a callee of another realm has to stand on one rooted in its own).
     Value call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
@@ -2165,6 +2267,19 @@ inline Function* as_function(Object* obj) {
 }
 inline const Function* as_function(const Object* obj) {
     return (obj && obj->get_type() == Object::ObjectType::Function) ? static_cast<const Function*>(obj) : nullptr;
+}
+
+// Value(Object*) lives here rather than in Value.cpp so it can be inlined: it is
+// a handful of instructions (a null test and the object's type bits) and sat
+// behind a call at every site that wrapped an object, which is every allocation
+// and every property read that returned one.
+inline Value::Value(Object* obj) {
+    if (!obj) {
+        bits_ = QUIET_NAN | TAG_UNDEFINED;
+        return;
+    }
+    const uint64_t masked_value = reinterpret_cast<uint64_t>(obj) & PAYLOAD_MASK;
+    bits_ = QUIET_NAN | (obj->is_function() ? TAG_FUNCTION : TAG_OBJECT) | masked_value;
 }
 
 namespace ObjectFactory {

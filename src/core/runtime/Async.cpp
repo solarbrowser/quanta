@@ -107,7 +107,10 @@ void AsyncExecutor::start_fiber() {
 
 AsyncExecutor::~AsyncExecutor() {
     FiberRegistry::unregister_fiber(this);
-    if (fiber_->co) mco_destroy(fiber_->co);
+    if (fiber_->co) {
+        EnvironmentRoot::purge(fiber_->co->stack_base, static_cast<char*>(fiber_->co->stack_base) + fiber_->co->stack_size);
+        mco_destroy(fiber_->co);
+    }
 }
 
 // Shared by fiber_entry's tail (a real fiber, below) and AsyncFunction::
@@ -578,6 +581,7 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx,
 void AsyncGenerator::release_fiber() {
     if (!fiber_->co) return;
     FiberRegistry::unregister_fiber(this);
+    EnvironmentRoot::purge(fiber_->co->stack_base, static_cast<char*>(fiber_->co->stack_base) + fiber_->co->stack_size);
     mco_destroy(fiber_->co);
     fiber_->co = nullptr;
 }

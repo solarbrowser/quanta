@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <bit>
 #include "quanta/core/engine/builtins/NumberBuiltin.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
@@ -44,8 +45,67 @@ static std::string round_half_up_exponential(double abs_num, int digits, int& ou
     return kept.size() > 1 ? (kept.substr(0, 1) + "." + kept.substr(1)) : kept;
 }
 
+// toFixed for the case that is nearly all of them: a modest precision and a value
+// whose scaled digits fit 128 bits. A double is exactly m * 2^-k, so
+// n = round_half_up(m * 10^p / 2^k) can be computed in integers with no rounding
+// error at all -- the same answer the printf route below reaches, without asking
+// libc to expand the value to p + 30 decimal places in bignum arithmetic (which was
+// ~80% of a toFixed call). Returns false, touching nothing, when it cannot be exact
+// (overflow, precision past 10^22) and the caller takes the general route.
+static bool fixed_digits_exact(double abs_num, int p, std::string& out) {
+    if (p < 0 || p > 22) return false;
+    using u128 = unsigned __int128;
+    const uint64_t bits = std::bit_cast<uint64_t>(abs_num);
+    const int ex = static_cast<int>((bits >> 52) & 0x7FF);
+    const uint64_t frac = bits & ((1ull << 52) - 1);
+    const uint64_t m = ex == 0 ? frac : (frac | (1ull << 52));
+    const int e = ex == 0 ? -1074 : ex - 1075;   // value = m * 2^e
+    u128 pow10 = 1;
+    for (int i = 0; i < p; i++) pow10 *= 10;     // 10^22 < 2^74: cannot overflow
+    u128 n;
+    if (e >= 0) {
+        if (e > 60) return false;
+        u128 whole = static_cast<u128>(m) << e;
+        if (__builtin_mul_overflow(whole, pow10, &n)) return false;
+    } else {
+        u128 prod;
+        if (__builtin_mul_overflow(static_cast<u128>(m), pow10, &prod)) return false;
+        const int k = -e;
+        if (k >= 128) {
+            n = 0;    // prod < 2^127 <= 2^(k-1): below one half, so it rounds down
+        } else {
+            n = prod >> k;
+            const u128 rem = prod - (n << k);
+            if (k > 0 && rem >= (static_cast<u128>(1) << (k - 1))) n += 1;   // a tie goes up
+        }
+    }
+    char buf[48];
+    int pos = sizeof buf;
+    while (n != 0) {
+        if (n <= UINT64_MAX) {
+            uint64_t v = static_cast<uint64_t>(n);
+            while (v) { buf[--pos] = static_cast<char>('0' + v % 10); v /= 10; }
+            break;
+        }
+        buf[--pos] = static_cast<char>('0' + static_cast<int>(n % 10));
+        n /= 10;
+    }
+    std::string digits(buf + pos, sizeof buf - pos);
+    if (static_cast<int>(digits.size()) < p + 1) digits.insert(0, p + 1 - digits.size(), '0');
+    if (p == 0) { out = std::move(digits); return true; }
+    out.reserve(digits.size() + 1);
+    out.assign(digits, 0, digits.size() - p);
+    out += '.';
+    out.append(digits, digits.size() - p, p);
+    return true;
+}
+
 // Round abs_num to frac_digits decimal places using round-half-up; returns the fixed digit string.
 static std::string round_half_up_fixed(double abs_num, int frac_digits) {
+    {
+        std::string fast;
+        if (fixed_digits_exact(abs_num, frac_digits, fast)) return fast;
+    }
     char buf[512];
     int extra = frac_digits + 30;
     snprintf(buf, sizeof(buf), "%.*f", extra, abs_num);

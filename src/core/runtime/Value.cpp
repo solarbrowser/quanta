@@ -37,23 +37,6 @@ static int32_t ToInt32(double number) {
 constinit thread_local uintptr_t Value::heap_base_ = 0;
 #endif
 
-Value::Value(Object* obj) {
-    if (!obj) {
-        bits_ = QUIET_NAN | TAG_UNDEFINED;
-        return;
-    }
-
-    uint64_t ptr_value = reinterpret_cast<uint64_t>(obj);
-    uint64_t masked_value = ptr_value & PAYLOAD_MASK;
-
-    // Check if the object is actually a Function
-    if (obj->is_function()) {
-        bits_ = QUIET_NAN | TAG_FUNCTION | masked_value;
-    } else {
-        bits_ = QUIET_NAN | TAG_OBJECT | masked_value;
-    }
-}
-
 Value::Value(const std::string& str) {
     // A single-byte character is one of 128 values; sharing the cell keeps a
     // scan that yields one per position from allocating one per position.

@@ -50,7 +50,7 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Context) == 168);
+static_assert(sizeof(Context) == 176);
 static_assert(sizeof(Environment) == 216);
 #else
 static_assert(sizeof(Context) <= 896);
@@ -103,7 +103,8 @@ namespace {
 // Freed Context blocks awaiting reuse. Never subclassed, so every block is
 // exactly sizeof(Context) -- no per-block size bookkeeping needed.
 constexpr size_t kContextPoolCap = 16384;
-thread_local std::vector<void*> g_context_pool;
+struct ContextPool { void* head; size_t count; };
+constinit thread_local ContextPool g_context_pool = {nullptr, 0};  // chained like the environment pool below
 
 // Same pattern, separate pool -- Environment is likewise never subclassed
 // (see its class declaration, Context.h) and its actual reclamation
@@ -112,7 +113,11 @@ thread_local std::vector<void*> g_context_pool;
 // recycled address could be mistaken for a stale MarkVisitor::seen_ entry,
 // so pooling adds no new hazard beyond what Context's own pool already has.
 constexpr size_t kEnvironmentPoolCap = 16384;
-thread_local std::vector<void*> g_environment_pool;
+// Freed environments, chained through their own first word. A vector of pointers here cost a
+// bounds test, a store and a size update on each side, and a thread-local with a destructor
+// checks its guard on every touch; the chain is a load and a store, and has nothing to destroy.
+struct EnvironmentPool { void* head; size_t count; };
+constinit thread_local EnvironmentPool g_environment_pool = {nullptr, 0};
 
 // QUANTA_GC_POISON covers heap CELLS (Collector.cpp's sweep), and neither a
 // Context nor an Environment is one -- both are pooled plain C++ objects, so a
@@ -131,9 +136,9 @@ bool environment_poison() {
 }
 
 void* Context::operator new(size_t size) {
-    if (!g_context_pool.empty()) {
-        void* p = g_context_pool.back();
-        g_context_pool.pop_back();
+    if (void* p = g_context_pool.head) {
+        g_context_pool.head = *static_cast<void**>(p);
+        g_context_pool.count--;
         return p;
     }
     return ::operator new(size);
@@ -146,17 +151,19 @@ void Context::operator delete(void* ptr) {
         ::operator delete(ptr);
         return;
     }
-    if (g_context_pool.size() < kContextPoolCap) {
-        g_context_pool.push_back(ptr);
+    if (g_context_pool.count < kContextPoolCap) {
+        *static_cast<void**>(ptr) = g_context_pool.head;
+        g_context_pool.head = ptr;
+        g_context_pool.count++;
         return;
     }
     ::operator delete(ptr);
 }
 
 void* Environment::operator new(size_t size) {
-    if (!g_environment_pool.empty()) {
-        void* p = g_environment_pool.back();
-        g_environment_pool.pop_back();
+    if (void* p = g_environment_pool.head) {
+        g_environment_pool.head = *static_cast<void**>(p);
+        g_environment_pool.count--;
         return p;
     }
     return ::operator new(size);
@@ -169,8 +176,10 @@ void Environment::operator delete(void* ptr) {
         ::operator delete(ptr);
         return;
     }
-    if (g_environment_pool.size() < kEnvironmentPoolCap) {
-        g_environment_pool.push_back(ptr);
+    if (g_environment_pool.count < kEnvironmentPoolCap) {
+        *static_cast<void**>(ptr) = g_environment_pool.head;
+        g_environment_pool.head = ptr;
+        g_environment_pool.count++;
         return;
     }
     ::operator delete(ptr);
@@ -1300,12 +1309,13 @@ bool Environment::create_binding_interned(const std::string* key, const Value& v
         return create_binding(*key, value, mutable_binding, true, true);
     }
     // Same refusal as create_binding: an existing binding is not redefined.
-    if (slots_.find_interned(key)) return false;
     // Never deletable: every caller is seeding a scope the compiler emitted --
     // parameters, function-level vars, a block or a catch parameter -- and the
     // spec creates all of those with CreateMutableBinding(N, false). Only eval
     // code makes a deletable var, and eval is never compiled.
-    slots_.get_or_create_interned(key) = BindingSlot{value, mutable_binding, true, false};
+    BindingSlot* slot = slots_.create_interned_if_absent(key);
+    if (!slot) return false;
+    *slot = BindingSlot{value, mutable_binding, true, false};
     return true;
 }
 
@@ -1317,8 +1327,9 @@ void Environment::create_uninitialized_binding_interned(const std::string* key, 
     }
     // Same refusal as create_uninitialized_binding: re-creating would clear
     // the initialized flag and the const mark of a binding already made.
-    if (slots_.find_interned(key)) return;
-    slots_.get_or_create_interned(key) = BindingSlot{Value(), is_mutable, false, false};
+    if (BindingSlot* slot = slots_.create_interned_if_absent(key)) {
+        *slot = BindingSlot{Value(), is_mutable, false, false};
+    }
 }
 
 bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {

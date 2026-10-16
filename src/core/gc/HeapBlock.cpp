@@ -115,10 +115,5 @@ bool HeapBlock::test_and_set_remembered(const void* p) {
     return was;
 }
 
-void HeapBlock::clear_remembered(const void* p) {
-    size_t idx = slot_index(p);
-    if (idx == SIZE_MAX) return;
-    h_.remembered_bitmap[idx / 64] &= ~(1ULL << (idx % 64));
-}
 
 }

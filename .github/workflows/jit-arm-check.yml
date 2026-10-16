@@ -1,0 +1,80 @@
+name: JIT check (ARM)
+
+# Run by hand only (Actions tab -> "JIT check (ARM)" -> Run workflow). It builds the engine on
+# real AArch64 hardware and runs the JIT's differential test: every program in tests/comparison
+# must print the same with the JIT off as with every function forced through it. The ARM half of
+# the JIT is developed on an x86-64 machine under qemu, so this is the check on the real thing,
+# and the only one for macOS (Apple Silicon needs MAP_JIT memory, which qemu cannot exercise).
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: 'Also run the v8-v7 style micro checks (slower)'
+        type: boolean
+        default: false
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-14
+            arch_flags: '-mcpu=apple-m1'
+          - name: Linux (AArch64)
+            os: ubuntu-24.04-arm
+            arch_flags: '-mcpu=generic'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install clang + lld (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+
+      - name: Build
+        env:
+          QUANTA_ARCH_FLAGS: ${{ matrix.arch_flags }}
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Smoke test
+        run: |
+          echo 'console.log(1 + 2)' > /tmp/smoke.js
+          build/bin/quanta /tmp/smoke.js
+
+      - name: JIT differential test
+        run: |
+          chmod +x tools/jit-differential.sh
+          tools/jit-differential.sh build/bin/quanta tests/comparison
+
+      - name: JIT compile log (for diagnosis)
+        if: always()
+        run: |
+          cat > /tmp/loop.js <<'JS'
+          function f(n) { var s = 0; for (var i = 0; i < n; i++) { s += i * 2 - 1; } return s; }
+          console.log(f(1000000));
+          JS
+          QUANTA_JIT_LOG=1 QUANTA_JIT_THRESHOLD=1 QUANTA_JIT_MODE=0 build/bin/quanta /tmp/loop.js 2>&1 | grep -v tally | head -20
+
+      - name: Forced-JIT stress (GC at every back edge)
+        if: ${{ inputs.benchmark }}
+        run: |
+          cat > /tmp/stress.js <<'JS'
+          function sum(n) { var s = 0; for (var i = 0; i < n; i++) { s += i * 2 - 1; } return s; }
+          function bits(n) { var a = 0; for (var i = 0; i < n; i++) { a = (a ^ (i << 3)) + (i >>> 1) & 0xffff; a |= i & 7; a = a >> 1; } return a; }
+          function arr(n) { var x = []; for (var i = 0; i < n; i++) x[i] = i * 1.5; var t = 0; for (var j = 0; j < n; j++) t += x[j]; return t; }
+          function obj(n) { var o = {a: 1, b: 2}; var t = 0; for (var i = 0; i < n; i++) { o.a = o.a + 1; t += o.a + o.b; } return t; }
+          console.log(sum(20000), bits(20000), arr(20000), obj(20000));
+          JS
+          QUANTA_JIT=0 build/bin/quanta /tmp/stress.js > /tmp/ref.txt
+          QUANTA_GC_STRESS=2 QUANTA_JIT_THRESHOLD=1 QUANTA_JIT_MODE=0 build/bin/quanta /tmp/stress.js > /tmp/jit.txt
+          diff /tmp/ref.txt /tmp/jit.txt && echo "identical"

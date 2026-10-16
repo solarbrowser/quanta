@@ -565,6 +565,17 @@ void register_math_builtins(Context& ctx) {
         }, 1);
     math_object->set_property("sumPrecise", Value(math_sumPrecise_fn.release()), PropertyAttributes::BuiltinFunction);
 
+    // Number in, number out. Called with primitive arguments none of these can run
+    // script or throw (see Function::pure_native_); an object argument, whose
+    // valueOf could, takes call_native's full path.
+    for (const char* name : {"max", "min", "round", "random", "floor", "ceil", "abs", "sqrt", "pow", "sin",
+                             "cos", "tan", "log", "log10", "exp", "trunc", "sign", "acos", "acosh", "asin",
+                             "asinh", "atan", "atan2", "atanh", "cbrt", "clz32", "cosh", "expm1", "fround",
+                             "hypot", "imul", "log1p", "log2", "sinh", "tanh"}) {
+        Value fn = math_object->get_property(name);
+        if (fn.is_function()) fn.as_function()->mark_pure_native(/*needs_string_receiver=*/false);
+    }
+
     ctx.register_built_in_object("Math", math_object.release());
 }
 

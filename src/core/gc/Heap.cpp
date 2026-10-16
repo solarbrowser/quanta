@@ -26,11 +26,6 @@ constinit thread_local size_t Heap::bytes_since_major_ = 0;
 constinit thread_local size_t Heap::live_after_major_ = 0;
 constinit thread_local size_t Heap::offheap_since_major_ = 0;
 
-Heap& Heap::active() {
-    assert(active_ && "no active Heap -- Engine init must install a HeapScope "
-                      "before any GC cell is created");
-    return *active_;
-}
 
 namespace {
 
@@ -58,7 +53,7 @@ std::vector<Heap*>& all_heaps_for_stats() {
 
 void dump_all_heap_stats() {
 
-    static const char* kind_names[kNumCellKinds] = {"Object", "String", "Symbol", "BigInt"};
+    static const char* kind_names[kNumCellKinds] = {"Object", "String", "Symbol", "BigInt", "Flat"};
     std::lock_guard<std::mutex> lock(all_heaps_mutex());
     int i = 0;
     for (Heap* heap : all_heaps_for_stats()) {
@@ -248,10 +243,9 @@ void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
 // asked per edge -- but it is the allocator that says so, not an assumption.
 // Engine-wide, not per thread: a thread must not take the shortcut because
 // its own allocations happen to all be small.
-std::atomic<bool> g_any_large_cell{false};
 
 void* Heap::allocate_large(size_t size, CellKind kind) {
-    g_any_large_cell.store(true, std::memory_order_relaxed);
+    any_large_cell().store(true, std::memory_order_relaxed);
     size_t total = kLargeHeaderSize + ((size + 15) & ~size_t(15));
     auto* lc = static_cast<LargeCell*>(std::malloc(total));
     if (!lc) std::abort();
@@ -371,7 +365,6 @@ Heap::ProbeResult Heap::exact_cell(const void* p) {
     return probe_pointer(const_cast<void*>(p));
 }
 
-std::atomic<bool>& Heap::any_large_cell() { return g_any_large_cell; }
 
 Heap::ProbeResult Heap::exact_cell_base_foreign(const void* p) {
     return probe_pointer(const_cast<void*>(p));
@@ -387,7 +380,7 @@ Heap::ProbeResult Heap::mark_exact(const void* p, CellKind kind) {
     // With every cell in a block, the block is wherever the pointer's own
     // alignment says it is, so asking the allocator which region owns the
     // address answers a question that only has one answer.
-    if (!g_any_large_cell.load(std::memory_order_relaxed)) {
+    if (!any_large_cell().load(std::memory_order_relaxed)) {
         HeapBlock* block = HeapBlock::from_cell(p);
         if (!owned_by_this_thread(block->heap())) return r;
         if (!block->mark_if_unmarked(p)) return r;
@@ -408,6 +401,22 @@ Heap::ProbeResult Heap::mark_exact(const void* p, CellKind kind) {
     if (!large.cell || test_mark(large)) return r;
     set_mark(large);
     return large;
+}
+
+Heap::ProbeResult Heap::mark_string_edge(const void* p) {
+    ProbeResult r;
+    if (!p) return r;
+    if (!any_large_cell().load(std::memory_order_relaxed)) {
+        HeapBlock* block = HeapBlock::from_cell(p);
+        if (!owned_by_this_thread(block->heap())) return r;
+        if (!block->mark_if_unmarked(p)) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = block->cell_kind();
+        return r;
+    }
+    r = mark_exact(p, CellKind::String);
+    if (r.cell && !r.is_large) r.kind = HeapBlock::from_cell(r.cell)->cell_kind();
+    return r;
 }
 
 bool Heap::large_cell_marked(const void* cell) {

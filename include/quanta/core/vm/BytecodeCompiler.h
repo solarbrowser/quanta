@@ -376,6 +376,16 @@ private:
     // when any of those fails, because then the read is an opcode of its own
     // and its register number cannot stand in for it.
     int plain_local_register(const std::string& name) const;
+    // The register an object operand can be read from in place, so that `obj.m(...)` and
+    // `this.x = v` need not copy it into a temporary first: a plain register local that none of
+    // `later` (what runs between reading the operand and using it) assigns, or `this` once the
+    // frame's cache register holds it. -1, with nothing emitted, when the value has to be copied.
+    bool tape_assigns_name(TapeView tape, size_t begin, size_t end, const std::string& name) const;
+    int borrow_this_register();
+    int borrow_object_register(const ASTNode* obj, const std::vector<const ASTNode*>& later);
+    // The same for an operand held in a tape: entries [later_begin, later_end) are what runs
+    // before the operand is used.
+    int borrow_tape_object_register(TapeView tape, size_t obj_idx, size_t later_begin, size_t later_end);
     // Whether evaluating this expression is guaranteed to leave every local
     // register alone and to not throw. Deliberately a whitelist: it decides
     // whether a compound assignment may evaluate its right side first.

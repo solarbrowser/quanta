@@ -135,6 +135,7 @@ Generator::~Generator() {
 void Generator::release_fiber() {
     if (!fiber_.co) return;
     FiberRegistry::unregister_fiber(this);
+    EnvironmentRoot::purge(fiber_.co->stack_base, static_cast<char*>(fiber_.co->stack_base) + fiber_.co->stack_size);
     mco_destroy(fiber_.co);
     fiber_.co = nullptr;
 }

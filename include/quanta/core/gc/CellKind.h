@@ -21,6 +21,10 @@ enum class CellKind : uint8_t {
     String,
     Symbol,
     BigInt,
+    // A string that holds its own bytes and points at no other cell. Its own kind (so its own
+    // blocks) so that marking can settle it from the block header alone: no worklist entry,
+    // no read of the cell, no trace. Links (ropes, slices) stay String.
+    FlatString,
     kCount
 };
 

@@ -1097,6 +1097,7 @@ void register_string_builtins(Context& ctx) {
             if (cp < 0) return Value();
             return Value(static_cast<double>(cp));
         }, 1);
+    codePointAt_fn->mark_pure_native(/*needs_string_receiver=*/true);
     PropertyDescriptor codePointAt_desc(Value(codePointAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("codePointAt", codePointAt_desc);
@@ -1146,6 +1147,7 @@ void register_string_builtins(Context& ctx) {
 
             return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
         }, 1);
+    charAt_fn->mark_pure_native(/*needs_string_receiver=*/true);
     PropertyDescriptor charAt_desc(Value(charAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("charAt", charAt_desc);
@@ -1215,7 +1217,7 @@ void register_string_builtins(Context& ctx) {
         }, 1);
     // Reads the receiver and an index and returns a number: the context is
     // used for the receiver, argument coercion and throwing, never stored.
-    charCodeAt_fn->mark_native_context_safe();
+    charCodeAt_fn->mark_pure_native(/*needs_string_receiver=*/true);
     PropertyDescriptor charCodeAt_desc(Value(charCodeAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("charCodeAt", charCodeAt_desc);
@@ -1421,6 +1423,27 @@ void register_string_builtins(Context& ctx) {
 
     // Unicode-aware case conversion using utf8proc codepoint functions + SpecialCasing.txt table.
     auto unicode_case_convert = [](const std::string& s, bool to_lower) -> std::string {
+        // Nearly every string a page changes the case of is plain ASCII, and for
+        // that the answer is a byte-wise shift: none of SpecialCasing's
+        // multi-character mappings or the Final Sigma rule can apply below
+        // U+0080. The general path below decodes the whole string into two
+        // vectors and consults a hash table per character, which is the right
+        // cost for text that needs it and a ~20x one for text that does not.
+        {
+            bool ascii = true;
+            for (unsigned char ch : s) {
+                if (ch >= 0x80) { ascii = false; break; }
+            }
+            if (ascii) {
+                std::string out(s);
+                if (to_lower) {
+                    for (char& ch : out) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
+                } else {
+                    for (char& ch : out) if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - ('a' - 'A'));
+                }
+                return out;
+            }
+        }
         // Pre-decode all codepoints for context-sensitive rules (Final Sigma).
         std::vector<utf8proc_int32_t> cps;
         std::vector<size_t> offsets;

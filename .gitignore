@@ -42,6 +42,19 @@ neo/
 /logs/
 conformance/
 results/
+*.md
+*.config
+*.patch
+*.data
+*.json
+*.pdf
+quickjs/
+*.docx
+tests/benchmark
+tests/comparison
+tests/tmp
+
+
 
 # other
 .eshostrc

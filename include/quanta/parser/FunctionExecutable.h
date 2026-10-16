@@ -382,6 +382,12 @@ public:
     // the same reason the gate is: every write to an input already recomputes.
     mutable bool fast_strict = false;
     mutable bool fast_uses_this = false;
+    mutable bool fast_uses_super = false;
+    // Whether the body is nothing but a return of a constant, `this` or `this.name`
+    // (VM::leaf_candidate). Kept here rather than read off the chunk so that a call
+    // to any other function pays one test of a byte beside fast_gate, which that
+    // call has just loaded, and not two dependent loads through the chunk.
+    mutable bool fast_leaf = false;
     // Whether the last parameter is a rest one; see param_is_rest.
     bool has_rest_param_ = false;
     // The same question for the functions the compiler put in environment
@@ -410,6 +416,11 @@ public:
     // escaped: a chunk that never emits Op::CreateClosure on any branch can
     // never make that chain outlive the call, no matter which branch runs.
     mutable bool fast_no_closures = false;
+    // The wider question fast_no_closures is a special case of: a call into
+    // this chunk may run on its caller's Context (BytecodeChunk::
+    // shares_caller_context). Closures it creates still escape the call, which
+    // is why fast_no_closures is kept for the outer-environment escape mark.
+    mutable bool fast_shared_ctx = false;
     // GC retrace staleness tracking (see trace_chunks_if_needed): 0 means
     // never traced -- Collector::current_major_epoch() never returns 0, so a
     // fresh executable always forces its first trace regardless of the dirty
@@ -424,7 +435,10 @@ public:
                         closure_props_state == 0;
         fast_strict = strict_directive_state == 1;
         fast_uses_this = bytecode_chunk && bytecode_chunk->uses_this;
+        fast_uses_super = bytecode_chunk && bytecode_chunk->uses_super;
+        fast_leaf = fast_gate && bytecode_chunk && VM::leaf_candidate(*bytecode_chunk);
         fast_no_closures = bytecode_chunk && !bytecode_chunk->has_nested_closures;
+        fast_shared_ctx = bytecode_chunk && bytecode_chunk->shares_caller_context();
     }
 
     // GC-roots every live executable's compiled chunk, every cycle (minor
@@ -588,6 +602,13 @@ struct ClosureTemplate {
     // the executable in instantiate_closure, since that is where compile()
     // is eventually invoked from.
     std::shared_ptr<const ClosureScopeChain> outer_scope_chain;
+
+    // Whether the closure this describes has to hold the Context that created
+    // it. A plain function, method or arrow reaches everything it needs through
+    // the environment it captures; a generator or async body is resumed through
+    // that Context, and a function with no file of its own reads the file it was
+    // running from it (CallStackFrame::file).
+    bool needs_own_context() const;
 };
 
 }

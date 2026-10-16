@@ -98,7 +98,12 @@ public:
     // Remembered set membership (write barrier dedup): returns the previous
     // state, setting the bit as a side effect.
     bool test_and_set_remembered(const void* p);
-    void clear_remembered(const void* p);
+    // Inline: the major collection's trace calls this for every cell it visits.
+    void clear_remembered(const void* p) {
+        const size_t idx = slot_index(p);
+        if (idx == SIZE_MAX) return;
+        h_.remembered_bitmap[idx / 64] &= ~(1ULL << (idx % 64));
+    }
 
     // fn(cell_base, marked) for every allocated cell in this block.
     template <typename Fn>

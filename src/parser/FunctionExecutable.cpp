@@ -13,6 +13,12 @@
 
 namespace Quanta {
 
+bool ClosureTemplate::needs_own_context() const {
+    if (is_generator || is_async) return true;
+    const ScriptUnit* unit = executable ? executable->script_unit() : nullptr;
+    return !unit || unit->filename().empty();
+}
+
 // Bigger in-struct than a hash-set registry would need, but with no
 // per-executable allocation at all: the intrusive links below cost less than
 // a set node plus its share of the bucket array.

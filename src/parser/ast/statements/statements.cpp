@@ -132,7 +132,7 @@ std::unique_ptr<ASTNode> LabeledStatement::clone() const {
 void hoist_lexical_declarations(Environment* env,
                                 const std::vector<std::unique_ptr<ASTNode>>& statements);
 ClosureTemplate closure_template_for(const ASTNode* literal);
-Value declare_function(Context& ctx, const ClosureTemplate& tpl);
+Value declare_function(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_borrowed = false);
 
 // GlobalDeclarationInstantiation's CanDeclareGlobalFunction/CanDeclareGlobalVar
 // pre-flight -- see this function's own declaration comment in AST.h. Function

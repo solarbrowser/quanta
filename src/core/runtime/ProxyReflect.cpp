@@ -64,7 +64,7 @@ void Proxy::trace(Visitor& v) {
 // stamped it with the thread_local "last realm set up" Array.prototype, which is wrong once
 // 2+ realms exist. Free in the (overwhelmingly common) single/no-realm case.
 static void fixup_array_realm(Object* array, Context* ctx) {
-    if (!ctx || Engine::all_engines().size() <= 1) return;
+    if (!ctx || !Engine::multi_engine()) return;
     if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(ctx, "Array")) {
         array->initialize_prototype_of_new(realm_proto);
     }
@@ -74,7 +74,7 @@ static void fixup_array_realm(Object* array, Context* ctx) {
 // (e.g. FromPropertyDescriptor) that must use the CURRENT realm's own
 // %Object.prototype%, not whichever realm's thread_local cache is live.
 static void fixup_object_realm(Object* obj, Context* ctx) {
-    if (!ctx || Engine::all_engines().size() <= 1) return;
+    if (!ctx || !Engine::multi_engine()) return;
     if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(ctx, "Object")) {
         obj->initialize_prototype_of_new(realm_proto);
     }

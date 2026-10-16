@@ -684,7 +684,7 @@ void Map::setup_map_prototype(Context& ctx) {
             // cache -- Map.groupBy's own realm (home_ctx) is what its result
             // must actually use once 2+ realms exist.
             Object* map_proto = Map::prototype_object();
-            if (Engine::all_engines().size() > 1) {
+            if (Engine::multi_engine()) {
                 if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(home_ctx, "Map")) map_proto = realm_proto;
             }
             if (map_proto) result_map->initialize_prototype(map_proto);

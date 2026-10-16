@@ -50,7 +50,9 @@ public:
     // Active heap of this thread; set by Engine init (HeapScope), read by
     // the cell operator new hooks.
     static Heap* active_or_null() { return active_; }
-    static Heap& active();
+    // Inline: every cell allocation asks for it. (An engine installs a HeapScope before
+    // any cell is created, so it is never null here.)
+    static Heap& active() { return *active_; }
     static void  set_active(Heap* heap) { active_ = heap; }
 
     void* allocate(size_t size, CellKind kind,
@@ -100,13 +102,49 @@ public:
     // an interior pointer or reads the kind back out of the block, neither of
     // which an edge needs.
     static ProbeResult mark_exact(const void* p, CellKind kind);
+    // mark_exact for an edge that names a string: the result's kind is the cell's own, because
+    // a string may be a leaf (CellKind::FlatString, nothing to trace) or a link (String), and
+    // the block header, which marking reads anyway, says which.
+    static ProbeResult mark_string_edge(const void* p);
+    // The same two, inline, for the mark loop that asks them once per edge: a branch on the
+    // two rare cases (a large cell exists; the block belongs to another heap) and the block's
+    // own bit test otherwise.
+    static ProbeResult mark_exact_fast(const void* p, CellKind kind) {
+        ProbeResult r;
+        if (!p) return r;
+        if (__builtin_expect(any_large_cell().load(std::memory_order_relaxed), 0)) return mark_exact(p, kind);
+        HeapBlock* block = HeapBlock::from_cell(p);
+        const Heap* owner = block->heap();
+        if (__builtin_expect(owner != active_or_null() && !owns_heap_on_this_thread(owner), 0)) return r;
+        if (!block->mark_if_unmarked(p)) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = kind;
+        return r;
+    }
+    static ProbeResult mark_string_edge_fast(const void* p) {
+        ProbeResult r;
+        if (!p) return r;
+        if (__builtin_expect(any_large_cell().load(std::memory_order_relaxed), 0)) return mark_string_edge(p);
+        HeapBlock* block = HeapBlock::from_cell(p);
+        const Heap* owner = block->heap();
+        if (__builtin_expect(owner != active_or_null() && !owns_heap_on_this_thread(owner), 0)) return r;
+        if (!block->mark_if_unmarked(p)) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = block->cell_kind();
+        return r;
+    }
+    static void clear_remembered_fast(const ProbeResult& p) {
+        if (__builtin_expect(p.is_large, 0)) { clear_remembered(p); return; }
+        HeapBlock::from_cell(p.cell)->clear_remembered(p.cell);
+    }
     // The cell a pointer names, where the pointer is known to be a cell base
     // -- the write barrier's container, not a guessed stack word. Skips the
     // interior-pointer resolution the conservative probe has to do; the kind
     // still comes from the block, since the barrier's callers do not carry it.
     // True once any large cell has ever been allocated. Read on the barrier's
     // hot path, so it is here rather than behind a call.
-    static std::atomic<bool>& any_large_cell();
+    static inline std::atomic<bool> any_large_cell_flag_{false};
+    static std::atomic<bool>& any_large_cell() { return any_large_cell_flag_; }
     // Slow forms, for the cases the inline ones below hand off: a heap this
     // thread owns but is not running on, and the interior-pointer walk a large
     // cell needs.

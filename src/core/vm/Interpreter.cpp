@@ -5,6 +5,19 @@
  */
 
 #include "quanta/core/engine/HostHooks.h"
+#include "JitLayout.h"
+// The baseline JIT (Jit.inc, included further down) needs these at file scope.
+#ifdef QUANTA_JIT_PLATFORM_OK
+#ifdef QUANTA_JIT_ARCH_A64
+#include "A64Asm.h"
+#else
+#include "X64Asm.h"
+#endif
+#include <deque>
+#include <functional>
+#include <unordered_map>
+#include "JitPlatform.h"
+#endif
 #include <array>
 #include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/runtime/DOMObject.h"
@@ -13,6 +26,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
@@ -24,13 +38,26 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <bit>
+#include <algorithm>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 #include <optional>
+#include <variant>
 
 #ifndef LIKELY
 #ifdef __GNUC__
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #else
 #define LIKELY(x) (x)
+#endif
+#endif
+#ifndef UNLIKELY
+#ifdef __GNUC__
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define UNLIKELY(x) (x)
 #endif
 #endif
 
@@ -69,11 +96,11 @@ Value private_name_in(Context& ctx, const std::string& private_name, const Value
 Value build_rest_object(Context& ctx, const Value& source_value, Object* source_obj,
                         const std::vector<std::string>& assigned_keys);
 // And from language.cpp, backing Op::CreateClosure / Op::DeclareFunction.
-Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl);
+Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_borrowed = false);
 Value link_export_record(Context& ctx, const BytecodeChunk::ExportRecord& rec,
                          const Value& default_value);
 Function* resolve_construct_target(Object* obj);
-Value declare_function(Context& ctx, const ClosureTemplate& tpl);
+Value declare_function(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_borrowed = false);
 // And from call.cpp, backing Op::SuperCall.
 Value perform_super_call(Context& ctx, std::span<const Value> arg_values, bool super_already_called);
 // And from member.cpp, backing the Op::GetSuper family.
@@ -89,28 +116,121 @@ namespace {
 
 using BinOp = BinaryExpression::Operator;
 
+// Operands are stored little-endian, one byte after another. On a little-endian host a
+// two- or four-byte operand is then just a load: assembled a byte at a time (shift, or,
+// sign-extend) it was five instructions for what is one, on every operand of every
+// instruction that has a name, a feedback slot or a jump offset. memcpy is the
+// alignment-safe way to say "load these bytes"; it compiles to a plain mov.
 inline int16_t read_i16(const uint8_t* code, uint32_t pc) {
-    uint16_t raw = static_cast<uint16_t>(code[pc]) |
-                   (static_cast<uint16_t>(code[pc + 1]) << 8);
-    return static_cast<int16_t>(raw);
+    if constexpr (std::endian::native == std::endian::little) {
+        int16_t v;
+        std::memcpy(&v, code + pc, sizeof v);
+        return v;
+    } else {
+        uint16_t raw = static_cast<uint16_t>(code[pc]) | (static_cast<uint16_t>(code[pc + 1]) << 8);
+        return static_cast<int16_t>(raw);
+    }
 }
 
 inline uint16_t read_u16(const uint8_t* code, uint32_t pc) {
-    return static_cast<uint16_t>(code[pc]) |
-           (static_cast<uint16_t>(code[pc + 1]) << 8);
+    if constexpr (std::endian::native == std::endian::little) {
+        uint16_t v;
+        std::memcpy(&v, code + pc, sizeof v);
+        return v;
+    } else {
+        return static_cast<uint16_t>(code[pc]) | (static_cast<uint16_t>(code[pc + 1]) << 8);
+    }
 }
 
-// For the *Wide feedback-slot opcodes' u32 index operand -- same idea as
-// read_u16, widened. h_LdaConstWide hand-rolled this once for its own u32
-// constant-pool index; with ten more handlers needing the identical
-// unpack, a shared helper is the right call now.
+// For the *Wide feedback-slot opcodes' u32 index operand -- same idea as read_u16,
+// widened. h_LdaConstWide hand-rolled this once for its own u32 constant-pool index;
+// with ten more handlers needing the identical unpack, a shared helper is the right call.
 inline uint32_t read_u32(const uint8_t* code, uint32_t pc) {
-    return static_cast<uint32_t>(code[pc]) | (static_cast<uint32_t>(code[pc + 1]) << 8) |
-           (static_cast<uint32_t>(code[pc + 2]) << 16) | (static_cast<uint32_t>(code[pc + 3]) << 24);
+    if constexpr (std::endian::native == std::endian::little) {
+        uint32_t v;
+        std::memcpy(&v, code + pc, sizeof v);
+        return v;
+    } else {
+        return static_cast<uint32_t>(code[pc]) | (static_cast<uint32_t>(code[pc + 1]) << 8) |
+               (static_cast<uint32_t>(code[pc + 2]) << 16) | (static_cast<uint32_t>(code[pc + 3]) << 24);
+    }
+}
+
+// Whether `a === b` is settled by the values' own bits: 0 false, 1 true, 2 not
+// settled (two strings, two BigInts or two symbols, whose equality is a matter of
+// content). Mirrors Value::strict_equals, which asks the same questions one kind at
+// a time -- about a hundred instructions through apply_operator for an answer that
+// is a compare, and `===` on non-numbers (an object against null, a tag against a
+// tag) is most of what a symbolic interpreter like EarleyBoyer does.
+inline int strict_equal_quick(const Value& a, const Value& b) {
+    if (a.is_finite_double()) return b.is_finite_double() && a.as_finite_double() == b.as_finite_double();
+    if (b.is_finite_double()) return 0;   // a finite number is equal to no other kind, nor to Infinity/NaN
+    if (std::bit_cast<uint64_t>(a) == std::bit_cast<uint64_t>(b)) return !a.is_nan();   // NaN is the one value unequal to itself
+    // Different bits, neither a finite double: only a pair of the same content-compared
+    // kind can still be equal. Different objects, a different tag, true against false,
+    // Infinity against NaN -- all false.
+    if ((a.is_string() && b.is_string()) || (a.is_bigint() && b.is_bigint()) ||
+        (a.is_symbol() && b.is_symbol())) return 2;
+    return 0;
+}
+
+// Whether `a == b` is settled by the values' own bits when the pair is not two finite
+// numbers (those are compared as doubles): 0 false, 1 true, 2 not settled. A nullish value
+// equals only another nullish one -- an object against null or undefined is simply not
+// equal, and `x != null` must never run x's valueOf -- two objects are equal when they are
+// the same object (no coercion happens between two objects), and two booleans compare by
+// their bits. Everything that needs a conversion (a number against a string, a boolean
+// against anything else, an object against a primitive) and the content-compared kinds are
+// apply_operator's. Mirrors its EQUAL/NOT_EQUAL cases.
+[[gnu::always_inline]] inline int loose_equal_quick(const Value& a, const Value& b) {
+    const bool a_nullish = a.is_nullish();
+    const bool b_nullish = b.is_nullish();
+    if (a_nullish || b_nullish) return a_nullish && b_nullish;
+    if ((a.is_object() || a.is_function()) && (b.is_object() || b.is_function())) {
+        return std::bit_cast<uint64_t>(a) == std::bit_cast<uint64_t>(b);
+    }
+    if (a.is_boolean() && b.is_boolean()) return std::bit_cast<uint64_t>(a) == std::bit_cast<uint64_t>(b);
+    return 2;
+}
+
+// `object instanceof Function` for the case the loop in OrdinaryHasInstance is the
+// whole answer: nothing anywhere has its own Symbol.hasInstance, the right side is
+// an unbound function with an object-valued prototype, and no Proxy (whose
+// getPrototypeOf trap can run code) is on the left or in its chain. Anything else
+// is left to apply_operator, which also owns every error. Settles `out` and returns
+// true when it answered.
+inline bool instanceof_quick(const Value& l, const Value& r, bool& out) {
+    if (!r.is_function() || !l.is_object() || !Object::has_instance_protector_intact()) return false;
+    static const std::string kBoundTarget = "__bound_target__";
+    Function* ctor = r.as_function();
+    // Only a native can be a bound function (bind() makes one), and a function with a
+    // compiled body is asked nothing: the internal-slot lookup is a map probe.
+    if (ctor->is_native() && ctor->has_internal_slot(kBoundTarget)) return false;
+    const Object* target = ctor->get_function_prototype();
+    if (!target) {
+        const Value prototype = ctor->constructor_prototype();
+        if (!prototype.is_object()) return false;
+        target = prototype.as_object();
+    }
+    const Object* o = l.as_object();
+    if (o->get_type() == Object::ObjectType::Proxy) return false;
+    for (const Object* p = o->get_prototype_raw(); p; p = p->get_prototype_raw()) {
+        if (p->get_type() == Object::ObjectType::Proxy) return false;
+        if (p == target) { out = true; return true; }
+    }
+    out = false;
+    return true;
 }
 
 // Routes through the shared apply_operator so VM and tree-walker semantics can't drift.
 inline Value binary_slow(Context& ctx, BinOp op, const Value& l, const Value& r) {
+    if (op == BinOp::STRICT_EQUAL || op == BinOp::STRICT_NOT_EQUAL) {
+        const int q = strict_equal_quick(l, r);
+        if (q != 2) return Value((q == 1) == (op == BinOp::STRICT_EQUAL));
+    } else if (op == BinOp::INSTANCEOF) {
+        bool result;
+        if (instanceof_quick(l, r, result)) return Value(result);
+    }
     return BinaryExpression::apply_operator(ctx, op, l, r);
 }
 
@@ -157,8 +277,9 @@ bool key_is_canonical_index(const std::string& s, size_t& out_index) {
 // Forward decl: defined below, needed here since get_primitive_named's new
 // prototype-property cache reuses the same (shape, slot_index) learn helper
 // GetNamed's own receiver-shape cache uses.
+inline bool shape_fast_path_ok(Object::ObjectType t);
 void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index,
-                     bool is_accessor = false);
+                     bool is_accessor = false, const Object* receiver = nullptr);
 
 // write_barrier(owner) (see below) only re-remembers the one calling Function
 // instance, so its own trace() re-visits the shared chunk next cycle -- it
@@ -241,7 +362,7 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     if (cacheable) {
         Shape* shape = proto_obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
-            if (fb->entries[i].shape == shape) {
+            if (fb->entries[i].shape() == shape) {
                 if (!fb->entries[i].is_accessor) {
                     const Value* slot = proto_obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                     if (slot) return *slot;
@@ -320,21 +441,30 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
 // converging on one shape after their last field is added), and inserting a
 // duplicate would burn through the fixed budget without ever caching an
 // actually-distinct shape, tripping mega early for no benefit.
-void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bool is_accessor) {
+void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bool is_accessor,
+                    const Object* receiver) {
     // Reaching here is the site learning something, so the body exists
     // from this point on.
     FeedbackBody& fb = fb_slot->ensure();
     // A site that gave up stays given up, which is what lets going mega empty
     // the table below.
     if (fb.mega) return;
+    // What the own-property fast path may serve: a plain data slot on a type it is allowed for.
+    // Everything else is stored with the slow mark and found by the general handler's scan.
+    const uint64_t fast_word = (receiver && !is_accessor && shape_fast_path_ok(receiver->get_type()))
+                                   ? receiver->raw_shape_word() : 0;
     for (uint8_t i = 0; i < fb.count; i++) {
-        if (fb.entries[i].shape == shape) {
+        if (fb.entries[i].shape() == shape) {
             fb.entries[i].is_accessor = is_accessor;
+            fb.entries[i].set(shape, fast_word);
             return;
         }
     }
     if (fb.count < FeedbackSlot::kMaxEntries) {
-        fb.entries[fb.count++] = {shape, slot_index, is_accessor};
+        FeedbackBody::Entry& e = fb.entries[fb.count++];
+        e.slot_index = slot_index;
+        e.is_accessor = is_accessor;
+        e.set(shape, fast_word);
     } else {
         // Emptied as well as marked, so a live first entry is by itself proof
         // that the site is still caching: the read path then asks one question
@@ -342,7 +472,7 @@ void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bo
         // it looks at the table.
         fb.mega = true;
         fb.count = 0;
-        fb.entries[0].shape = nullptr;
+        fb.entries[0].clear();
     }
 }
 
@@ -363,8 +493,14 @@ void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bo
 // this path.
 inline bool shape_fast_path_ok(Object::ObjectType t) {
     using OT = Object::ObjectType;
-    return t == OT::Ordinary || t == OT::Date || t == OT::RegExp ||
-           t == OT::Error || t == OT::Promise;
+    // One bit test against a constant mask rather than five compares: this runs
+    // on every property read and write, ahead of the cache lookup.
+    constexpr uint32_t kMask = (1u << static_cast<unsigned>(OT::Ordinary)) |
+                               (1u << static_cast<unsigned>(OT::Date)) |
+                               (1u << static_cast<unsigned>(OT::RegExp)) |
+                               (1u << static_cast<unsigned>(OT::Error)) |
+                               (1u << static_cast<unsigned>(OT::Promise));
+    return (kMask >> (static_cast<unsigned>(t) & 31u)) & 1u;
 }
 
 // Function::get_property intercepts exactly these five names before an
@@ -407,8 +543,11 @@ void learn_transition(FeedbackSlot* fb_slot, Shape* from_shape, Shape* to_shape,
         Collector::write_barrier(owner);
         mark_owner_feedback_dirty(owner);
     }
+    // Same shape AND same prototype: a constructor shared by several "classes" sees
+    // the same shapes under different prototypes, and replacing on the shape alone
+    // had each of them evict the last one on every write.
     for (uint8_t i = 0; i < fb.transition_count; i++) {
-        if (fb.transitions[i].from_shape == from_shape) {
+        if (fb.transitions[i].from_shape == from_shape && fb.transitions[i].prototype == prototype) {
             fb.transitions[i] = {from_shape, to_shape, prototype, slot_index, epoch};
             return;
         }
@@ -425,16 +564,24 @@ void learn_transition(FeedbackSlot* fb_slot, Shape* from_shape, Shape* to_shape,
 // refreshes epoch/holder/slot in place, same reasoning as learn_transition.
 // write_barrier(owner) covers holder/prototype being real GC cells stored
 // into owner's (possibly already-old) BytecodeChunk.
-void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype,
+void learn_proto(FeedbackSlot* fb_slot, const Object* receiver, Shape* receiver_shape, Object* prototype,
                   Object* holder, uint32_t slot_index, uint64_t epoch, Function* owner,
                   bool from_descriptor = false, const Value& cached = Value(),
                   uint64_t desc_epoch = 0, bool absent = false, bool is_getter = false,
                   bool is_setter = false) {
+    // A dictionary-mode receiver has no shape, so its word would be the bare
+    // type bits and match every other such object whatever it owns.
+    if (!receiver_shape) return;
     // Reaching here is the site learning something, so the body exists
     // from this point on.
     FeedbackBody& fb = fb_slot->ensure();
     FeedbackSlot::ProtoEntry fresh;
     fresh.receiver_shape = receiver_shape;
+    // receiver_shape is not always the receiver's current one (SetNamed learns
+    // the shape from before the call), so the word is rebuilt from it rather
+    // than read off the object.
+    fresh.receiver_word = reinterpret_cast<uint64_t>(receiver_shape) |
+                          (receiver->raw_shape_word() & FeedbackBody::Entry::kTypeBits);
     fresh.prototype = prototype;
     fresh.proto_epoch = epoch;
     fresh.holder = holder;
@@ -447,7 +594,7 @@ void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype
     fresh.cached_value = cached;
     for (uint8_t i = 0; i < fb.proto_count; i++) {
         auto& pe = fb.proto_entries[i];
-        if (pe.receiver_shape == receiver_shape && pe.prototype == prototype) {
+        if (pe.receiver_word == fresh.receiver_word && pe.prototype == prototype) {
             Collector::write_barrier(owner);
             mark_owner_feedback_dirty(owner);
             pe = fresh;
@@ -473,6 +620,180 @@ void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype
 inline void write_barrier_for(Object* obj, const Value& value) {
     if (value.is_number() || value.is_boolean() || value.is_undefined() || value.is_null()) return;
     Collector::write_barrier(obj);
+}
+
+// The property cache a megamorphic site falls back to. A site learns at most a few
+// shapes (see FeedbackSlot::kMaxEntries); past that it used to resolve every read
+// from scratch -- two hash lookups per object on the chain, about four hundred
+// cycles. That is what a function shared by many classes does, and
+// `this.initialize.apply(this, arguments)` in a "class" factory (the Prototype.js
+// idiom) is exactly that: one function, every class's instances. This cache is
+// shared by all sites, keyed on (receiver shape, interned name), so a read
+// that any site has resolved before costs a few compares.
+//
+// What it holds is deliberately narrow: an Ordinary receiver with no descriptor
+// overrides, and a plain data property in a shape slot, either its own or on
+// the prototype chain with nothing between that could shadow it.
+// Accessors, descriptor-map properties (class methods), absent keys and every
+// exotic type stay with the general path. A "tried, not cacheable" entry stops a
+// site that can never hit from re-deriving that on every read.
+//
+// Safety, since the entries keep raw pointers without keeping the cells alive:
+//  - shapes are immortal (the transition tree owns them) and names are interned, so
+//    comparing them by address is sound;
+//  - the prototype and holder are not, and an address freed and reused would
+//    otherwise match an entry that no longer describes it -- so every entry carries
+//    the collector's sweep generation and is empty once any cell may have been freed;
+//  - a prototype chain that changes in any way moves Object::proto_epoch(), and an
+//    entry is valid for one epoch only, the rule FeedbackSlot::ProtoEntry follows.
+struct MegaEntry {
+    Shape* shape = nullptr;
+    const std::string* name = nullptr;
+    Object* proto = nullptr;    // the receiver's [[Prototype]] when learned (prototype entries)
+    Object* holder = nullptr;   // the object whose slot holds the value
+    uint64_t epoch = 0;
+    uint64_t generation = ~0ull;
+    uint32_t slot = 0;
+    enum Kind : uint8_t { Unusable = 0, Own = 1, ProtoSlot = 2 } kind = Unusable;
+};
+constexpr size_t kMegaEntries = 2048;
+constinit thread_local MegaEntry g_mega[kMegaEntries];
+
+// The receiver's prototype is part of the index. Instances of every "class" a shared
+// constructor makes start from the same empty shape, so (shape, name) alone is one
+// entry that twelve prototypes take turns evicting; with the prototype in the hash
+// each of them keeps its own.
+// Objects are allocated at a fixed stride, so neighbouring prototypes differ only in low
+// bits that a shift-and-xor folds onto each other; each pointer is multiplied by an odd
+// constant first and the table index is taken from the high bits of the sum.
+inline size_t mega_hash(const void* a, const void* b, const void* c, size_t mask) {
+    const uint64_t h = (reinterpret_cast<uintptr_t>(a) >> 5) * 0x9E3779B97F4A7C15ull +
+                       (reinterpret_cast<uintptr_t>(b) >> 4) * 0xC2B2AE3D27D4EB4Full +
+                       (reinterpret_cast<uintptr_t>(c) >> 5) * 0x165667B19E3779F9ull;
+    return static_cast<size_t>(h >> 40) & mask;
+}
+
+inline MegaEntry& mega_entry(const Shape* shape, const std::string* name, const Object* proto) {
+    return g_mega[mega_hash(shape, name, proto, kMegaEntries - 1)];
+}
+
+// A key the general path might answer from somewhere a shape slot does not show: an
+// element, a private name, the legacy accessor.
+inline bool mega_name_ok(const std::string& name) {
+    return !name.empty() && !(name[0] >= '0' && name[0] <= '9') && name[0] != '#' && name != "__proto__";
+}
+
+inline bool mega_probe(const Object* obj, const std::string* name, Value& out) {
+    if (obj->get_type() != Object::ObjectType::Ordinary) return false;
+    Shape* shape = obj->get_shape();
+    if (!shape || obj->has_any_descriptor_override()) return false;
+    const MegaEntry& e = mega_entry(shape, name, obj->get_prototype_raw());
+    if (e.shape != shape || e.name != name || e.generation != Collector::sweep_generation()) return false;
+    if (e.kind == MegaEntry::Own) {
+        const Value* slot = obj->get_shape_slot_unchecked(e.slot);
+        if (!slot) return false;
+        out = *slot;
+        return true;
+    }
+    if (e.kind == MegaEntry::ProtoSlot && e.proto == obj->get_prototype_raw() && e.epoch == Object::proto_epoch()) {
+        const Value* slot = e.holder->get_shape_slot_unchecked(e.slot);
+        if (!slot) return false;
+        out = *slot;
+        return true;
+    }
+    return false;
+}
+
+// Works out what a read of `name` on `obj` resolves to and records it, if it is a
+// shape slot. Called after the general path has answered, so a miss costs a second
+// walk once per (shape, name) per sweep generation, never per read.
+inline void mega_learn(Object* obj, const std::string* name) {
+    if (obj->get_type() != Object::ObjectType::Ordinary || !mega_name_ok(*name)) return;
+    Shape* shape = obj->get_shape();
+    if (!shape || obj->has_any_descriptor_override()) return;
+    Object* const proto0 = obj->get_prototype_raw();
+    MegaEntry& e = mega_entry(shape, name, proto0);
+    // Already decided -- for an own property that is the end of it, but anything that was
+    // answered from the prototype chain (a prototype slot, or "not cacheable") is only true
+    // for this prototype in this epoch: an entry left from before the chain last changed
+    // used to stop the site relearning, so it missed on every read until the next sweep.
+    if (e.shape == shape && e.name == name && e.generation == Collector::sweep_generation() &&
+        (e.kind == MegaEntry::Own || (e.proto == proto0 && e.epoch == Object::proto_epoch()))) return;
+    MegaEntry fresh;
+    fresh.shape = shape;
+    fresh.name = name;
+    fresh.proto = proto0;
+    fresh.epoch = Object::proto_epoch();
+    fresh.generation = Collector::sweep_generation();
+    const int32_t own = shape->find_slot(*name);
+    if (own >= 0) {
+        if (shape->find_data_slot(*name) >= 0) { fresh.kind = MegaEntry::Own; fresh.slot = static_cast<uint32_t>(own); }
+    } else {
+        Object* p = proto0;
+        for (int depth = 0; p && depth < 16; depth++, p = p->get_prototype_raw()) {
+            if (p->get_type() != Object::ObjectType::Ordinary) break;
+            Shape* ps = p->get_shape();
+            if (!ps || p->has_any_descriptor_override()) break;
+            const int32_t at = ps->find_slot(*name);
+            if (at < 0) continue;                                   // not here: look further up
+            if (ps->find_data_slot(*name) >= 0) {                  // a data property; an accessor ends the search
+                fresh.kind = MegaEntry::ProtoSlot;
+                fresh.proto = proto0;
+                fresh.holder = p;
+                fresh.epoch = Object::proto_epoch();
+                fresh.slot = static_cast<uint32_t>(at);
+            }
+            break;
+        }
+    }
+    e = fresh;
+}
+
+// The write-side counterpart: the shape a store that adds `name` moves an object to, for
+// the sites that have seen more (shape, prototype) pairs than a site can hold (a constructor
+// shared by a dozen "classes"). Keyed on the receiver's shape, the name and its
+// prototype; valid for one proto_epoch and one sweep generation, for the reasons the
+// read cache above gives. Only an Ordinary extensible receiver with no descriptor map
+// at all is served, so nothing but the shape decides where the property goes.
+struct MegaTransition {
+    Shape* from = nullptr;
+    Shape* to = nullptr;
+    const std::string* name = nullptr;
+    const Object* proto = nullptr;
+    uint64_t epoch = 0;
+    uint64_t generation = ~0ull;
+};
+constexpr size_t kMegaTransitions = 1024;
+constinit thread_local MegaTransition g_mega_trans[kMegaTransitions];
+
+inline MegaTransition& mega_transition_entry(const Shape* from, const std::string* name, const Object* proto) {
+    return g_mega_trans[mega_hash(from, name, proto, kMegaTransitions - 1)];
+}
+
+inline Shape* mega_transition_probe(const Object* obj, const std::string* name) {
+    if (obj->get_type() != Object::ObjectType::Ordinary || !obj->is_extensible()) return nullptr;
+    Shape* from = obj->get_shape();
+    if (!from || obj->has_any_descriptor_override()) return nullptr;
+    const Object* proto = obj->get_prototype_raw();
+    const MegaTransition& e = mega_transition_entry(from, name, proto);
+    if (e.from != from || e.name != name || e.proto != proto || e.epoch != Object::proto_epoch() ||
+        e.generation != Collector::sweep_generation()) return nullptr;
+    return e.to;
+}
+
+inline void mega_transition_learn(Shape* from, Shape* to, const std::string& name, const Object* obj) {
+    if (!from || !to || to == from || obj->get_type() != Object::ObjectType::Ordinary || !mega_name_ok(name)) return;
+    // The shape must be `from` plus exactly this property: a store that ran an inherited
+    // setter moves the object too, to a shape that has some other property the setter's
+    // body added, and replaying that for a plain store would skip the setter.
+    const int32_t at = to->find_slot(name);
+    if (at < 0 || to->slot_count() != from->slot_count() + 1 ||
+        static_cast<uint32_t>(at) != from->slot_count() || to->is_accessor_slot(name)) return;
+    const std::string* key = Shape::intern_existing(name);
+    if (!key) return;
+    const Object* proto = obj->get_prototype_raw();
+    MegaTransition& e = mega_transition_entry(from, key, proto);
+    e = {from, to, key, proto, Object::proto_epoch(), Collector::sweep_generation()};
 }
 
 // A shape match alone doesn't prove "plain data slot, no override" -- both
@@ -638,7 +959,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // is safe to re-establish from a single receiver.
     if (fb && !fb->mega && fast_type_ok && obj_shape) {
         for (uint8_t i = 0; i < fb->count; i++) {
-            if (fb->entries[i].shape == obj_shape) {
+            if (fb->entries[i].shape() == obj_shape) {
                 if (!obj->has_any_descriptor_override()) {
                     const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                     if (slot) {
@@ -665,7 +986,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     if (cacheable && fb) {
         Shape* shape = obj_shape;
         for (uint8_t i = 0; i < fb->count; i++) {
-            if (fb->entries[i].shape == shape) {
+            if (fb->entries[i].shape() == shape) {
                 if (!fb->entries[i].is_accessor) {
                     const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                     if (slot) return *slot;
@@ -689,7 +1010,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         if (obj->try_read_own_data_slot(name, fast_value)) {
             if (cacheable) {
                 int32_t idx = obj_shape ? obj_shape->find_slot(name) : -1;
-                if (idx >= 0) learn_feedback(fb_slot, obj_shape, static_cast<uint32_t>(idx));
+                if (idx >= 0) learn_feedback(fb_slot, obj_shape, static_cast<uint32_t>(idx), false, obj);
             }
             return fast_value;
         }
@@ -737,7 +1058,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             if (cacheable) {
                 Shape* s = obj->get_shape();
                 int32_t idx = s ? s->find_slot(name) : -1;
-                if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
+                if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx), false, obj);
             }
             // Learn only what the descriptor map itself answered. A shape-slot
             // value belongs to the entries above, which track it through shape
@@ -798,7 +1119,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                         fast_type_ok &&
                         shape_fast_path_ok(proto->get_type()) &&
                         !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
-                        learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto, 0,
+                        learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), proto, 0,
                                     Object::proto_epoch(), owner, /*from_descriptor=*/false,
                                     Value(getter_fn), Object::descriptor_epoch(),
                                     /*absent=*/false, /*is_getter=*/true);
@@ -831,14 +1152,14 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                                            ? -1
                                            : (hs ? hs->find_slot(name) : -1);
                         if (hidx >= 0) {
-                            learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto,
+                            learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), proto,
                                         static_cast<uint32_t>(hidx), Object::proto_epoch(), owner);
                         } else if (!proto_desc.is_accessor_descriptor() && proto_desc.has_value()) {
                             proto->note_descriptor_value_cached(name);
                             // The holder keeps it in its descriptor map, which is
                             // where every builtin prototype method lives. Cache
                             // the value and let the descriptor epoch invalidate.
-                            learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto,
+                            learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), proto,
                                         0, Object::proto_epoch(), owner,
                                         /*from_descriptor=*/true, proto_desc.get_value(),
                                         Object::descriptor_epoch());
@@ -880,7 +1201,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 //    element write does not move proto_epoch.
                 if (rooted && fb_slot && !(fb && fb->proto_mega) && obj->get_shape() &&
                     !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
-                    learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), nullptr, 0,
+                    learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), nullptr, 0,
                                 Object::proto_epoch(), owner, /*from_descriptor=*/false,
                                 Value(), /*desc_epoch=*/0, /*absent=*/true);
                 }
@@ -893,7 +1214,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     if (cacheable) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
+        if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx), false, obj);
     }
     // A function object holding the key in its own descriptor map: every
     // constructor-namespace builtin is one -- Number.isInteger, Object.keys,
@@ -944,7 +1265,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (fb && !fb->mega && ordinary_recv) {
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
-            if (fb->entries[i].shape == shape) {
+            if (fb->entries[i].shape() == shape) {
                 // See get_named's own guard: a receiver with no descriptor map
                 // cannot shadow the slot, whatever the global stamp says.
                 if (!obj->has_any_descriptor_override()) {
@@ -975,7 +1296,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         !obj->has_descriptor_override(name)) {
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
-            if (fb->entries[i].shape == shape) {
+            if (fb->entries[i].shape() == shape) {
                 if (fb->entries[i].is_accessor) break;
                 Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                 if (slot) { *slot = value; return; }
@@ -1000,7 +1321,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         if (idx >= 0) {
             *obj->get_shape_slot_unchecked(idx) = value;
             if (fb_slot && !(fb && fb->mega)) {
-                learn_feedback(fb_slot, shape, static_cast<uint32_t>(idx));
+                learn_feedback(fb_slot, shape, static_cast<uint32_t>(idx), false, obj);
             }
             return;
         }
@@ -1085,7 +1406,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (learned_setter && rooted && fb_slot && !(fb && fb->proto_mega) &&
         ordinary_recv && shape_fast_path_ok(learned_holder->get_type()) &&
         !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
-        learn_proto(fb_slot, shape_before, proto_before, learned_holder, 0,
+        learn_proto(fb_slot, obj, shape_before, proto_before, learned_holder, 0,
                     proto_epoch_before, owner, /*from_descriptor=*/false,
                     Value(learned_setter), Object::descriptor_epoch(),
                     /*absent=*/false, /*is_getter=*/false, /*is_setter=*/true);
@@ -1097,7 +1418,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         !obj->has_descriptor_override(name)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
+        if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx), false, obj);
     } else if (fb_slot && !(fb && fb->mega) && shape_fast_path_ok(obj->get_type()) &&
                !obj->find_descriptor_override(name)) {
         // has_descriptor_override is also true for an accessor-kind shape slot,
@@ -1121,6 +1442,12 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
             learn_transition(fb_slot, shape_before, s, obj->get_prototype_raw(),
                               static_cast<uint32_t>(idx), Object::proto_epoch(), owner, rooted);
         }
+    }
+    // A site whose own cache is spent still records what it learned where every site
+    // can see it (see MegaTransition).
+    else if (was_new && ok && fb_slot && fb && fb->transition_mega &&
+             shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(name)) {
+        mega_transition_learn(shape_before, obj->get_shape(), name, obj);
     }
 }
 
@@ -1734,6 +2061,28 @@ struct Frame {
     // needs that fast_gate's closure-capture-only use of call_info does not.
     Environment* current_lexical_env = nullptr;
     Environment* current_variable_env = nullptr;
+    // Set by h_JitHalt when a step of the baseline JIT (Jit.inc) has run the
+    // one instruction it was asked for; Frame::pc then names where it stopped.
+    bool jit_halted = false;
+    // Back edges left before the interpreter offers this activation to the baseline
+    // JIT (osr_try, Jit.inc): a loop that has run this long is worth compiling for.
+    int32_t osr_budget = 300;
+    // Stackless calls (see InlineArena). A frame the interpreter built for a call it made
+    // itself, rather than one run_with_regs built on the C++ stack, has a caller: the Return
+    // that ends it dispatches the caller's next instruction instead of returning a value.
+    Frame* caller = nullptr;
+    // The activation's own frame -- the one run_with_regs built -- and, on that one, the
+    // innermost stackless frame it has running (null when there is none).
+    Frame* base = nullptr;
+    Frame* active = nullptr;
+    uint32_t return_pc = 0;
+    uint32_t value_words = 0;    // words this frame holds on the side stack
+    // Whether a call made from this frame may run as a stackless one: only an activation the
+    // interpreter itself is driving (not one the baseline JIT steps through).
+    bool inline_ok = false;
+    // A stackless frame of an environment-mode function: popping it releases the call
+    // environment, restores the context's strictness and `this`, and drops its two roots.
+    bool env_call = false;
 };
 
 // The permanent form of the diagnostic's frame_lex_env_diag(f): falls back
@@ -1855,7 +2204,418 @@ inline void frame_set_lexical_env(Frame& f, Environment* env) {
 // only covers the common shape can hand that same pc to a slower one.
 using Handler = Value (*)(Frame&, uint32_t, Value);
 
+// Called at a loop's back edge once Frame::osr_budget runs out. True means the
+// baseline JIT ran the rest of the function and left its result in Frame::acc;
+// false that the interpreter carries on (the budget is then refilled).
+bool osr_try(Frame& f, uint32_t target_pc, const Value& acc);
+
 extern const std::array<Handler, 256> kHandlers;
+
+// Sets the first `used` registers of a 32-register bank to undefined, four at a time (the
+// bank is 256 bytes, so rounding up to a multiple of four never leaves it). The loop it
+// replaces indexed each pair from a counter -- shift, shift, store, add, extend,
+// compare, branch -- eight instructions per two registers; walking a pointer is four
+// per four.
+[[gnu::always_inline]] inline void init_register_bank(unsigned char* bank, unsigned used) {
+    if (used == 0) return;
+    const uint64_t undef_bits = std::bit_cast<uint64_t>(Value());
+#if defined(__SSE2__)
+    const __m128i pair = _mm_set1_epi64x(static_cast<long long>(undef_bits));
+    __m128i* p = reinterpret_cast<__m128i*>(bank);
+    __m128i* const end = p + ((used + 3) >> 2) * 2;
+    do {
+        _mm_store_si128(p, pair);
+        _mm_store_si128(p + 1, pair);
+        p += 2;
+    } while (p < end);
+#else
+    // The same count the SSE2 form writes: the collector scans the whole frame the stackless
+    // calls reserve (see inline_frame_words), so the registers rounded up to a multiple of four
+    // must not keep what an earlier frame left there.
+    for (unsigned i = 0; i < ((used + 3) & ~3u); i++) std::memcpy(bank + i * sizeof(Value), &undef_bits, sizeof undef_bits);
+#endif
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Stackless calls
+//
+// A call from interpreted code to a plain compiled function used to be a C++ call chain: the
+// call handler, Function::call_fast_gate, run_register_call and finally the dispatch loop of the
+// callee, each with its own saved registers and frame, about three hundred instructions in all
+// before the callee's first bytecode. A stackless call builds the callee's Frame in a slot of a
+// per-thread arena and tail-calls straight into the callee's first handler; its Return finds the
+// Frame's `caller` and tail-calls the caller's next handler. The C++ stack does not grow with
+// JS call depth any more, and nothing is saved or restored around the transfer.
+//
+// What keeps it honest:
+//  * Only a frame the interpreter itself is driving may start one (Frame::inline_ok): a frame the
+//    baseline JIT steps through ends every step at a halt byte that a callee's code would never
+//    reach.
+//  * The callee must be a function the JIT has declined (jit_state == 2) or the JIT is off: one
+//    it would compile has to be entered through run_entry, or it never gets compiled.
+//  * The callee's registers live on a side stack of Values that the collector scans exactly
+//    (Collector::set_value_stack); the C++ stack scan cannot see them.
+//  * An exception that no handler of the callee's covers pops its frame and looks in the
+//    caller's, from the instruction that made the call (h_Unwind). A C++ exception from a native
+//    lands in run_with_regs, which finds the innermost stackless frame of its activation and does
+//    the same search (it is what Frame::base and Frame::active are for).
+//  * The side stack is a LIFO shared by every fiber of the thread. That holds because a fiber is
+//    only ever suspended by the base frame of a generator or async function (a plain function
+//    cannot yield or await), and a base frame has no stackless frames running at that moment.
+//
+// QUANTA_INLINE_CALLS=0 turns it off.
+namespace {
+
+constexpr uint32_t kInlineMaxRegs = 32;
+
+// What an environment-mode frame owes when it ends: the environment it made, the context state
+// it replaced (the tree-walker pieces a body may delegate to read strictness and `this` from the
+// context), and the two collector roots on its current environments.
+struct InlineEnvState {
+    Environment* call_env;
+    Value saved_this;
+    Context* prev_context;
+    bool saved_strict;
+    alignas(EnvironmentRoot) unsigned char roots[2][sizeof(EnvironmentRoot)];
+};
+
+struct InlineSlot {
+    alignas(Frame) unsigned char frame_storage[sizeof(Frame)];
+    CallInfo call_info;
+    Environment* env_saves[64];
+    Environment* resolved_envs[8];
+    InlineEnvState env;
+    Frame& frame() { return *reinterpret_cast<Frame*>(frame_storage); }
+};
+
+struct InlineArena {
+    InlineSlot* slots = nullptr;
+    Value* values = nullptr;
+    Value* top = nullptr;
+    Value* limit = nullptr;
+    uint32_t depth = 0;
+};
+// Plain data and constant-initialised, so the hot path reads it with no thread-local guard;
+// the memory it points at is given back by ArenaOwner when the thread ends.
+constinit thread_local InlineArena g_arena;
+struct ArenaOwner {
+    ~ArenaOwner() {
+        if (g_arena.values) Collector::set_value_stack(nullptr, nullptr);
+        std::free(g_arena.slots);
+        std::free(g_arena.values);
+        g_arena = InlineArena{};
+    }
+};
+
+// Read once at load, not behind a function-local static: that one is a guard test per call.
+const bool g_inline_calls_enabled = [] {
+    const char* e = std::getenv("QUANTA_INLINE_CALLS");
+    return !(e && e[0] == '0');
+}();
+inline bool inline_calls_enabled() { return g_inline_calls_enabled; }
+
+// Words one frame reserves: `this` and a pad word (so the registers start 16-aligned), then the
+// registers rounded up to the four init_register_bank writes at a time.
+constexpr uint32_t inline_frame_words(uint32_t regs) { return 2 + ((regs + 3) & ~3u); }
+
+[[gnu::noinline]] bool inline_arena_init() {
+    constexpr size_t kDepth = CallStack::MAX_STACK_DEPTH;
+    constexpr size_t kWords = kDepth * inline_frame_words(kInlineMaxRegs);
+    g_arena.slots = static_cast<InlineSlot*>(std::malloc(sizeof(InlineSlot) * kDepth));
+    g_arena.values = static_cast<Value*>(std::aligned_alloc(64, sizeof(Value) * kWords));
+    if (!g_arena.slots || !g_arena.values) {
+        std::free(g_arena.slots);
+        std::free(g_arena.values);
+        g_arena.slots = nullptr;
+        g_arena.values = nullptr;
+        return false;
+    }
+    g_arena.top = g_arena.values;
+    g_arena.limit = g_arena.values + kWords;
+    g_arena.depth = 0;
+    Collector::set_value_stack(g_arena.values, &g_arena.top);
+    static thread_local ArenaOwner owner;
+    (void)owner;
+    return true;
+}
+
+// Takes a stackless frame off the arena and the call stack, and tells its activation's base.
+// Ends an environment-mode frame's own state: what call_default_impl does after VM::run for the
+// same kind of call -- the roots, the environments (those that escaped go to the survivors), the
+// context's strictness and `this`.
+[[gnu::noinline]] void inline_env_release(Frame& f) {
+    InlineSlot& slot = *reinterpret_cast<InlineSlot*>(&f);
+    InlineEnvState& st = slot.env;
+    reinterpret_cast<EnvironmentRoot*>(st.roots[1])->~EnvironmentRoot();
+    reinterpret_cast<EnvironmentRoot*>(st.roots[0])->~EnvironmentRoot();
+    Context& ctx = *f.ctx;
+    for (Environment* e = f.current_lexical_env; e && e != st.call_env;) {
+        Environment* outer = e->get_outer();
+        if (!e->is_escaped()) Collector::release_env(e);
+        else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(e);
+        e = outer;
+    }
+    if (!st.call_env->is_escaped()) Collector::release_env(st.call_env);
+    else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(st.call_env);
+    Object::current_context_ = st.prev_context;
+    ctx.set_strict_mode(st.saved_strict);
+    ctx.set_this_value(st.saved_this);
+}
+
+[[gnu::always_inline]] inline void inline_frame_pop(Frame& f) {
+    if (UNLIKELY(f.env_call)) inline_env_release(f);
+    Frame* c = f.caller;
+    f.base->active = (c == f.base) ? nullptr : c;
+    g_arena.top -= f.value_words;
+    g_arena.depth--;
+    CallStack::instance().pop_frame_unchecked();
+}
+
+// What the chunk's verdict (BytecodeChunk::inline_state) says. Everything it is made from is
+// fixed by the declaration site, so closures sharing the chunk agree: 0 not decided, 1 never,
+// otherwise kInlineOk plus the two bits the per-call test needs.
+constexpr uint8_t kInlineNever = 1;
+constexpr uint8_t kInlineOk = 2;
+constexpr uint8_t kInlineStrict = 4;      // the callee runs strict
+constexpr uint8_t kInlineWantsThis = 8;   // a sloppy callee that reads `this` (it boxes a primitive)
+constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_call_enter_env)
+
+[[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn) {
+    // jit_state 0 is "not decided yet": ask again next call. Once the JIT has refused the chunk
+    // its shape is final, so the verdict is kept.
+    if (chunk.jit_state == 0) return 0;
+    const bool strict = fn->is_strict() || exe.fast_strict;
+    uint8_t v = kInlineNever;
+    if (chunk.jit_state == 2 && !chunk.env_mode && chunk.register_count <= kInlineMaxRegs && !fn->is_arrow() &&
+        !exe.fast_uses_super && !exe.fast_leaf) {
+        v = kInlineOk | (strict ? kInlineStrict : 0) | (exe.fast_uses_this ? kInlineWantsThis : 0);
+    } else if (chunk.jit_state == 2 && chunk.env_mode && chunk.env && chunk.register_count <= kInlineMaxRegs &&
+               exe.fast_env_gate && exe.fast_no_closures && !fn->is_arrow() && !exe.fast_uses_super) {
+        // An environment-mode function whose bindings can be laid down by index. The keys are
+        // interned by the first call through the ordinary path, so until then: not decided.
+        if (!chunk.env->env_keys_ready) return 0;
+        if (chunk.env->env_seed_ok) v = kInlineOk | kInlineEnv | (strict ? kInlineStrict : 0);
+    }
+    chunk.inline_state = v;
+    return v;
+}
+
+// The caches an instance of a shared chunk keeps for itself -- see run_with_regs. Out of line:
+// only a chunk that reads a global/closure name or a private name needs them.
+[[gnu::noinline]] void inline_instance_caches(const BytecodeChunk& chunk, Function* fn,
+                                              BytecodeChunk::LookupCacheEntry*& lookup,
+                                              PrivateFeedback*& priv) {
+    if (chunk.uses_lookup_cache) {
+        auto& instance_cache = fn->instance_lookup_cache();
+        if (instance_cache.size() < chunk.names.size()) instance_cache.resize(chunk.names.size());
+        lookup = instance_cache.data();
+    }
+    const size_t private_count = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.size() : 0;
+    if (private_count > 0) {
+        auto& instance_pf = fn->instance_private_feedback();
+        if (instance_pf.size() < private_count) instance_pf.resize(private_count);
+        priv = instance_pf.data();
+    }
+}
+
+// inline_call_enter for an environment-mode callee (one that needs a call environment of its own
+// and creates no closures). It does what call_default_impl's fast environment path does around
+// VM::run, with the undoing deferred to inline_env_release: the call environment is made and
+// seeded, the context's strictness and `this` are replaced (a body may delegate pieces to the
+// tree-walker, which reads them from the context), the two environment roots are registered.
+// Returns false, with nothing changed, for anything it does not take: a sloppy callee given a
+// primitive `this`, a constructor call, another realm, or an environment that cannot be seeded
+// by index.
+[[gnu::noinline]] bool inline_call_enter_env(Frame& f, Function* fn, const FunctionExecutable& exe,
+                                              const BytecodeChunk& chunk, const Value* argv, uint32_t argc,
+                                              const Value& this_value, uint32_t return_pc, Frame*& out,
+                                              uint8_t verdict) {
+    Context& ctx = *f.ctx;
+    if (UNLIKELY(exe.owner_realm() != g_current_realm || !fn->fast_env_callable() ||
+                 (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()))) {
+        return false;
+    }
+    const bool strict = (verdict & kInlineStrict) != 0;
+    Value actual_this = this_value;
+    if (!strict) {
+        if (this_value.is_undefined() || this_value.is_null()) {
+            Object* global = ctx.get_global_this();
+            if (!global) return false;
+            actual_this = Value(global);
+        } else if (!this_value.is_object() && !this_value.is_function()) {
+            return false;   // ToObject of a primitive: the general path boxes it
+        }
+    }
+    InlineArena& arena = g_arena;
+    if (UNLIKELY(!arena.values)) {
+        if (!inline_arena_init()) return false;
+    }
+    CallStack& stack = CallStack::instance();
+    const uint32_t nregs = std::max<uint32_t>(chunk.register_count, chunk.parameter_count);
+    const uint32_t words = inline_frame_words(nregs);
+    if (UNLIKELY(stack.depth() + 1 >= CallStack::MAX_STACK_DEPTH || arena.top + words > arena.limit)) return false;
+
+    Environment* outer_env = fn->get_closure_environment();
+    if (!outer_env && fn->get_closure_context()) outer_env = fn->get_closure_context()->get_lexical_environment();
+    if (!outer_env) outer_env = ctx.get_lexical_environment();
+
+    // The environment, seeded before anything is committed: if it cannot be laid down by index
+    // it is simply dropped again.
+    const auto& plan = chunk.env->env_seed_plan;
+    Environment* call_env = new Environment(Environment::Type::Function, outer_env);
+    call_env->reserve_slots(chunk.env->env_slot_total);
+    if (UNLIKELY(!call_env->fresh_with_room(plan.size()))) {
+        delete call_env;
+        return false;
+    }
+    {
+        size_t at = 0;
+        for (const auto& se : plan) {
+            Environment::BindingSlot slot{Value(), true, true, false};
+            if (se.param_index >= 0) {
+                if (static_cast<uint32_t>(se.param_index) < argc) slot.value = argv[se.param_index];
+            } else {
+                slot.mutable_flag = (se.flags & 2) == 0;
+                slot.initialized = (se.flags & 1) == 0;
+                if (se.flags & 2) slot.const_binding = true;
+            }
+            call_env->seed_binding(at++, se.key, slot);
+        }
+    }
+    ctx.consume_pending_construct_call();
+
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
+    PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
+    if (UNLIKELY(chunk.uses_lookup_cache || private_feedback_data))
+        inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+
+    Value* bank = arena.top;
+    Value* regs = bank + 2;
+    bank[0] = actual_this;
+    bank[1] = Value();   // the alignment word: scanned with the frame, so never left stale
+    init_register_bank(reinterpret_cast<unsigned char*>(regs), nregs);
+    const uint32_t copy = std::min<uint32_t>(chunk.parameter_count, argc);
+    for (uint32_t i = 0; i < copy; i++) regs[i] = argv[i];
+    arena.top = bank + words;
+
+    InlineSlot& slot = arena.slots[arena.depth++];
+    slot.call_info.lexical_environment_ = call_env;
+    slot.call_info.variable_environment_ = call_env;
+    Frame* callee = new (slot.frame_storage) Frame{
+        chunk, f.ctx, std::span<const Value>(argv, argc), fn, true, regs, slot.env_saves, slot.resolved_envs,
+        lookup_cache_data, private_feedback_data, chunk.code.data(), chunk.constants.data(), call_env,
+        actual_this, Value(), 0, 0, 0, true};
+    callee->call_info = &slot.call_info;
+    callee->current_lexical_env = call_env;
+    callee->current_variable_env = call_env;
+    callee->osr_budget = INT32_MAX;
+    callee->caller = &f;
+    Frame* base = f.base ? f.base : &f;
+    callee->base = base;
+    callee->return_pc = return_pc;
+    callee->value_words = words;
+    callee->inline_ok = true;
+    callee->env_call = true;
+
+    InlineEnvState& st = slot.env;
+    st.call_env = call_env;
+    st.saved_this = ctx.get_this_value();
+    st.saved_strict = ctx.is_strict_mode();
+    st.prev_context = Object::current_context_;
+    ctx.set_strict_mode(strict);
+    ctx.set_this_value(actual_this);
+    Object::current_context_ = &ctx;
+    new (st.roots[0]) EnvironmentRoot(&callee->current_lexical_env);
+    new (st.roots[1]) EnvironmentRoot(&callee->current_variable_env);
+
+    base->active = callee;
+    stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
+    out = callee;
+    return true;
+}
+
+// Starts a stackless call of `fn` from `f` if everything allows it; true with the callee's
+// frame in `out` (the caller has only to dispatch it), false with nothing touched.
+[[gnu::always_inline]] inline bool inline_call_enter(Frame& f, Function* fn, const Value* argv, uint32_t argc,
+                                                       const Value& this_value, uint32_t return_pc, Frame*& out) {
+    const FunctionExecutable& exe = *fn->get_executable().get();
+    const BytecodeChunk& chunk = *exe.bytecode_chunk;
+    uint8_t verdict = chunk.inline_state;
+    if (UNLIKELY(verdict < kInlineOk)) {
+        if (verdict == kInlineNever) return false;
+        verdict = inline_classify(exe, chunk, fn);
+        if (verdict < kInlineOk) return false;
+    }
+    if (UNLIKELY(verdict & kInlineEnv))
+        return inline_call_enter_env(f, fn, exe, chunk, argv, argc, this_value, return_pc, out, verdict);
+    Context& ctx = *f.ctx;
+    // A call that changes the strictness, needs a boxed `this`, or runs in another realm is the
+    // general path's. (this_needs_super: an arrow's super lookup, which the callee would not see.)
+    if (UNLIKELY(ctx.this_needs_super() || ctx.is_strict_mode() != ((verdict & kInlineStrict) != 0) ||
+                 ((verdict & (kInlineWantsThis | kInlineStrict)) == kInlineWantsThis && !this_value.is_object() &&
+                  !this_value.is_function()) ||
+                 exe.owner_realm() != g_current_realm)) {
+        return false;
+    }
+    InlineArena& arena = g_arena;
+    if (UNLIKELY(!arena.values)) {
+        if (!inline_arena_init()) return false;
+    }
+    CallStack& stack = CallStack::instance();
+    const uint32_t nregs = std::max<uint32_t>(chunk.register_count, chunk.parameter_count);
+    const uint32_t words = inline_frame_words(nregs);
+    if (UNLIKELY(stack.depth() + 1 >= CallStack::MAX_STACK_DEPTH || arena.top + words > arena.limit)) return false;
+    ctx.consume_pending_construct_call();
+
+    Environment* outer_env = fn->get_closure_environment();
+    if (!outer_env && fn->get_closure_context()) outer_env = fn->get_closure_context()->get_lexical_environment();
+    if (!outer_env) outer_env = ctx.get_lexical_environment();
+    if (outer_env && !exe.fast_no_closures) outer_env->mark_escaped();
+
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
+    PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
+    if (UNLIKELY(chunk.uses_lookup_cache || private_feedback_data))
+        inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+
+    Value* bank = arena.top;
+    Value* regs = bank + 2;
+    bank[0] = this_value;
+    bank[1] = Value();
+    init_register_bank(reinterpret_cast<unsigned char*>(regs), nregs);
+    const uint32_t copy = std::min<uint32_t>(chunk.parameter_count, argc);
+#pragma clang loop vectorize(disable) interleave(disable) unroll(disable)
+    for (uint32_t i = 0; i < copy; i++) {
+        regs[i] = argv[i];
+        __asm__ volatile("" ::: "memory");
+    }
+    arena.top = bank + words;
+
+    InlineSlot& slot = arena.slots[arena.depth++];
+    slot.call_info.lexical_environment_ = outer_env;
+    slot.call_info.variable_environment_ = outer_env;
+    // resolved_envs is not cleared: each slot is written by the resolve op before the op that reads it.
+    Frame* callee = new (slot.frame_storage) Frame{
+        chunk, f.ctx, std::span<const Value>(argv, argc), fn, true, regs, slot.env_saves, slot.resolved_envs,
+        lookup_cache_data, private_feedback_data, chunk.code.data(), chunk.constants.data(), outer_env,
+        this_value, Value(), 0, 0, 0, true};
+    callee->call_info = &slot.call_info;
+    callee->current_lexical_env = outer_env;
+    callee->current_variable_env = outer_env;
+    callee->osr_budget = INT32_MAX;
+    callee->caller = &f;
+    Frame* base = f.base ? f.base : &f;
+    callee->base = base;
+    callee->return_pc = return_pc;
+    callee->value_words = words;
+    callee->inline_ok = true;
+    base->active = callee;
+    stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
+    out = callee;
+    return true;
+}
+
+}  // namespace
 
 #define DISPATCH() [[clang::musttail]] return kHandlers[f.code[pc]](f, pc, acc)
 
@@ -1943,15 +2703,61 @@ Value h_LdaConstWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Return from a stackless frame: its caller's next handler runs with the value as the
+// accumulator, exactly as the call handler would have gone on after a call that returned.
+// The collector's safepoint is a call on a path almost never taken, and having it here made this
+// handler save five registers on every return; so it only tests and hands the rare case on.
+[[gnu::noinline]] Value h_ReturnSafepoint(Frame& f, uint32_t pc, Value acc) {
+    Collector::safepoint_slow();
+    DISPATCH();
+}
+
+Value h_ReturnInline(Frame& f, uint32_t pc, Value acc);
+
+// The return of an environment-mode frame: its own state is undone (a call, so it is not
+// folded into h_ReturnInline, which would then save registers on every return), and the rest is
+// the ordinary return.
+[[gnu::noinline]] Value h_ReturnInlineEnv(Frame& f, uint32_t pc, Value acc) {
+    inline_env_release(f);
+    f.env_call = false;   // released; the pop below must not do it again
+    [[clang::musttail]] return h_ReturnInline(f, pc, acc);
+}
+
+[[gnu::noinline]] Value h_ReturnInline(Frame& f, uint32_t pc, Value acc) {
+    (void)pc;
+    if (UNLIKELY(f.env_call)) [[clang::musttail]] return h_ReturnInlineEnv(f, pc, acc);
+    Frame* const caller = f.caller;
+    const uint32_t return_pc = f.return_pc;
+    inline_frame_pop(f);
+    if (UNLIKELY(Collector::safepoint_armed())) [[clang::musttail]] return h_ReturnSafepoint(*caller, return_pc, acc);
+    [[clang::musttail]] return kHandlers[caller->code[return_pc]](*caller, return_pc, acc);
+}
+
 Value h_Return(Frame& f, uint32_t pc, Value acc) {
-    (void)f; (void)pc;
+    if (UNLIKELY(f.caller != nullptr)) [[clang::musttail]] return h_ReturnInline(f, pc, acc);
     return acc;
 }
+
+// What a backward jump owes that a forward one does not: the collector's safepoint and
+// the baseline JIT's offer to take the loop over. Both are rare and both are calls, and
+// a call anywhere in a function makes the compiler save callee-saved registers on the
+// way in -- three pushes and three pops, paid by every jump of every loop to guard a
+// path almost none of them take. So the hot handlers below only test whether either is
+// due and, if so, tail-call this, which owns the frame.
+[[gnu::noinline]] Value h_BackEdgeDue(Frame& f, uint32_t pc, Value acc) {
+    Collector::safepoint();
+    if (f.osr_budget < 0 && osr_try(f, pc, acc)) return f.acc;
+    DISPATCH();
+}
+
+// Counts one back edge and says whether the slow half has anything to do. The two tests
+// are combined with a non-short-circuit | so the budget is charged exactly once.
+#define BACK_EDGE_DUE() (Collector::safepoint_armed() | (--f.osr_budget < 0))
 
 Value h_Jump(Frame& f, uint32_t pc, Value acc) {
     int16_t off = read_i16(f.code, pc + 1);
     pc += 3 + off;
-    if (off < 0) Collector::safepoint();
+    if (off < 0 && UNLIKELY(BACK_EDGE_DUE())) [[clang::musttail]] return h_BackEdgeDue(f, pc, acc);
     DISPATCH();
 }
 
@@ -1977,7 +2783,10 @@ Value h_JumpIfSlow(Frame& f, uint32_t pc, Value acc) {
     pc += 3;
     if (acc.to_boolean() == JumpWhen) {
         pc += off;
-        if (off < 0) Collector::safepoint();
+        if (off < 0) {
+            Collector::safepoint();
+            if (__builtin_expect(--f.osr_budget < 0, 0) && osr_try(f, pc, acc)) return f.acc;
+        }
     }
     DISPATCH();
 }
@@ -2001,7 +2810,7 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
         pc += 3;
         if (truthy == JumpWhen) {
             pc += off;
-            if (off < 0) Collector::safepoint();
+            if (off < 0 && UNLIKELY(BACK_EDGE_DUE())) [[clang::musttail]] return h_BackEdgeDue(f, pc, acc);
         }
         DISPATCH();
     }
@@ -2127,6 +2936,52 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
 // half stays small enough to keep its operands in registers. Putting both in
 // one handler made every iteration of a numeric loop carry the prologue the
 // slow half needs -- chunk, ctx, instr_pc -- to reach a call it never makes.
+// What a comparison does with its boolean when the very next instruction is a
+// conditional jump, which is nearly always: leave it in the accumulator (the
+// jump's other readers get it as before) and take the branch here, instead of
+// dispatching to a handler whose first act is to test the tag of a boolean
+// this one just built. The jump is still its own instruction -- another path
+// can land on it -- and is only skipped by the path that falls into it.
+#define BRANCH_AFTER_COMPARE(truth)                                                   \
+    do {                                                                              \
+        const bool truth_ = (truth);                                                  \
+        acc = Value(truth_);                                                          \
+        pc += 2;                                                                      \
+        const uint8_t next_ = f.code[pc];                                             \
+        if (next_ == static_cast<uint8_t>(Op::JumpIfFalse) ||                         \
+            next_ == static_cast<uint8_t>(Op::JumpIfTrue)) {                          \
+            const int16_t off_ = read_i16(f.code, pc + 1);                            \
+            pc += 3;                                                                  \
+            if (truth_ == (next_ == static_cast<uint8_t>(Op::JumpIfTrue))) {          \
+                pc += off_;                                                           \
+                if (off_ < 0 && UNLIKELY(BACK_EDGE_DUE()))                            \
+                    [[clang::musttail]] return h_BackEdgeDue(f, pc, acc);             \
+            }                                                                         \
+        }                                                                             \
+        DISPATCH();                                                                   \
+    } while (0)
+
+#define NUMERIC_COMPARE_HANDLER(name, binop, cmp)                          \
+    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+        const BytecodeChunk& chunk = f.chunk;                              \
+        Context& ctx = *f.ctx;                                              \
+        uint32_t& instr_pc = f.instr_pc;                                   \
+        instr_pc = pc;                                                     \
+        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        pc += 2;                                                           \
+        CHECK_EXC_TAIL();                                                  \
+        DISPATCH();                                                        \
+    }                                                                      \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+        if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
+            const double l = lhs.as_finite_double();                       \
+            const double r = acc.as_finite_double();                       \
+            BRANCH_AFTER_COMPARE(cmp);                                     \
+        }                                                                  \
+        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+    }
+
 #define NUMERIC_BINARY_HANDLER(name, binop, expr)                          \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
         const BytecodeChunk& chunk = f.chunk;                              \
@@ -2179,21 +3034,13 @@ Value h_Mod(Frame& f, uint32_t pc, Value acc) {
 NUMERIC_BINARY_HANDLER(h_Add, BinOp::ADD, Value(l + r))
 NUMERIC_BINARY_HANDLER(h_Sub, BinOp::SUBTRACT, Value(l - r))
 NUMERIC_BINARY_HANDLER(h_Mul, BinOp::MULTIPLY, Value(l * r))
-NUMERIC_BINARY_HANDLER(h_TestLt, BinOp::LESS_THAN, Value(l < r))
-NUMERIC_BINARY_HANDLER(h_TestGt, BinOp::GREATER_THAN, Value(l > r))
-NUMERIC_BINARY_HANDLER(h_TestLe, BinOp::LESS_EQUAL, Value(l <= r))
-NUMERIC_BINARY_HANDLER(h_TestGe, BinOp::GREATER_EQUAL, Value(l >= r))
-NUMERIC_BINARY_HANDLER(h_TestEq, BinOp::EQUAL, Value(l == r))
-NUMERIC_BINARY_HANDLER(h_TestNe, BinOp::NOT_EQUAL, Value(l != r))
-NUMERIC_BINARY_HANDLER(h_TestStrictEq, BinOp::STRICT_EQUAL, Value(l == r))
-NUMERIC_BINARY_HANDLER(h_TestStrictNe, BinOp::STRICT_NOT_EQUAL, Value(l != r))
-
-// A bitwise op is a couple of instructions of real work, so the handler stays
-// as lean as the arithmetic one and splits its fallback out the same way.
-// Two finite doubles is the gate, one test each; NaN, an infinity, a string, a
-// BigInt or an object with valueOf takes the slow half, which reaches
-// binary_slow directly.
-#define BITWISE_BINARY_HANDLER(name, binop, expr)                          \
+NUMERIC_COMPARE_HANDLER(h_TestLt, BinOp::LESS_THAN, l < r)
+NUMERIC_COMPARE_HANDLER(h_TestGt, BinOp::GREATER_THAN, l > r)
+NUMERIC_COMPARE_HANDLER(h_TestLe, BinOp::LESS_EQUAL, l <= r)
+NUMERIC_COMPARE_HANDLER(h_TestGe, BinOp::GREATER_EQUAL, l >= r)
+// == and != : two finite numbers compare as doubles; otherwise the values' bits settle
+// the common cases (loose_equal_quick) and only a conversion reaches apply_operator.
+#define LOOSE_EQUALITY_HANDLER(name, binop, want_equal)                    \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
         const BytecodeChunk& chunk = f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
@@ -2207,9 +3054,77 @@ NUMERIC_BINARY_HANDLER(h_TestStrictNe, BinOp::STRICT_NOT_EQUAL, Value(l != r))
     Value name(Frame& f, uint32_t pc, Value acc) {                         \
         const Value& lhs = f.regs[f.code[pc + 1]];                         \
         if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
-            int32_t l = js_to_int32(lhs.as_finite_double());               \
-            int32_t r = js_to_int32(acc.as_finite_double());               \
-            (void)l; (void)r;                                              \
+            const bool equal = lhs.as_finite_double() == acc.as_finite_double(); \
+            BRANCH_AFTER_COMPARE(equal == (want_equal));                   \
+        }                                                                  \
+        const int q = loose_equal_quick(lhs, acc);                         \
+        if (q != 2) {                                                      \
+            BRANCH_AFTER_COMPARE((q == 1) == (want_equal));                \
+        }                                                                  \
+        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+    }
+LOOSE_EQUALITY_HANDLER(h_TestEq, BinOp::EQUAL, true)
+LOOSE_EQUALITY_HANDLER(h_TestNe, BinOp::NOT_EQUAL, false)
+// The strict comparisons settle most non-numeric operands without a frame: the
+// values' own bits decide (see strict_equal_quick), so only two strings, BigInts or
+// symbols reach the slow half. The macro's handler would have gone there for every
+// object, null, boolean and undefined it was handed.
+#define STRICT_EQUALITY_HANDLER(name, binop, want_equal)                   \
+    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+        const BytecodeChunk& chunk = f.chunk;                              \
+        Context& ctx = *f.ctx;                                             \
+        uint32_t& instr_pc = f.instr_pc;                                   \
+        instr_pc = pc;                                                     \
+        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        pc += 2;                                                           \
+        CHECK_EXC_TAIL();                                                  \
+        DISPATCH();                                                        \
+    }                                                                      \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+        const int q = strict_equal_quick(lhs, acc);                        \
+        if (LIKELY(q != 2)) {                                              \
+            BRANCH_AFTER_COMPARE((q == 1) == (want_equal));                \
+        }                                                                  \
+        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+    }
+STRICT_EQUALITY_HANDLER(h_TestStrictEq, BinOp::STRICT_EQUAL, true)
+STRICT_EQUALITY_HANDLER(h_TestStrictNe, BinOp::STRICT_NOT_EQUAL, false)
+
+// A bitwise op is a couple of instructions of real work, so the handler stays
+// as lean as the arithmetic one and splits its fallback out the same way.
+// Two finite doubles is the gate, one test each; NaN, an infinity, a string, a
+// BigInt or an object with valueOf takes the slow half, which reaches
+// binary_slow directly.
+// ToInt32 of a double a cast can answer exactly: truncating toward zero into an int64
+// and keeping the low 32 bits IS the specification's modulo-2^32 for every magnitude
+// below 2^63, which covers the hash-style `x | 0` and `x >>> 0` on values well past
+// 2^31 as well as the plain int32 case. Only an operand beyond that (or infinite) takes
+// js_to_int32, whose fmod is a call -- and a call in the same function is what made
+// every bitwise handler open with five pushes it almost never used.
+inline bool to_int32_by_cast(double d, int32_t& out) {
+    if (!(d > -9.2e18 && d < 9.2e18)) return false;
+    out = static_cast<int32_t>(static_cast<int64_t>(d));
+    return true;
+}
+
+#define BITWISE_BINARY_HANDLER(name, binop, expr)                          \
+    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+        const BytecodeChunk& chunk = f.chunk;                              \
+        Context& ctx = *f.ctx;                                              \
+        uint32_t& instr_pc = f.instr_pc;                                   \
+        instr_pc = pc;                                                     \
+        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        pc += 2;                                                           \
+        CHECK_EXC_TAIL();                                                  \
+        DISPATCH();                                                        \
+    }                                                                      \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+        int32_t l, r;                                                      \
+        if (LIKELY(lhs.is_finite_double() && acc.is_finite_double() &&     \
+                   to_int32_by_cast(lhs.as_finite_double(), l) &&          \
+                   to_int32_by_cast(acc.as_finite_double(), r))) {         \
             acc = (expr);                                                  \
             pc += 2;                                                       \
             DISPATCH();                                                    \
@@ -2341,6 +3256,14 @@ Value h_LdaThisFast(Frame& f, uint32_t pc, Value acc) {
 
 // Writes a constant and cannot raise, so it needs none of the generated
 // handler's bookkeeping -- like the other constant loads above.
+Value h_LdaTdzStar(Frame& f, uint32_t pc, Value acc) {
+    (void)acc;
+    acc = Value::vm_tdz_sentinel();
+    f.regs[f.code[pc + 1]] = acc;
+    pc += 2;
+    DISPATCH();
+}
+
 Value h_LdaTdz(Frame& f, uint32_t pc, Value acc) {
     (void)acc;
     acc = Value::vm_tdz_sentinel();
@@ -2461,6 +3384,22 @@ Value h_gen_Exp(Frame& f, uint32_t pc, Value acc) {
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+Value h_gen_TestInstanceOf(Frame& f, uint32_t pc, Value acc);
+
+// The common `instanceof` -- an object, an unbound function, no Proxy, no
+// Symbol.hasInstance anywhere -- is a walk up the prototype chain, which needs
+// neither the context nor an exception check, so it is answered before the
+// general handler builds its frame.
+Value h_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
+    bool result;
+    if (LIKELY(instanceof_quick(f.regs[f.code[pc + 1]], acc, result))) {
+        acc = Value(result);
+        pc += 2;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_TestInstanceOf(f, pc, acc);
 }
 
 Value h_gen_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
@@ -2711,6 +3650,30 @@ Value h_gen_ToNumeric(Frame& f, uint32_t pc, Value acc) {
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+// ToNumeric of something already a number is that number, and `~x` of a number that
+// fits an int is two instructions; both used to go through the generated handlers
+// and out-of-line conversions (about seventy instructions for `~str.indexOf(..)`,
+// which minified code uses constantly).
+Value h_ToNumericFast(Frame& f, uint32_t pc, Value acc) {
+    if (LIKELY(acc.is_number())) {
+        pc += 1;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_ToNumeric(f, pc, acc);
+}
+
+Value h_BitNotFast(Frame& f, uint32_t pc, Value acc) {
+    if (LIKELY(acc.is_finite_double())) {
+        int32_t i;
+        if (LIKELY(to_int32_by_cast(acc.as_finite_double(), i))) {
+            acc = Value(static_cast<double>(~i));
+            pc += 1;
+            DISPATCH();
+        }
+    }
+    [[clang::musttail]] return h_gen_BitNot(f, pc, acc);
 }
 
 Value h_gen_ToTemplateString(Frame& f, uint32_t pc, Value acc) {
@@ -4241,6 +5204,27 @@ const std::vector<const std::string*>& loop_env_keys_for(const BytecodeChunk& ch
     return b.loop_env_keys[idx];
 }
 
+// Binds a loop or block scope's variables into the environment just pushed for it, by index and
+// with no lookups, when it has room and the names are distinct (the case for nearly every
+// scope). `carried`, when given, holds the values a `for` header's variables take from the
+// previous iteration. False means the caller binds them one by one.
+static bool seed_scope_bindings(Environment* env, const std::vector<BytecodeChunk::LoopEnvVar>& vars,
+                                const std::vector<const std::string*>& keys, const Value* carried) {
+    if (!env->fresh_with_room(vars.size())) return false;
+    for (size_t i = 0; i < keys.size(); i++)
+        for (size_t j = i + 1; j < keys.size(); j++)
+            if (keys[i] == keys[j]) return false;
+    for (size_t i = 0; i < vars.size(); i++) {
+        const auto& v = vars[i];
+        Environment::BindingSlot slot = v.is_lexical ? Environment::BindingSlot{Value(), !v.is_const, false, false}
+                                                     : Environment::BindingSlot{Value(), true, true, false};
+        if (v.is_lexical && v.is_const) slot.const_binding = true;
+        if (carried && v.copy_forward) { slot.value = carried[i]; slot.initialized = true; }
+        env->seed_binding(i, keys[i], slot);
+    }
+    return true;
+}
+
 Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = *f.ctx;
@@ -4256,6 +5240,7 @@ Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 Environment* env = frame_lexical_env(f);
                 const auto& vars = chunk.env->loop_envs[idx];
                 const auto& keys = loop_env_keys_for(chunk, idx);
+                if (seed_scope_bindings(env, vars, keys, nullptr)) break;
                 for (size_t i = 0; i < vars.size(); i++) {
                     const auto& v = vars[i];
                     if (v.is_lexical) {
@@ -4284,14 +5269,20 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 pc += 2;
                 const auto& vars = chunk.env->loop_envs[idx];
                 const auto& keys = loop_env_keys_for(chunk, idx);
-                std::vector<Value> carried(vars.size());
+                // On the stack for the usual few variables: a heap vector per iteration was
+                // the dearest part of advancing a `for (let ...)` loop that makes closures.
+                Value carried_small[8];
+                std::vector<Value> carried_large;
+                Value* carried_ptr = carried_small;
+                if (vars.size() > 8) { carried_large.resize(vars.size()); carried_ptr = carried_large.data(); }
                 Environment* old_env = frame_lexical_env(f);
                 for (size_t i = 0; i < vars.size(); i++) {
-                    if (vars[i].copy_forward) carried[i] = old_env->get_binding_direct_interned(keys[i], &ctx);
+                    if (vars[i].copy_forward) carried_ptr[i] = old_env->get_binding_direct_interned(keys[i], &ctx);
                 }
                 frame_pop_block_scope(f);
                 frame_push_block_scope(f);
                 Environment* new_env = frame_lexical_env(f);
+                if (seed_scope_bindings(new_env, vars, keys, carried_ptr)) break;
                 for (size_t i = 0; i < vars.size(); i++) {
                     const auto& v = vars[i];
                     if (v.is_lexical) {
@@ -4299,7 +5290,7 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
                         if (v.is_const) new_env->mark_const_binding(v.name);
                     }
                     else new_env->create_binding_interned(keys[i], Value(), true);
-                    if (v.copy_forward) new_env->initialize_binding_interned(keys[i], carried[i]);
+                    if (v.copy_forward) new_env->initialize_binding_interned(keys[i], carried_ptr[i]);
                 }
                 break;
             }
@@ -4864,7 +5855,7 @@ Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
                     EnvironmentRoot saved_var_root(&saved_var);
                     ctx.set_lexical_environment(frame_lexical_env(f));
                     ctx.set_variable_environment(frame_variable_env(f));
-                    acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+                    acc = instantiate_closure(ctx, (*chunk.closures)[idx], true);
                     ctx.set_lexical_environment(saved_lex);
                     ctx.set_variable_environment(saved_var);
                 } else {
@@ -4900,7 +5891,7 @@ Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
                     EnvironmentRoot saved_var_root(&saved_var);
                     ctx.set_lexical_environment(frame_lexical_env(f));
                     ctx.set_variable_environment(frame_variable_env(f));
-                    declare_function(ctx, (*chunk.closures)[idx]);
+                    declare_function(ctx, (*chunk.closures)[idx], true);
                     ctx.set_lexical_environment(saved_lex);
                     ctx.set_variable_environment(saved_var);
                 } else {
@@ -4933,7 +5924,7 @@ Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
         EnvironmentRoot saved_var_root(&saved_var);
         ctx.set_lexical_environment(frame_lexical_env(f));
         ctx.set_variable_environment(frame_variable_env(f));
-        acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+        acc = instantiate_closure(ctx, (*chunk.closures)[idx], true);
         ctx.set_lexical_environment(saved_lex);
         ctx.set_variable_environment(saved_var);
     } else {
@@ -4961,7 +5952,7 @@ Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
         EnvironmentRoot saved_var_root(&saved_var);
         ctx.set_lexical_environment(frame_lexical_env(f));
         ctx.set_variable_environment(frame_variable_env(f));
-        declare_function(ctx, (*chunk.closures)[idx]);
+        declare_function(ctx, (*chunk.closures)[idx], true);
         ctx.set_lexical_environment(saved_lex);
         ctx.set_variable_environment(saved_var);
     } else {
@@ -5549,6 +6540,152 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+// A call that threw, seen from the handler that made it: the catch handler that
+// covers the call instruction, or a return to this frame's caller. Out of line
+// so the call handlers below keep the search -- a loop over the handler table --
+// out of the body that every call, thrown or not, has to run.
+[[gnu::noinline]] Value h_ExceptionAt(Frame& f, uint32_t instr_pc_value, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    uint32_t pc = instr_pc_value;
+    uint32_t instr_pc = instr_pc_value;
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Call and CallResolved when the callee is a function -- compiled or native,
+// which is nearly all of them. The generated handlers they stand in for hold the
+// whole instruction in registers across the call -- six saved registers, the
+// operand decode, two exception tests -- when all that has to survive it is the
+// frame and the pc. A callee that is not a function (a Proxy, a non-callable)
+// tail-calls the generated handler untouched.
+Value h_CallInline(Frame& f, uint32_t pc, Value acc);
+
+// The stackless attempt (h_CallInline) is its own function: folded in here it costs this one a
+// longer prologue on every call, including the ones that never qualify.
+Value h_CallPlain(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& callee = f.regs[code[pc + 1]];
+    if (LIKELY(callee.is_function())) {
+        Function* fn = callee.as_function();
+        f.instr_pc = pc;
+        Context& ctx = *f.ctx;
+        const std::span<const Value> call_args(f.regs + code[pc + 2], code[pc + 3]);
+        acc = LIKELY(fn->fast_callable()) ? fn->call_fast_gate(ctx, call_args, Value())
+                                          : fn->call_register_args(ctx, call_args, Value());
+        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
+        Collector::safepoint();
+        pc += 6;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_Call(f, pc, acc);
+}
+
+Value h_CallResolvedInline(Frame& f, uint32_t pc, Value acc);
+
+Value h_CallResolvedPlain(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& callee = f.regs[code[pc + 1]];
+    if (LIKELY(callee.is_function())) {
+        Function* fn = callee.as_function();
+        f.instr_pc = pc;
+        Context& ctx = *f.ctx;
+        const std::span<const Value> call_args(f.regs + code[pc + 3], code[pc + 4]);
+        const Value& receiver = f.regs[code[pc + 2]];
+        acc = LIKELY(fn->fast_callable()) ? fn->call_fast_gate(ctx, call_args, receiver)
+                                          : fn->call_register_args(ctx, call_args, receiver);
+        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
+        Collector::safepoint();
+        pc += 7;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_CallResolved(f, pc, acc);
+}
+
+Value h_CallLean(Frame& f, uint32_t pc, Value acc) {
+    if (f.inline_ok) [[clang::musttail]] return h_CallInline(f, pc, acc);
+    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+}
+
+Value h_CallResolvedLean(Frame& f, uint32_t pc, Value acc) {
+    if (f.inline_ok) [[clang::musttail]] return h_CallResolvedInline(f, pc, acc);
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+}
+
+// The two stackless entries are a cheap screen and the heavy part behind it: the heavy part saves
+// six registers on the way in, and a call the chunk's verdict has already refused (a third of
+// them in a closure-heavy program) should not pay that to be sent on to the ordinary path.
+Value h_CallInlineGo(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    Function* fn = f.regs[code[pc + 1]].as_function();
+    f.instr_pc = pc;
+    Frame* callee_frame;
+    if (inline_call_enter(f, fn, f.regs + code[pc + 2], code[pc + 3], Value(), pc + 6, callee_frame))
+        [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value());
+    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+}
+
+[[gnu::noinline]] Value h_CallInline(Frame& f, uint32_t pc, Value acc) {
+    const Value& callee = f.regs[f.code[pc + 1]];
+    if (LIKELY(callee.is_function())) {
+        Function* fn = callee.as_function();
+        if (LIKELY(fn->fast_callable())) {
+            if (fn->get_executable()->bytecode_chunk->inline_state != kInlineNever)
+                [[clang::musttail]] return h_CallInlineGo(f, pc, acc);
+        } else if (fn->maybe_env_callable() && fn->get_executable()->bytecode_chunk->inline_state != kInlineNever) {
+            [[clang::musttail]] return h_CallInlineGo(f, pc, acc);
+        }
+    }
+    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+}
+
+Value h_CallResolvedInlineGo(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    Function* fn = f.regs[code[pc + 1]].as_function();
+    f.instr_pc = pc;
+    Frame* callee_frame;
+    if (inline_call_enter(f, fn, f.regs + code[pc + 3], code[pc + 4], f.regs[code[pc + 2]], pc + 7, callee_frame))
+        [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value());
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+}
+
+[[gnu::noinline]] Value h_CallResolvedInline(Frame& f, uint32_t pc, Value acc) {
+    const Value& callee = f.regs[f.code[pc + 1]];
+    if (LIKELY(callee.is_function())) {
+        Function* fn = callee.as_function();
+        if (LIKELY(fn->fast_callable())) {
+            if (fn->get_executable()->bytecode_chunk->inline_state != kInlineNever)
+                [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc);
+        } else if (fn->maybe_env_callable() && fn->get_executable()->bytecode_chunk->inline_state != kInlineNever) {
+            [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc);
+        }
+    }
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+}
+
+Value h_gen_Construct(Frame& f, uint32_t pc, Value acc);
+
+// `new F(...)` with F a function, keeping only the frame and pc across the call (see
+// h_CallLean). Anything else -- a Proxy, a non-constructor -- is the generated handler's.
+Value h_ConstructLean(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& callee = f.regs[code[pc + 1]];
+    if (LIKELY(callee.is_function())) {
+        f.instr_pc = pc;
+        Context& ctx = *f.ctx;
+        // A literal `new X()` targets X regardless of any ambient new.target from an
+        // enclosing constructor call.
+        const Value old_new_target = ctx.get_new_target();
+        ctx.set_new_target(callee);
+        acc = callee.as_function()->construct(ctx, std::span<const Value>(f.regs + code[pc + 2], code[pc + 3]));
+        ctx.set_new_target(old_new_target);
+        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
+        Collector::safepoint();
+        pc += 6;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_Construct(f, pc, acc);
 }
 
 // `X.call(thisArg, ...rest)`, compiled as if "call" were an ordinary method
@@ -6406,8 +7543,14 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
+                // Read before the call: a getter can write the register.
+                Object* const learn_from = regs[obj_reg].is_object() ? regs[obj_reg].as_object() : nullptr;
                 acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner, f.feedback_rooted);
                 CHECK_EXC();
+                if (learn_from) {
+                    const FeedbackBody* site = chunk.feedback[fb_idx].peek();
+                    if (site && (site->mega || site->proto_mega)) mega_learn(learn_from, &chunk.name_at(name_idx));
+                }
                 break;
             }
     } while (0);
@@ -6452,12 +7595,12 @@ Value h_GetNamedWide(Frame& f, uint32_t pc, Value acc) {
 // whose own names the caller has already ruled out.
 inline bool inherited_data_entry(const FeedbackBody& fb, Object* obj, Value& out) {
     if (fb.proto_count == 0 || fb.proto_mega || obj->has_any_descriptor_override()) return false;
-    Shape* rs = obj->get_shape();
+    const uint64_t word = obj->raw_shape_word();
     Object* p0 = obj->get_prototype_raw();
     const uint64_t pep = Object::proto_epoch();
     for (uint8_t k = 0; k < fb.proto_count; k++) {
         const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
-        if (pe.receiver_shape != rs || pe.prototype != p0 || pe.proto_epoch != pep) continue;
+        if (pe.receiver_word != word || pe.prototype != p0 || pe.proto_epoch != pep) continue;
         if (pe.is_getter || pe.absent) return false;
         if (pe.from_descriptor) {
             if (pe.desc_epoch != Object::descriptor_epoch()) return false;
@@ -6512,28 +7655,31 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
-            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
-            const FeedbackSlot::Entry& e = fb.entries[0];
-            // A non-null shape here means the site is neither empty nor
-            // megamorphic: going mega clears it (see learn_feedback).
-            if (LIKELY(e.shape && !e.is_accessor &&
-                       e.shape == obj->get_shape() &&
-                       !obj->has_any_descriptor_override())) {
-                if (const Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
-                    acc = *slot;
-                    FUSED_TAIL(6);
-                }
-            }
+        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        const FeedbackSlot::Entry& e = fb.entries[0];
+        // The receiver's own word -- shape and object type together -- against the one the site
+        // learned: a hit means a plain data property on a type this path serves (anything else
+        // is stored with a word no receiver has). The shape says the slot exists, which is the
+        // same promise the collector's trace relies on to walk the butterfly unchecked, so no
+        // capacity test here either.
+        if (LIKELY(e.word == obj->raw_shape_word() && !obj->has_any_descriptor_override())) {
+            acc = *obj->shape_slot_for_cached_index(e.slot_index);
+            FUSED_TAIL(6);
+        }
+        {
             // The other read that decides most of them: a method or a field
             // found on the prototype, through the site's first inherited entry.
             // It costs the slower handler a five-register prologue and a scan
             // of the own entries to get to the same compare. Getters, absences
             // and further entries are still that handler's.
+            // The entry's word carries the receiver's type, so one compare
+            // stands in for the type gate and the shape test both -- and an
+            // Array or a Map, which that gate used to keep out, is served by
+            // an entry only its own type could have produced.
             if (f.feedback_rooted && fb.proto_count != 0 && !fb.proto_mega &&
                 !obj->has_any_descriptor_override()) {
                 const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[0];
-                if (pe.receiver_shape == obj->get_shape() &&
+                if (pe.receiver_word == obj->raw_shape_word() &&
                     pe.prototype == obj->get_prototype_raw() &&
                     pe.proto_epoch == Object::proto_epoch() &&
                     !pe.absent && !pe.is_getter) {
@@ -6590,15 +7736,17 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // receiver for every name but `length` and the indices and learns
             // the entry, but this handler never looked one up for an Array, so
             // every array method call took the generated handler and the full
-            // get_named to find an entry that was sitting here.
-            if (f.feedback_rooted && f.chunk.name_at(read_u16(code, pc + 2)) != "length" &&
-                inherited_data_entry(afb, obj, acc)) {
+            // get_named to find an entry that was sitting here. No name test
+            // is needed: an entry carries the receiver's type, so only one
+            // learned from an Array can match, and none is ever learned for
+            // `length`.
+            if (f.feedback_rooted && inherited_data_entry(afb, obj, acc)) {
                 FUSED_TAIL(6);
             }
         } else if (obj->get_type() == Object::ObjectType::Map || obj->get_type() == Object::ObjectType::Set) {
             // The same for a Map or a Set, whose only own name besides the
-            // shape's is `size`.
-            if (f.feedback_rooted && f.chunk.name_at(read_u16(code, pc + 2)) != "size" &&
+            // shape's is `size` -- never learned, for the same reason.
+            if (f.feedback_rooted &&
                 inherited_data_entry(f.chunk.feedback[read_u16(code, pc + 4)].read(), obj, acc)) {
                 FUSED_TAIL(6);
             }
@@ -6622,7 +7770,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             Shape* own_shape = obj->get_shape();
             for (uint8_t k = 0; k < fb.count; k++) {
                 const FeedbackSlot::Entry& cand = fb.entries[k];
-                if (cand.shape != own_shape) continue;
+                if (cand.shape() != own_shape) continue;
                 if (obj->has_any_descriptor_override()) break;
                 if (const Value* slot = obj->get_shape_slot_unchecked(cand.slot_index)) {
                     if (!cand.is_accessor) {
@@ -6715,6 +7863,23 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             }
         }
     } else if (receiver.is_function()) {
+        // `F.prototype`, read off a function: the field itself, where the general path checks the
+        // key against "arguments", "caller", "name" and "length" first and then walks the
+        // descriptors -- the commonest read a function receiver gets (`new` setups, class
+        // factories, every `instanceof` written by hand).
+        {
+            // The interned "prototype", made on the first function read this thread does (a plain
+            // thread_local, so the test is one load rather than a guarded static).
+            static constinit thread_local const std::string* prototype_name = nullptr;
+            if (UNLIKELY(!prototype_name)) prototype_name = Shape::intern("prototype");
+            if (f.chunk.names[read_u16(code, pc + 2)] == prototype_name) {
+                Function* fn = receiver.as_function();
+                if (fn->has_plain_prototype()) {
+                    acc = fn->constructor_prototype();
+                    FUSED_TAIL(6);
+                }
+            }
+        }
         // A function is not is_object() (see Value's own tag split), so it
         // never reaches the branch above -- but Function IS-A Object in the
         // C++ hierarchy, and as_object() reads the same payload bits
@@ -6816,6 +7981,14 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
+    // Past the site's own entries: the shared cache for what it cannot hold.
+    if (receiver.is_object()) {
+        Value cached;
+        if (mega_probe(receiver.as_object(), &f.chunk.name_at(read_u16(code, pc + 2)), cached)) {
+            acc = cached;
+            FUSED_TAIL(6);
+        }
+    }
     [[clang::musttail]] return h_gen_GetNamed(f, pc, acc);
 }
 
@@ -6867,49 +8040,98 @@ Value h_SetNamedWide(Frame& f, uint32_t pc, Value acc) {
 // set needs to hear about.
 Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc);
 
+// Whether storing `value` into an object can create an old-to-young edge the
+// collector has to be told about (see write_barrier_for). A number, boolean,
+// undefined or null cannot.
+inline bool store_needs_barrier(const Value& value) {
+    return !(value.is_number() || value.is_boolean() || value.is_undefined() || value.is_null());
+}
+
+// The half of a named store that has to call the collector. Reached by tail call after
+// the value is already in its slot -- the order does not matter to the collector, which
+// is told which object changed and cannot run between the two -- so that h_SetNamedFast,
+// which stores numbers and booleans most of the time, keeps the call out of its own body
+// and with it the seven pushes and pops a call used to cost every store.
+[[gnu::noinline]] Value h_SetNamedBarrier(Frame& f, uint32_t pc, Value acc) {
+    Collector::write_barrier(f.regs[f.code[pc + 1]].as_object());
+    pc += 6;
+    DISPATCH();
+}
+
+// A store that adds a property the site has seen added before: the shape changes and the
+// object gets one more slot, which is a call.
+[[gnu::noinline]] Value h_SetNamedTransitionSlow(Frame& f, uint32_t pc, Value acc);
+
+// The common add: a number or boolean (no barrier), a slot the object already has room for.
+// Nothing here calls, so the handler has no frame to build around the six checks and two
+// stores; a store that needs the collector's barrier or a bigger butterfly is the slow form's.
+Value h_SetNamedTransition(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+    if (LIKELY(!fb.transition_mega && fb.transition_count != 0 && !store_needs_barrier(acc))) {
+        const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
+        Object* obj = f.regs[code[pc + 1]].as_object();
+        if (te.from_shape && te.from_shape == obj->get_shape() &&
+            te.prototype == obj->get_prototype_raw() &&
+            te.proto_epoch == Object::proto_epoch() &&
+            obj->is_extensible() && !obj->has_any_descriptor_override() &&
+            obj->add_shape_property_in_place(acc, te.to_shape)) {
+            pc += 6;
+            DISPATCH();
+        }
+    }
+    [[clang::musttail]] return h_SetNamedTransitionSlow(f, pc, acc);
+}
+
+[[gnu::noinline]] Value h_SetNamedTransitionSlow(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& receiver = f.regs[code[pc + 1]];
+    Object* obj = receiver.as_object();
+    const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+    // transitions[0] only -- the entry the sole-shape monomorphic case always hits;
+    // te.from_shape's own null-ness (not fb.transition_count) is the guard, since an
+    // unlearned slot must never be trusted even when obj->get_shape() itself happens to
+    // be null (dictionary mode) and proto_epoch is still its initial 0.
+    if (LIKELY(!fb.transition_mega && fb.transition_count != 0)) {
+        const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
+        if (te.from_shape && te.from_shape == obj->get_shape() &&
+            te.prototype == obj->get_prototype_raw() &&
+            te.proto_epoch == Object::proto_epoch() &&
+            obj->is_extensible()) {
+            const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
+            if (!obj->has_descriptor_override(name)) {
+                // A number or boolean store needs no barrier, and the barrier is a
+                // call: asking first keeps it (and the saves around it) off the
+                // path of `this.x = 0`.
+                if (store_needs_barrier(acc)) Collector::write_barrier(obj);
+                obj->add_shape_property_cached(name, acc, te.to_shape);
+                pc += 6;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_SetNamedRest(f, pc, acc);
+}
+
 Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
+        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        const FeedbackSlot::Entry& e = fb.entries[0];
+        // Same word compare as the read side; the stamp is global and never revived, the
+        // receiver's own map answers for itself.
+        if (LIKELY(e.word == obj->raw_shape_word() && !obj->has_any_descriptor_override())) {
+            *obj->shape_slot_for_cached_index(e.slot_index) = acc;
+            if (store_needs_barrier(acc)) [[clang::musttail]] return h_SetNamedBarrier(f, pc, acc);
+            pc += 6;
+            DISPATCH();
+        }
         if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
-            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
-            const FeedbackSlot::Entry& e = fb.entries[0];
-            // Same pair of facts as the read side: the stamp is global and
-            // never revived, the receiver's own map answers for itself.
-            // A non-null shape here means the site is neither empty nor
-            // megamorphic: going mega clears it (see learn_feedback).
-            if (LIKELY(e.shape && !e.is_accessor &&
-                       e.shape == obj->get_shape() &&
-                       !obj->has_any_descriptor_override())) {
-                if (Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
-                    write_barrier_for(obj, acc);
-                    *slot = acc;
-                    pc += 6;
-                    DISPATCH();
-                }
-            }
-            // New-property transition cache: mirrors set_named's own transition block
-            // (see its comment) for the case this store is not an overwrite but adding
-            // a brand-new own property. transitions[0] only -- the entry the sole-shape
-            // monomorphic case always hits; te.from_shape's own null-ness (not
-            // fb.transition_count) is the guard, since an unlearned slot must never be
-            // trusted even when obj->get_shape() itself happens to be null (dictionary
-            // mode) and proto_epoch is still its initial 0.
+            // New-property transition cache: see h_SetNamedTransition.
             if (LIKELY(!fb.transition_mega && fb.transition_count != 0)) {
-                const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
-                if (te.from_shape && te.from_shape == obj->get_shape() &&
-                    te.prototype == obj->get_prototype_raw() &&
-                    te.proto_epoch == Object::proto_epoch() &&
-                    obj->is_extensible()) {
-                    const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
-                    if (!obj->has_descriptor_override(name)) {
-                        write_barrier_for(obj, acc);
-                        obj->add_shape_property_cached(name, acc, te.to_shape);
-                        pc += 6;
-                        DISPATCH();
-                    }
-                }
+                [[clang::musttail]] return h_SetNamedTransition(f, pc, acc);
             }
         }
     }
@@ -6931,7 +8153,7 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
             Shape* own_shape = obj->get_shape();
             for (uint8_t k = 1; k < fb.count; k++) {
                 const FeedbackSlot::Entry& e = fb.entries[k];
-                if (e.shape != own_shape || e.is_accessor) continue;
+                if (e.shape() != own_shape || e.is_accessor) continue;
                 if (obj->has_any_descriptor_override()) break;
                 if (Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
                     write_barrier_for(obj, acc);
@@ -6954,6 +8176,14 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
                     if (obj->has_descriptor_override(name)) break;
                     write_barrier_for(obj, acc);
                     obj->add_shape_property_cached(name, acc, te.to_shape);
+                    pc += 6;
+                    DISPATCH();
+                }
+            } else if (fb.transition_mega) {
+                const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
+                if (Shape* to = mega_transition_probe(obj, &name)) {
+                    write_barrier_for(obj, acc);
+                    obj->add_shape_property_cached(name, acc, to);
                     pc += 6;
                     DISPATCH();
                 }
@@ -6983,16 +8213,11 @@ Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
                 pc += 4;
                 DISPATCH();
             }
-            if (obj->get_type() == Object::ObjectType::TypedArray) {
-                double element;
-                if (static_cast<TypedArrayBase*>(obj)->read_plain_number(index, element)) {
-                    acc = Value(element);
-                    pc += 4;
-                    DISPATCH();
-                }
-            }
         }
     }
+    // A typed array's read is a call (read_plain_number), and a call anywhere in this
+    // function would have it open with five pushes for the dense-array load that is
+    // nearly every execution of it. h_GetKeyedElement handles the typed array just as well.
     [[clang::musttail]] return h_GetKeyedElement(f, pc, acc);
 }
 
@@ -7603,12 +8828,29 @@ Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// An object literal's add that needs the collector's barrier or a bigger butterfly.
+[[gnu::noinline]] Value h_DefineOwnAdd(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    Object* obj = f.regs[code[pc + 1]].as_object();
+    const FeedbackBody* fb = f.chunk.feedback[read_u16(code, pc + 4)].peek();
+    write_barrier_for(obj, acc);
+    obj->add_shape_property_cached(f.chunk.name_at(read_u16(code, pc + 2)), acc,
+                                   fb->transitions[0].to_shape);
+    pc += 6;
+    DISPATCH();
+}
+
 // The object-literal property that adds a key the site has already learned to
 // add: a shape compare against the first transition entry and a slot write.
 // Building a literal is nearly all of these, and each paid the generated
 // handler's prologue and define_own_cached's own checks first. Anything else --
 // a site that has not learned the transition, an object that is not plain or has
 // descriptors, a second shape at the site -- tail-calls the generated handler.
+// A literal is built presized, so the slot is nearly always already there and the
+// value a number, a string or an object nothing older points into -- that add
+// calls nothing, and is what this handler is. One that needs the barrier or a
+// bigger butterfly is h_DefineOwnAdd's, for the same reason h_SetNamedTransition
+// keeps its slow form out of line: the call would otherwise cost every add a frame.
 Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& target = f.regs[code[pc + 1]];
@@ -7620,11 +8862,12 @@ Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
             if (LIKELY(fb && !fb->transition_mega && fb->transition_count != 0)) {
                 const FeedbackSlot::TransitionEntry& te = fb->transitions[0];
                 if (te.from_shape == obj->get_shape()) {
-                    write_barrier_for(obj, acc);
-                    obj->add_shape_property_cached(f.chunk.name_at(read_u16(code, pc + 2)), acc,
-                                                   te.to_shape);
-                    pc += 6;
-                    DISPATCH();
+                    if (LIKELY(!store_needs_barrier(acc) &&
+                               obj->add_shape_property_in_place(acc, te.to_shape))) {
+                        pc += 6;
+                        DISPATCH();
+                    }
+                    [[clang::musttail]] return h_DefineOwnAdd(f, pc, acc);
                 }
             }
         }
@@ -8441,8 +9684,14 @@ Value h_gen_CreateRestArray(Frame& f, uint32_t pc, Value acc) {
                 uint8_t start_index = code[pc];
                 pc += 1;
                 auto rest_array = ObjectFactory::create_array(0);
-                for (size_t j = start_index; j < args.size(); j++) {
-                    rest_array->push(args[j]);
+                // The count is known, so the length is set and the storage sized once,
+                // the way CreateArray does, instead of every push re-deriving the
+                // length and growing the elements by one.
+                if (args.size() > start_index) {
+                    const uint32_t n = static_cast<uint32_t>(args.size() - start_index);
+                    rest_array->set_length(n);
+                    rest_array->reserve_elements(n);
+                    for (uint32_t j = 0; j < n; j++) rest_array->set_element(j, args[start_index + j]);
                 }
                 Engine::fixup_new_array_realm(rest_array.get(), &ctx);
                 acc = Value(rest_array.release());
@@ -8498,6 +9747,16 @@ Value h_invalid(Frame& f, uint32_t pc, Value acc) {
     return Value();
 }
 
+// The stop byte of a baseline-JIT step (Jit.inc): not an instruction, only a
+// place for the handler chain to end so the generated code can take the frame
+// back. Registered under an opcode value no Op uses.
+Value h_JitHalt(Frame& f, uint32_t pc, Value acc) {
+    f.jit_halted = true;
+    f.pc = pc;
+    f.acc = acc;
+    return acc;
+}
+
 constexpr std::array<Handler, 256> make_handler_table() {
     std::array<Handler, 256> t{};
     for (auto& e : t) e = &h_invalid;
@@ -8543,6 +9802,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::Dec)]           = &h_Dec;
     t[static_cast<uint8_t>(Op::LdaThis)] = &h_LdaThisFast<false>;
     t[static_cast<uint8_t>(Op::LdaTdz)] = &h_LdaTdz;
+    t[static_cast<uint8_t>(Op::LdaTdzStar)] = &h_LdaTdzStar;
     t[static_cast<uint8_t>(Op::LdarChecked)] = &h_gen_LdarChecked;
     t[static_cast<uint8_t>(Op::StarChecked)] = &h_gen_StarChecked;
     t[static_cast<uint8_t>(Op::Div)] = &h_gen_Div;
@@ -8554,7 +9814,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::Shl)] = &h_Shl;
     t[static_cast<uint8_t>(Op::Sar)] = &h_Sar;
     t[static_cast<uint8_t>(Op::Shr)] = &h_Shr;
-    t[static_cast<uint8_t>(Op::TestInstanceOf)] = &h_gen_TestInstanceOf;
+    t[static_cast<uint8_t>(Op::TestInstanceOf)] = &h_TestInstanceOf;
     t[static_cast<uint8_t>(Op::TestIn)] = &h_gen_TestIn;
     t[static_cast<uint8_t>(Op::ForInKeyPresent)] = &h_gen_ForInKeyPresent;
     t[static_cast<uint8_t>(Op::LdaArgLength)] = &h_LdaArgLength;
@@ -8562,12 +9822,12 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaArgAt)] = &h_LdaArgAt;
     t[static_cast<uint8_t>(Op::Neg)] = &h_gen_Neg;
     t[static_cast<uint8_t>(Op::LogicalNot)] = &h_LogicalNotFast;
-    t[static_cast<uint8_t>(Op::BitNot)] = &h_gen_BitNot;
+    t[static_cast<uint8_t>(Op::BitNot)] = &h_BitNotFast;
     t[static_cast<uint8_t>(Op::TypeOf)] = &h_gen_TypeOf;
     t[static_cast<uint8_t>(Op::Yield)] = &h_gen_Yield;
     t[static_cast<uint8_t>(Op::Await)] = &h_gen_Await;
     t[static_cast<uint8_t>(Op::ToNumber)] = &h_gen_ToNumber;
-    t[static_cast<uint8_t>(Op::ToNumeric)] = &h_gen_ToNumeric;
+    t[static_cast<uint8_t>(Op::ToNumeric)] = &h_ToNumericFast;
     t[static_cast<uint8_t>(Op::ToTemplateString)] = &h_gen_ToTemplateString;
     t[static_cast<uint8_t>(Op::BuildTemplateString)] = &h_gen_BuildTemplateString;
     t[static_cast<uint8_t>(Op::ToPropertyKey)] = &h_gen_ToPropertyKey;
@@ -8654,11 +9914,11 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
     t[static_cast<uint8_t>(Op::LinkExports)] = &h_gen_LinkExports;
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
-    t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
-    t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;
+    t[static_cast<uint8_t>(Op::Call)] = &h_CallLean;
+    t[static_cast<uint8_t>(Op::CallResolved)] = &h_CallResolvedLean;
     t[static_cast<uint8_t>(Op::CallViaFunctionCall)] = &h_gen_CallViaFunctionCall;
     t[static_cast<uint8_t>(Op::CallViaFunctionApply)] = &h_gen_CallViaFunctionApply;
-    t[static_cast<uint8_t>(Op::Construct)] = &h_gen_Construct;
+    t[static_cast<uint8_t>(Op::Construct)] = &h_ConstructLean;
     t[static_cast<uint8_t>(Op::CallSpread)] = &h_gen_CallSpread;
     t[static_cast<uint8_t>(Op::ConstructSpread)] = &h_gen_ConstructSpread;
     t[static_cast<uint8_t>(Op::CreateRegExp)] = &h_gen_CreateRegExp;
@@ -8692,6 +9952,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CreateRestArray)] = &h_gen_CreateRestArray;
     t[static_cast<uint8_t>(Op::Throw)] = &h_gen_Throw;
     t[static_cast<uint8_t>(Op::ReraiseGeneratorReturn)] = &h_gen_ReraiseGeneratorReturn;
+    t[0xFF] = &h_JitHalt;
     return t;
 }
 const std::array<Handler, 256> kHandlers = make_handler_table();
@@ -8701,15 +9962,51 @@ Value run_dispatch(Frame& f) {
     return kHandlers[f.code[f.pc]](f, f.pc, f.acc);
 }
 
+#include "Jit.inc"
+
+#ifndef QUANTA_JIT_ENABLED
+// No baseline JIT for this target: every chunk stays with the interpreter.
+namespace jit {
+inline void consider(const BytecodeChunk& chunk) noexcept { chunk.jit_state = 2; }
+inline Value run(Frame& f, JitCode*) { return run_dispatch(f); }
+inline void free_code(JitCode*) noexcept {}
+inline void print_stats() {}
+}
+bool osr_try(Frame& f, uint32_t, const Value&) { f.osr_budget = INT32_MAX; return false; }
+#endif
+
+// Where a frame starts or resumes: in generated code when the chunk has any.
+[[gnu::always_inline]] inline Value run_entry(Frame& f) {
+    if (JitCode* jc = f.chunk.jit.get()) return jit::run(f, jc);
+    return run_dispatch(f);
+}
+
 // What run() does once its register bank exists, whichever kind that is. Always
-// inlined into both callers below so the hot one carries no extra call.
+// inlined into the callers below so the hot one carries no extra call.
+//
+// `Fast` is the call a register-mode function gets from Function::call_gated: it has a
+// CallInfo, an owner and a `this`, no initial accumulator, nowhere to report a final
+// environment, and no environment of its own (that is what the register-mode gate
+// means). Each of those is a runtime test in the general form -- the parameter binding
+// block, the final-environment writer, the two environment roots, the ternaries for
+// the accumulator, `this` and rootedness -- and about forty instructions of the
+// ~200 a call spent here; as a template argument they are decided by the compiler.
+template <bool Fast>
 [[gnu::always_inline]] inline Value run_with_regs(
         const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
         const Value* this_val, Function* owner, const Value* initial_acc,
         const CallInfo* call_info, Value* regs, Environment** final_lexical_env) {
-    const uint8_t param_count = chunk.parameter_count;
-    for (uint8_t i = 0; i < param_count && i < args.size(); i++) {
+    // Almost always one to three arguments: a plain loop. Left to itself the
+    // vectorizer builds a four-wide body with a run-up test and a scalar tail,
+    // a dozen instructions of setup for a copy that rarely reaches the second
+    // vector.
+    const size_t arg_copy = std::min<size_t>(chunk.parameter_count, args.size());
+#pragma clang loop vectorize(disable) interleave(disable) unroll(disable)
+    for (size_t i = 0; i < arg_copy; i++) {
         regs[i] = args[i];
+        // Keeps the loop from being turned into a memcpy call, which costs more
+        // for these lengths than the copy itself.
+        __asm__ volatile("" ::: "memory");
     }
 
     // Side-stack for Op::SaveEnv/RestoreEnv/PopEnvSave. Not a GC root:
@@ -8725,8 +10022,8 @@ Value run_dispatch(Frame& f) {
     // ctx.get_lexical_environment() at each point below (push_block_scope_into
     // re-reads it back after calling ctx's own push_block_scope), so nothing
     // here changes for the general/env_ctx-owning path.
-    Environment* cur_lex = call_info ? call_info->lexical_environment_ : ctx.get_lexical_environment();
-    if (chunk.env_mode && chunk.env) {
+    Environment* cur_lex = (Fast || call_info) ? call_info->lexical_environment_ : ctx.get_lexical_environment();
+    if (!Fast && chunk.env_mode && chunk.env) {
         Environment* env = cur_lex;
         // Intern the chunk's binding names once instead of once per call; the
         // pointers are stable for the thread's lifetime.
@@ -8737,9 +10034,42 @@ Value run_dispatch(Frame& f) {
             for (const auto& p : b.env_params) b.env_param_keys.push_back(Shape::intern(p));
             b.env_local_keys.reserve(b.env_locals.size());
             for (const auto& l : b.env_locals) b.env_local_keys.push_back(Shape::intern(l.name));
+            b.env_seed_plan.clear();
+            auto find_planned = [&](const std::string* k) -> int {
+                for (size_t i = 0; i < b.env_seed_plan.size(); i++)
+                    if (b.env_seed_plan[i].key == k) return static_cast<int>(i);
+                return -1;
+            };
+            for (size_t i = 0; i < b.env_param_keys.size(); i++) {
+                const int at = find_planned(b.env_param_keys[i]);
+                if (at >= 0) b.env_seed_plan[at].param_index = static_cast<int16_t>(i);
+                else b.env_seed_plan.push_back({b.env_param_keys[i], static_cast<int16_t>(i), 0});
+            }
+            for (size_t i = 0; i < b.env_local_keys.size(); i++) {
+                if (find_planned(b.env_local_keys[i]) >= 0) continue;
+                const auto& l = b.env_locals[i];
+                b.env_seed_plan.push_back({b.env_local_keys[i], static_cast<int16_t>(-1),
+                                           static_cast<uint8_t>((l.is_lexical ? 1 : 0) | (l.is_lexical && l.is_const ? 2 : 0))});
+            }
+            b.env_seed_ok = !chunk.env_params_tdz && !chunk.lex_scope_split;
             b.env_keys_ready = true;
         }
-        if (chunk.env_params_tdz) {
+        if (chunk.env->env_seed_ok && env->fresh_with_room(chunk.env->env_seed_plan.size())) {
+            // The common case: a fresh call environment. Same bindings, same order and flags as
+            // the generic path below, without a lookup per name.
+            size_t at = 0;
+            for (const auto& se : chunk.env->env_seed_plan) {
+                Environment::BindingSlot slot{Value(), true, true, false};
+                if (se.param_index >= 0) {
+                    if (static_cast<size_t>(se.param_index) < args.size()) slot.value = args[se.param_index];
+                } else {
+                    slot.mutable_flag = (se.flags & 2) == 0;
+                    slot.initialized = (se.flags & 1) == 0;
+                    if (se.flags & 2) slot.const_binding = true;
+                }
+                env->seed_binding(at++, se.key, slot);
+            }
+        } else if (chunk.env_params_tdz) {
             // Spec FDI ordering: params start uninitialized (their raw values
             // sit in registers), the entry bytecode initializes each one left
             // to right, and Op::BindEnvLocals creates the body's bindings
@@ -8795,7 +10125,7 @@ Value run_dispatch(Frame& f) {
     // from the right place. cur_lex already reflects the prologue's own
     // lex_scope_split push above, same as re-reading ctx used to.
     Environment* entry_env = cur_lex;
-    Environment* entry_var_env = call_info ? call_info->variable_environment_ : ctx.get_variable_environment();
+    Environment* entry_var_env = (Fast || call_info) ? call_info->variable_environment_ : ctx.get_variable_environment();
 
     // A chunk may be shared across several Function instances created from the
     // same declaration site (see FunctionExecutable), each with its own
@@ -8843,8 +10173,8 @@ Value run_dispatch(Frame& f) {
     // (even in a derived constructor -- super() sets it once), so resolve
     // the binding at most once. Whether a read is ALLOWED yet is a separate,
     // per-read check (this-TDZ, see the opcode below).
-    bool this_resolved = this_val != nullptr;
-    Value this_value = this_val ? *this_val : Value();
+    bool this_resolved = Fast || this_val != nullptr;
+    Value this_value = (Fast || this_val) ? *this_val : Value();
 
     const uint8_t* code = chunk.code.data();
     const Value* constants = chunk.constants.data();
@@ -8857,11 +10187,11 @@ Value run_dispatch(Frame& f) {
     // compile_script is reached from run_script alone, and that is where the
     // chunk gets its root -- so script_mode is exactly "this chunk's caches
     // are traced".
-    const bool feedback_rooted = owner != nullptr || chunk.script_mode;
+    const bool feedback_rooted = Fast || owner != nullptr || chunk.script_mode;
     Frame frame{chunk, &ctx, args, owner, feedback_rooted, regs, env_saves, resolved_envs,
                 lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
-                this_value, initial_acc ? *initial_acc : Value(), 0, 0, 0, this_resolved};
+                this_value, (!Fast && initial_acc) ? *initial_acc : Value(), 0, 0, 0, this_resolved};
     FrameLinkScope frame_link(&chunk, &frame.instr_pc, owner);
     frame.call_info = call_info;
     // Seeded even when call_info is null (frame_lexical_env/frame_variable_env
@@ -8876,7 +10206,7 @@ Value run_dispatch(Frame& f) {
     struct FinalEnvWriter {
         Frame* f; Environment** out;
         ~FinalEnvWriter() { if (out) *out = f->current_lexical_env; }
-    } final_env_writer{&frame, final_lexical_env};
+    } final_env_writer{&frame, Fast ? nullptr : final_lexical_env};
     // call_info means ctx is the caller's own shared Context, so ctx's own
     // gc_trace (lexical_environment_/variable_environment_) never reaches
     // whatever this call is actually using -- these two fields are the only
@@ -8896,15 +10226,36 @@ Value run_dispatch(Frame& f) {
     // this on chunk.env_mode too turns a per-call cost that fast_gate -- by
     // far the larger of the two call_info-bearing buckets -- was paying for
     // nothing into a cost only fast_no_closures (which actually needs it) pays.
-    std::optional<EnvironmentRoot> lex_root, var_root;
-    if (call_info && chunk.env_mode) {
-        lex_root.emplace(&frame.current_lexical_env);
-        var_root.emplace(&frame.current_variable_env);
+    // Not even declared in the register-mode form: an unengaged optional is still a flag
+    // to clear on entry and test on every exit, twice.
+    struct EnvRoots { std::optional<EnvironmentRoot> lex, var; };
+    std::conditional_t<Fast, std::monostate, EnvRoots> env_roots;
+    if constexpr (!Fast) {
+        if (call_info && chunk.env_mode) {
+            env_roots.lex.emplace(&frame.current_lexical_env);
+            env_roots.var.emplace(&frame.current_variable_env);
+        }
     }
 
+    if (__builtin_expect(chunk.jit_state != 1, 0) && chunk.jit_state != 2) jit::consider(chunk);
+
+    // Calls this activation makes may be stackless ones unless the baseline JIT is the one driving
+    // it (see "Stackless calls" above). The guard gives back any such frame still running if the
+    // activation is left by an exception that is not handled here.
+    frame.inline_ok = !chunk.jit && inline_calls_enabled() && !g_track_positions && !Engine::multi_engine();
+    struct InlineUnwind {
+        Frame& f;
+        ~InlineUnwind() { if (UNLIKELY(f.active != nullptr)) while (f.active) inline_frame_pop(*f.active); }
+    } inline_unwind{frame};
+
+    Frame* run_target = &frame;
     for (;;) {
       try {
-        return run_dispatch(frame);
+        const Value result = run_target == &frame ? run_entry(frame) : run_dispatch(*run_target);
+        // A handler that finds no catch clause covering an exception returns, whatever frame it
+        // was running; if that was a stackless one it is still listed as active, and the search
+        // continues below in the frames that called it.
+        if (LIKELY(frame.active == nullptr)) return result;
       } catch (const YieldException&) {
             throw;
       } catch (const GeneratorReturnException& gen_ret) {
@@ -8914,6 +10265,8 @@ Value run_dispatch(Frame& f) {
             // genreturn_pc -- Op::ReraiseGeneratorReturn re-throws once
             // finally is done, so an enclosing try's own handler picks it
             // up in turn.
+            while (frame.active) inline_frame_pop(*frame.active);
+            run_target = &frame;
             int32_t genreturn_pc = -1;
             uint32_t best_width = UINT32_MAX;
             if (chunk.handlers) for (const auto& h : *chunk.handlers) {
@@ -8936,25 +10289,38 @@ Value run_dispatch(Frame& f) {
       }
 
       // The same handler search CHECK_EXC does, for an exception that arrived
-      // as a C++ throw rather than through the context.
+      // as a C++ throw rather than through the context -- or that a stackless
+      // frame gave up on. It starts at the innermost frame this activation has
+      // running and works outward, giving each frame it passes back.
+      Frame* cur = frame.active ? frame.active : &frame;
       if (frame.ctx->has_exception()) {
-          int32_t handler_pc = -1;
-          uint32_t best_width = UINT32_MAX;
-          if (chunk.handlers) for (const auto& h : *chunk.handlers) {
-              if (frame.instr_pc >= h.start_pc && frame.instr_pc < h.end_pc) {
-                  uint32_t width = h.end_pc - h.start_pc;
-                  if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+          for (;;) {
+              int32_t handler_pc = -1;
+              uint32_t best_width = UINT32_MAX;
+              if (cur->chunk.handlers) for (const auto& h : *cur->chunk.handlers) {
+                  if (cur->instr_pc >= h.start_pc && cur->instr_pc < h.end_pc) {
+                      uint32_t width = h.end_pc - h.start_pc;
+                      if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+                  }
               }
+              if (handler_pc >= 0) {
+                  cur->acc = frame.ctx->get_exception();
+                  frame.ctx->clear_exception();
+                  cur->pc = static_cast<uint32_t>(handler_pc);
+                  run_target = cur;
+                  break;
+              }
+              if (cur == &frame) return Value();
+              Frame* const up = cur->caller;
+              inline_frame_pop(*cur);
+              cur = up;
           }
-          if (handler_pc < 0) return Value();
-          frame.acc = frame.ctx->get_exception();
-          frame.ctx->clear_exception();
-          frame.pc = static_cast<uint32_t>(handler_pc);
           continue;
       }
       // Only reachable if a catch above left no exception pending, which none
       // of them do; resume at the instruction that was executing.
-      frame.pc = frame.instr_pc;
+      cur->pc = cur->instr_pc;
+      run_target = cur;
     }
 }
 
@@ -8973,8 +10339,8 @@ Value run_dispatch(Frame& f) {
         ~SpillRoot() { Collector::pop_value_vector(v); }
     } spill_root{&spill_regs};
     Collector::push_value_vector(&spill_regs);
-    return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info,
-                         spill_regs.data(), final_lexical_env);
+    return run_with_regs<false>(chunk, ctx, args, this_val, owner, initial_acc, call_info,
+                                spill_regs.data(), final_lexical_env);
 }
 
 constinit thread_local FrameLink* g_frame_links = nullptr;
@@ -8994,8 +10360,36 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     if (__builtin_expect(chunk.register_count > kInlineRegs, 0)) {
         return run_spilled(chunk, ctx, args, this_val, owner, initial_acc, call_info, final_lexical_env);
     }
-    Value inline_regs[kInlineRegs] = {};
-    return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info, inline_regs, final_lexical_env);
+    // Only the chunk's own registers are initialized, two to a store. `= {}` on
+    // the whole bank wrote all 32 on every call -- 32 scalar stores, since
+    // `undefined` is not an all-zero pattern the compiler could memset -- when a
+    // typical function uses a handful. The unwritten tail is never read by
+    // bytecode (the compiler allocates registers densely below register_count)
+    // and the conservative stack scan already tolerates stale words elsewhere in
+    // the frame (env_saves below is left uninitialized for the same reason), so
+    // the only cost of leaving it is a possible false retention.
+    alignas(Value) unsigned char bank[kInlineRegs * sizeof(Value)];
+    Value* inline_regs = reinterpret_cast<Value*>(bank);
+    // Parameters are copied into the first slots whether or not the chunk's own count
+    // says it needs them.
+    init_register_bank(bank, std::max<unsigned>(chunk.register_count, chunk.parameter_count));
+    return run_with_regs<false>(chunk, ctx, args, this_val, owner, initial_acc, call_info, inline_regs, final_lexical_env);
+}
+
+// run() for a call from Function::call_gated: a register-mode function with an owner, a
+// CallInfo and a `this`. See run_with_regs. A chunk that unexpectedly has an
+// environment, or too many registers for the inline bank, takes the general entry, so
+// the specialization can only ever be skipped, never wrong.
+Value run_register_call(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
+                        const Value* this_val, Function* owner, const CallInfo* call_info) {
+    constexpr uint16_t kInlineRegs = 32;
+    if (__builtin_expect(chunk.env_mode || chunk.register_count > kInlineRegs, 0)) {
+        return run(chunk, ctx, args, this_val, owner, nullptr, call_info, nullptr);
+    }
+    alignas(Value) unsigned char bank[kInlineRegs * sizeof(Value)];
+    Value* inline_regs = reinterpret_cast<Value*>(bank);
+    init_register_bank(bank, std::max<unsigned>(chunk.register_count, chunk.parameter_count));
+    return run_with_regs<true>(chunk, ctx, args, this_val, owner, nullptr, call_info, inline_regs, nullptr);
 }
 
 Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
@@ -9153,5 +10547,115 @@ Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* 
     return run(chunk, ctx, {}, nullptr, owner);
 }
 
+}
+
+void jit_free_code(JitCode* code) noexcept { VM::jit::free_code(code); }
+
+void jit_forget_cells(JitCode* code) noexcept {
+    // Only ever called with no generated code running (a realm or isolate is
+    // being torn down on this thread), so resetting entries in place is safe.
+    for (JitIC& ic : code->ics) ic = JitIC{};
+}
+
+void jit_trace(const JitCode* code, Visitor& v) {
+    for (const JitIC& ic : code->ics) {
+        if (ic.kind == JitIC::Empty || ic.kind == JitIC::Own) continue;
+        v.visit_object(reinterpret_cast<Object*>(ic.proto_word));
+        v.visit_object(ic.holder);
+        v.visit(ic.value);
+    }
+}
+}
+
+namespace Quanta::VM {
+void jit_print_stats() { jit::print_stats(); }
+
+namespace {
+
+enum LeafKind : uint8_t { kLeafUnknown = 0, kLeafNone, kLeafConstant, kLeafThis, kLeafThisProperty };
+
+// Looks at the chunk's bytes once and files what the function is. Anything but the
+// four shapes below -- and any chunk with a try region, which the shapes cannot
+// have -- is "none" for good.
+void analyze_leaf(const BytecodeChunk& chunk) {
+    chunk.leaf_kind = kLeafNone;
+    if (chunk.handlers && !chunk.handlers->empty()) return;
+    const uint8_t* c = chunk.code.data();
+    const size_t n = chunk.code.size();
+    if (n < 2 || n > 16) return;
+    const auto op_at = [&](size_t pc) { return pc < n ? static_cast<Op>(c[pc]) : Op::kCount; };
+    uint64_t bits;
+    switch (op_at(0)) {
+        case Op::LdaUndefined: bits = std::bit_cast<uint64_t>(Value()); break;
+        case Op::LdaNull: bits = std::bit_cast<uint64_t>(Value::null()); break;
+        case Op::LdaTrue: bits = std::bit_cast<uint64_t>(Value(true)); break;
+        case Op::LdaFalse: bits = std::bit_cast<uint64_t>(Value(false)); break;
+        case Op::LdaZero: bits = std::bit_cast<uint64_t>(Value(0.0)); break;
+        case Op::LdaSmi: bits = std::bit_cast<uint64_t>(Value(static_cast<double>(static_cast<int8_t>(c[1])))); break;
+        case Op::LdaThis:
+            if (op_at(1) == Op::Return) chunk.leaf_kind = kLeafThis;
+            return;
+        case Op::LdaThisStar: {
+            // LdaThisStar r; GetNamed r name feedback; Return
+            const uint8_t reg = c[1];
+            if (op_at(2) == Op::GetNamed && c[3] == reg && op_at(8) == Op::Return) {
+                chunk.leaf_name = read_u16(c, 4);
+                chunk.leaf_feedback = read_u16(c, 6);
+                chunk.leaf_kind = kLeafThisProperty;
+            }
+            return;
+        }
+        default: return;
+    }
+    if (op_at(1 + static_cast<size_t>(op_operand_bytes(op_at(0)))) == Op::Return) {
+        chunk.leaf_bits = bits;
+        chunk.leaf_kind = kLeafConstant;
+    }
+}
+
+}  // namespace
+
+bool leaf_candidate(const BytecodeChunk& chunk) {
+    if (chunk.leaf_kind == kLeafUnknown) analyze_leaf(chunk);
+    return chunk.leaf_kind != kLeafNone;
+}
+
+bool try_leaf_call(const BytecodeChunk& chunk, const Value& this_value, Value& out) {
+    uint8_t kind = chunk.leaf_kind;
+    if (kind == kLeafUnknown) { analyze_leaf(chunk); kind = chunk.leaf_kind; }
+    switch (kind) {
+    case kLeafConstant:
+        out = std::bit_cast<Value>(chunk.leaf_bits);
+        return true;
+    case kLeafThis:
+        // Only a receiver that is already an object: a sloppy function would hand
+        // back undefined as the global object and a primitive boxed.
+        if (!this_value.is_object() && !this_value.is_function()) return false;
+        out = this_value;
+        return true;
+    case kLeafThisProperty: {
+        // The read the body's GetNamed would do on its first, cheapest tier -- the
+        // site's learned entries -- and nothing past that: a site that has not
+        // learned this receiver, an accessor or an override simply makes the call,
+        // which then learns it. Nothing here can throw or run script.
+        if (!this_value.is_object()) return false;
+        Object* obj = this_value.as_object();
+        if (!shape_fast_path_ok(obj->get_type())) return false;
+        const FeedbackBody& fb = chunk.feedback[chunk.leaf_feedback].read();
+        Shape* shape = obj->get_shape();
+        for (uint8_t k = 0; k < fb.count; k++) {
+            const FeedbackSlot::Entry& e = fb.entries[k];
+            if (e.shape() != shape) continue;
+            if (!e.shape() || e.is_accessor || obj->has_any_descriptor_override()) return false;
+            const Value* slot = obj->get_shape_slot_unchecked(e.slot_index);
+            if (!slot) return false;
+            out = *slot;
+            return true;
+        }
+        return inherited_data_entry(fb, obj, out);
+    }
+    default:
+        return false;
+    }
 }
 }

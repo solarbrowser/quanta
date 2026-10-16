@@ -220,9 +220,10 @@ Function::Function(const std::string& name,
                    ExecutableRef<const FunctionExecutable> executable,
                    Context* closure_context,
                    bool create_prototype,
-                   bool capture_free)
+                   bool capture_free,
+                   bool context_free)
     : Object(ObjectType::Function), executable_(std::move(executable)),
-      closure_context_(capture_closure_context(closure_context, capture_free)),
+      closure_context_(capture_closure_context(closure_context, capture_free || context_free)),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false,
                                                        capture_free)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
@@ -539,7 +540,53 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 // own so the call handlers can reach it without going through the general
 // entry's checks and frame. The caller has established the gate and holds the
 // call-stack frame.
+//
+// This is the call that writes nothing to the caller's Context: a plain
+// function whose strictness is the caller's, that does not read `this` and is
+// not an arrow. Those identity fields live in packed bit-fields, where saving
+// and restoring five of them around every call cost about thirty instructions
+// -- more than the checks that prove none of them changes -- so the general
+// form below is reached only by the calls that do change one.
 Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this_value) {
+    if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
+        return call_gated_in_realm(foreign, ctx, args, this_value);
+    }
+    if (UNLIKELY_NATIVE(&ctx == g_borrowed_ctx)) {
+        return call_default_impl(ctx, args, this_value, nullptr, /*own_context=*/true);
+    }
+    const FunctionExecutable& exe = *executable_;
+    // `this` can go through untouched when the body reads it from the frame
+    // (Op::LdaThis) and nothing needs it re-bound: a strict callee takes it as
+    // it is, a sloppy one only when it is already an object -- boxing a
+    // primitive or substituting the global object is the general form's job.
+    // A body that reaches `this` through the Context instead (super) needs it
+    // written there, which is also the general form's.
+    const bool callee_strict = is_strict_ || exe.fast_strict;
+    if (UNLIKELY_NATIVE(is_arrow_ || exe.fast_uses_super || ctx.this_needs_super() ||
+                        ctx.is_strict_mode() != callee_strict ||
+                        (exe.fast_uses_this && !callee_strict &&
+                         !this_value.is_object() && !this_value.is_function()))) {
+        return call_gated_general(ctx, args, this_value);
+    }
+    Environment* outer_env = get_closure_environment();
+    if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
+    if (!outer_env) outer_env = ctx.get_lexical_environment();
+    // See call_gated_general for why only a chunk that can create a closure marks.
+    if (outer_env && !exe.fast_no_closures) outer_env->mark_escaped();
+    VM::CallInfo call_info;
+    call_info.lexical_environment_ = outer_env;
+    call_info.variable_environment_ = outer_env;
+    Context* prev_context = Object::current_context_;
+    Object::current_context_ = &ctx;
+    Value vm_result = VM::run_register_call(*exe.bytecode_chunk, ctx, args, &this_value, this, &call_info);
+    Object::current_context_ = prev_context;
+    if (ctx.has_exception()) return Value();
+    return vm_result;
+}
+
+// The general form of call_gated: saves and restores every per-call identity
+// field of the caller's Context, and handles `this`, arrows and strictness.
+Value Function::call_gated_general(Context& ctx, std::span<const Value> args, Value this_value) {
     // 10.2.1.1 PrepareForOrdinaryCall: the callee runs in its own realm. Almost
     // every call finds it already current, which is the one compare this costs.
     if (Realm* foreign = foreign_realm(); UNLIKELY_NATIVE(foreign)) {
@@ -659,7 +706,7 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
                 // closure_context_ directly. Same fix as call_default_impl's
                 // fast_no_closures path.
                 Object* global = nullptr;
-                if (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx) {
+                if (Engine::multi_engine() && closure_context_ && closure_context_ != &ctx) {
                     global = closure_context_->get_global_this();
                 }
                 if (!global) global = ctx.get_global_this();
@@ -670,7 +717,7 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
                 // (every ordinary method call), not just primitives. ToObject
                 // must produce a wrapper from THIS function's own realm (see
                 // the global-this substitution above for why ctx isn't it).
-                Context& box_ctx = (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx)
+                Context& box_ctx = (Engine::multi_engine() && closure_context_ && closure_context_ != &ctx)
                     ? *closure_context_ : ctx;
                 fast_this = ObjectFactory::box_primitive_this_sloppy(box_ctx, this_value);
             }
@@ -690,8 +737,7 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
     // scope on that chain, not just the innermost).
     Context* prev_context = Object::current_context_;
     Object::current_context_ = &ctx;
-    Value vm_result = VM::run(*executable_->bytecode_chunk, ctx, args, &fast_this, this,
-                               nullptr, &call_info);
+    Value vm_result = VM::run_register_call(*executable_->bytecode_chunk, ctx, args, &fast_this, this, &call_info);
     Object::current_context_ = prev_context;
     // Only reachable at all when this call ran Op::SuperCall, which the
     // parser accepts nowhere but a derived constructor's own body or an
@@ -725,6 +771,13 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
     return vm_result;
 }
 
+// Out of line, so that the check in call_fast_gate costs a function that is not a leaf
+// one byte test and no extra saved registers: this call is what gave the prologue more to
+// save, about ten instructions on every call of the benchmarks that have no leaf calls.
+[[gnu::noinline]] static bool answer_leaf_call(const FunctionExecutable& exe, const Value& this_value, Value& out) {
+    return VM::try_leaf_call(*exe.bytecode_chunk, this_value, out);
+}
+
 // Straight from a call handler for a callee whose gate is open: fast_callable()
 // has said it is a plain compiled function with the register-mode gate, and what
 // is left of the general entry's prologue is done here -- consuming a pending
@@ -737,6 +790,14 @@ Value Function::call_fast_gate(Context& ctx, std::span<const Value> args, Value 
         return call_default_impl(ctx, args, this_value, nullptr);
     }
     ctx.consume_pending_construct_call();
+    // A body that only returns a constant, `this` or one of its data properties needs
+    // neither a frame nor a call-stack entry: nothing in it can throw, call or be
+    // observed (see VM::try_leaf_call for exactly what it takes). Not for an arrow,
+    // whose `this` is the enclosing one and not the receiver passed here.
+    if (UNLIKELY_NATIVE(executable_->fast_leaf) && !is_arrow_) {
+        Value result;
+        if (answer_leaf_call(*executable_, this_value, result)) return result;
+    }
     CallStack& stack = CallStack::instance();
     if (stack.depth() >= CallStack::MAX_STACK_DEPTH) {
         ctx.throw_range_error("Maximum call stack size exceeded");
@@ -873,20 +934,27 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         // general path writes them into its own. Private brands stay out:
         // the general path only binds those for a body a direct eval can
         // reach, which is a question this gate does not ask.
-        // fast_no_closures means this chunk never emits Op::CreateClosure, so
-        // nothing it does can hand out a reference to call_env that outlives
-        // the call -- Op::DeclareFunction is the one exception (it is not
-        // gated by has_nested_closures/fast_no_closures), and it is handled
-        // correctly regardless, since capture_closure_environment calls mark_referenced/
-        // mark_escaped on whatever is actually open at the point it runs, not
-        // on a decision made here. That is exactly why ctx is never mutated
+        // fast_shared_ctx means nothing this chunk makes holds the Context it
+        // ran on (BytecodeChunk::shares_caller_context): a closure it creates
+        // keeps the call's environment and its realm's global Context
+        // (instantiate_closure, ctx_is_borrowed), which is what lets a call
+        // that creates closures skip the Context a call of its own would
+        // need. capture_closure_environment marks the environment referenced
+        // or escaped at the point a closure actually takes it, not on a
+        // decision made here. That is exactly why ctx is never mutated
         // below: frame_lexical_env/frame_variable_env (via call_info) are
         // what every env-reading opcode -- including CreateClosure/
         // DeclareFunction's own swap -- resolves the live environment
         // through now, so this call never needs to be the one Context
         // currently "is". No CallContextPool::acquire, no ExecContextScope:
         // ctx is the caller's own shared object, same as call_gated.
-        if (!slots.private_brands && executable_->fast_no_closures && !own_context) {
+        // A closure made here is the one thing that reads more of ctx than the
+        // call's own environment: an arrow takes the enclosing new.target and
+        // class-field-init state off it at creation. A fresh Context says
+        // neither, the borrowed one would repeat whatever an ancestor left.
+        if (!slots.private_brands && executable_->fast_shared_ctx && !own_context &&
+            (executable_->fast_no_closures ||
+             (ctx.get_new_target().is_undefined() && !ctx.is_in_class_field_init()))) {
             Environment* outer_env = get_closure_environment();
             if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
             if (!outer_env) outer_env = ctx.get_lexical_environment();
@@ -898,10 +966,9 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 }
                 if (walk && walk->get_type() != Environment::Type::Declarative) outer_env = walk;
             }
-            // fast_no_closures already proves no Op::CreateClosure can run
-            // here, so unlike the env_ctx-acquiring path below there is no
-            // mark_escaped() call to skip -- there was never a condition on
-            // it to begin with (see that path's own identical-looking line).
+            // Same condition as the env_ctx-acquiring path below: only a chunk
+            // that can hand out a closure can make this chain outlive the call.
+            if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
             Environment* call_env = new Environment(Environment::Type::Function, outer_env);
 
             VM::CallInfo call_info;
@@ -955,7 +1022,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                     // so a cross-realm call must ask closure_context_ directly
                     // rather than the shared ctx it would otherwise read.
                     Object* global = nullptr;
-                    if (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx) {
+                    if (Engine::multi_engine() && closure_context_ && closure_context_ != &ctx) {
                         global = closure_context_->get_global_this();
                     }
                     if (!global) global = ctx.get_global_this();
@@ -963,7 +1030,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 } else if (!this_value.is_object() && !this_value.is_function()) {
                     // ToObject must produce a wrapper from THIS function's own
                     // realm -- same reasoning as the global-this substitution above.
-                    Context& box_ctx = (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx)
+                    Context& box_ctx = (Engine::multi_engine() && closure_context_ && closure_context_ != &ctx)
                         ? *closure_context_ : ctx;
                     actual_this = ObjectFactory::box_primitive_this_sloppy(box_ctx, this_value);
                 }
@@ -1118,6 +1185,17 @@ namespace {
     return true;
 }
 
+// Whether a pure native (Function::pure_native_) may take its short path for this call:
+// every argument a number, string, boolean, undefined or null, so that nothing in
+// the call can run script (ToPrimitive) or throw (a Symbol or BigInt where a number
+// is wanted), and a receiver the native can read without either.
+inline bool pure_native_call_ok(std::span<const Value> args, const Value& this_value, bool needs_string_receiver) {
+    for (const Value& a : args) {
+        if (a.is_object() || a.is_function() || a.is_symbol() || a.is_bigint()) return false;
+    }
+    return !needs_string_receiver || this_value.is_string();
+}
+
 [[gnu::noinline, gnu::cold]] Value throw_call_stack_exceeded(Context& ctx) {
     ctx.throw_range_error("Maximum call stack size exceeded");
     return Value();
@@ -1164,6 +1242,8 @@ inline Realm* Function::foreign_realm() const {
     return own != running ? own : nullptr;
 }
 
+bool Function::runs_in_foreign_realm() const { return foreign_realm() != nullptr; }
+
 Value Function::call_gated_in_realm(Realm* realm, Context& ctx, std::span<const Value> args,
                                     Value this_value) {
     RealmScope scope(realm);
@@ -1187,6 +1267,18 @@ Value Function::call_native_in_realm(Realm* realm, Context& ctx, std::span<const
     return call_native(ctx, args, this_value);
 }
 
+bool Function::call_pure_native(Context& ctx, std::span<const Value> args, const Value& this_value, Value& out) {
+    if (!pure_native_ || has_construct_native_ ||
+        !pure_native_call_ok(args, this_value, pure_native_string_receiver_)) {
+        return false;
+    }
+    Context* prev_context = Object::current_context_;
+    Object::current_context_ = &ctx;
+    out = native_data()->fn(ctx, args, this_value);
+    Object::current_context_ = prev_context;
+    return true;
+}
+
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
                                               Value this_value) {
     // A native runs in the realm it was made in; its closure context is that realm's
@@ -1197,6 +1289,10 @@ Value Function::call_native_in_realm(Realm* realm, Context& ctx, std::span<const
     // Consumed immediately so a nested call triggered from inside this
     // invocation doesn't inherit it.
     const bool is_construct_invocation = ctx.consume_pending_construct_call();
+    if (pure_native_ && !is_construct_invocation) {
+        Value result;
+        if (call_pure_native(ctx, args, this_value, result)) return result;
+    }
     CallStack& stack = CallStack::instance();
     if (stack.depth() >= CallStack::MAX_STACK_DEPTH) return throw_call_stack_exceeded(ctx);
     // A frame count is only a stand-in for how much stack is left, and it is
@@ -1838,7 +1934,7 @@ Object* Function::ensure_prototype() const {
     // cache in create_object() happens to hold once 2+ realms exist.
     // closure_context_ is null for native functions, so this only fires for
     // JS-source functions/classes -- free in the single/no-realm case.
-    if (closure_context_ && Engine::all_engines().size() > 1) {
+    if (closure_context_ && Engine::multi_engine()) {
         if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(closure_context_, "Object")) {
             proto->initialize_prototype_of_new(realm_proto);
         }
@@ -1988,18 +2084,127 @@ bool Function::super_call_reads_new_target() const {
     return super && super->is_native() && super->takes_new_target();
 }
 
+namespace {
+// These flags live on the shared Context, so a `new` evaluated inside a
+// constructor body clears the ones belonging to the frame that is still
+// running: `new Map()` after `super()` left the enclosing derived
+// constructor looking like it had never called super at all. new.target
+// is saved for the same reason by the constructors; these five are its
+// neighbours.
+struct ConstructFlagsGuard {
+    Context& ctx;
+    bool super_called;
+    bool in_constructor_call;
+    Object* super_override;
+    bool super_override_needs_reparent;
+    bool construct_explicit_return;
+    explicit ConstructFlagsGuard(Context& c)
+        : ctx(c), super_called(c.was_super_called()), in_constructor_call(c.is_in_constructor_call()),
+          super_override(c.last_super_override()),
+          super_override_needs_reparent(c.last_super_override_needs_reparent()),
+          construct_explicit_return(c.last_construct_explicit_return()) {}
+    ~ConstructFlagsGuard() {
+        ctx.set_super_called(super_called);
+        ctx.set_in_constructor_call(in_constructor_call);
+        ctx.set_last_super_override(super_override);
+        ctx.set_last_super_override_needs_reparent(super_override_needs_reparent);
+        ctx.set_last_construct_explicit_return(construct_explicit_return);
+    }
+};
+}
+
+// `new F(...)` for the commonest F: a base constructor (a plain function or a
+// class with no superclass) that is not a default constructor, called with no
+// new.target in flight. The general construct() below resolves a prototype
+// through new.target, has a branch for every shape of derived class and
+// auto-super, and swaps results back and forth; none of which can happen
+// here, and the straight line it leaves is a third of the instructions.
+// Anything that would take another road -- a prototype that is not an object,
+// an exception before the body runs -- is either decided before a single
+// side effect (returns false) or ends exactly as the general form does.
+bool Function::new_target_is_self_or_none(const Context& ctx) const {
+    const Value& nt = ctx.get_new_target();
+    return nt.is_undefined() || (nt.is_function() && nt.as_function() == this);
+}
+
+bool Function::construct_plain(Context& ctx, std::span<const Value> args, Value& out) {
+    const Value proto_value = constructor_prototype();
+    Object* pending_proto = proto_value.is_function() ? static_cast<Object*>(proto_value.as_function())
+                          : proto_value.is_object()   ? proto_value.as_object() : nullptr;
+    if (!pending_proto) return false;
+
+    // See the general construct() for what the hint is.
+    const uint32_t construct_slot_hint = get_construct_slot_hint();
+    std::unique_ptr<Object> new_object;
+    if (construct_slot_hint <= 4) {
+        new_object = ObjectFactory::create_object_with_slots((construct_slot_hint + 1) & ~1u);
+    } else {
+        new_object = ObjectFactory::create_object();
+        new_object->reserve_property_slots(construct_slot_hint);
+    }
+    new_object->initialize_prototype_of_new(pending_proto);
+    const Value this_value(new_object.get());
+
+    initialize_base_instance(ctx, new_object.get());
+    if (ctx.has_exception()) { out = Value(); return true; }
+
+    ConstructFlagsGuard construct_flags_guard(ctx);
+    ctx.set_in_constructor_call(true);
+    ctx.set_super_called(false);
+    const Value old_new_target = ctx.get_new_target();
+    if (old_new_target.is_undefined()) ctx.set_new_target(Value(static_cast<Object*>(this)));
+    ctx.set_last_super_override(nullptr);
+    ctx.set_last_super_override_needs_reparent(false);
+    ctx.set_pending_construct_call(true);
+    const Value result = call_register_args(ctx, args, this_value);
+    ctx.set_in_constructor_call(false);
+    ctx.set_new_target(old_new_target);
+
+    if (ctx.has_exception()) { out = Value(); return true; }
+
+    const bool explicit_return = result.is_object() || result.is_function();
+    if (explicit_return && result.as_object() != new_object.get()) {
+        // An explicit `return obj` is used as it is; the prototype fix-up is
+        // for an object that came back with none (see construct()).
+        Object* ret_obj = result.as_object();
+        if (!ret_obj->get_prototype_raw()) ret_obj->set_prototype(pending_proto);
+        ctx.set_last_construct_explicit_return(!is_native());
+        new_object.release();
+        out = result;
+        return true;
+    }
+    learn_construct_slot_hint(new_object.get());
+    out = Value(new_object.release());
+    return true;
+}
+
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     ValueVectorRoot args_root(&args);
     return construct(ctx, std::span<const Value>(args));
 }
 
+// The entry is only the choice of road, kept small so that a plain `new` does not pay the
+// general road's frame (it saves and restores most of the registers, for branches a base
+// constructor never takes).
 Value Function::construct(Context& ctx, std::span<const Value> args) {
     // Check if this function is a constructor
-    if (!is_constructor_) {
+    if (UNLIKELY_NATIVE(!is_constructor_)) {
         ctx.throw_exception(Value("TypeError: " + get_name() + " is not a constructor"));
         return Value();
     }
+    // new.target is this function already when the `new` came from the VM, which
+    // names the callee there before it calls in; undefined from native callers.
+    // Anything else is a Reflect.construct or a super() chain with its own.
+    if (LIKELY_NATIVE(!is_native_ && executable_ && executable_->fast_gate &&
+                      get_function_kind() == FunctionKind::Plain && !is_derived_ctor() &&
+                      !is_default_ctor() && new_target_is_self_or_none(ctx))) {
+        Value built;
+        if (construct_plain(ctx, args, built)) return built;
+    }
+    return construct_general(ctx, args);
+}
 
+[[gnu::noinline]] Value Function::construct_general(Context& ctx, std::span<const Value> args) {
     // The prototype is resolved before the object exists, so nothing runs
     // between allocating it and giving it one -- which is what lets the
     // install below skip a barrier it could have nothing to do.
@@ -2081,28 +2286,7 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         if (ctx.has_exception()) return Value();
     }
 
-    // These flags live on the shared Context, so a `new` evaluated inside a
-    // constructor body clears the ones belonging to the frame that is still
-    // running: `new Map()` after `super()` left the enclosing derived
-    // constructor looking like it had never called super at all. new.target
-    // below is saved for the same reason; these three are its neighbours.
-    struct ConstructFlagsGuard {
-        Context& ctx;
-        bool super_called;
-        bool in_constructor_call;
-        Object* super_override;
-        bool super_override_needs_reparent;
-        bool construct_explicit_return;
-        ~ConstructFlagsGuard() {
-            ctx.set_super_called(super_called);
-            ctx.set_in_constructor_call(in_constructor_call);
-            ctx.set_last_super_override(super_override);
-            ctx.set_last_super_override_needs_reparent(super_override_needs_reparent);
-            ctx.set_last_construct_explicit_return(construct_explicit_return);
-        }
-    } construct_flags_guard{ctx, ctx.was_super_called(), ctx.is_in_constructor_call(),
-                            ctx.last_super_override(), ctx.last_super_override_needs_reparent(),
-                            ctx.last_construct_explicit_return()};
+    ConstructFlagsGuard construct_flags_guard(ctx);
 
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);

@@ -137,7 +137,15 @@ void String::gc_trace_roots(Visitor& v) {
 }
 
 void* String::operator new(size_t size) {
+    return Heap::active().allocate(size, CellKind::FlatString);
+}
+
+void* String::operator new(size_t size, LinkAlloc) {
     return Heap::active().allocate(size, CellKind::String);
+}
+
+void String::operator delete(void* p, LinkAlloc) noexcept {
+    Heap::cell_free(p);
 }
 
 void String::operator delete(void* p) noexcept {
@@ -256,7 +264,11 @@ void String::ensure_flat() const {
     note_payload_bytes();
 }
 
-static constexpr size_t CONS_THRESHOLD = 32;
+// Joining two flat strings that fit in this many bytes copies them into one cell instead of
+// building a rope. A rope is two or three cells where the copy is one, and the collector pays
+// per cell, so a short concatenation that is kept for a while (a key, a message, a label) is
+// cheaper to mark flat; past this the copy costs more than the cells it saves.
+static constexpr size_t CONS_THRESHOLD = 128;
 
 // The bytes an append would put in the rope's last link. Built on the stack:
 // the limit is above the length a std::string keeps in its own storage, so
@@ -301,8 +313,8 @@ String* String::make_slice(String* parent, size_t byte_offset, size_t byte_len) 
         byte_offset > UINT32_MAX || byte_len > UINT32_MAX) {
         return new String(src.substr(byte_offset, byte_len));
     }
-    return new String(parent, static_cast<uint32_t>(byte_offset),
-                      static_cast<uint32_t>(byte_len));
+    return new (link) String(parent, static_cast<uint32_t>(byte_offset),
+                             static_cast<uint32_t>(byte_len));
 }
 
 String* String::make_concat(String* a, String* b) {
@@ -323,13 +335,13 @@ String* String::make_concat(String* a, String* b) {
         TailBuf merged;
         if (a->is_tail_) {
             if (merged_tail(a->inline_tail(), b->data_, merged))
-                return new String(a->tail_.left, merged.bytes, merged.len);
+                return new (link) String(a->tail_.left, merged.bytes, merged.len);
         } else if (!a->cons_.right->is_cons_) {
             if (merged_tail(a->cons_.right->data_, b->data_, merged))
-                return new String(a->cons_.left, merged.bytes, merged.len);
+                return new (link) String(a->cons_.left, merged.bytes, merged.len);
         }
     }
-    return new String(a, b);
+    return new (link) String(a, b);
 }
 
 namespace {

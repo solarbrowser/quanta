@@ -533,7 +533,12 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
 // that differs between two closures born from the SAME source. Shared by the
 // four evaluate() forms below and by Op::CreateClosure, so a compiled and an
 // interpreted closure cannot come out different.
-Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
+// `ctx_is_borrowed` says ctx is the caller's Context lent to a running call
+// (Function::call_default_impl's shared-context path), not one that call owns:
+// it will carry some other call's state as soon as this one returns, so a
+// closure that can do without it (ClosureTemplate::needs_own_context) keeps its
+// realm's global Context instead, and only the environment it captures.
+Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_borrowed) {
     using Form = ClosureTemplate::Form;
     ExecutableRef<FunctionExecutable> exe = tpl.executable;
     // Decl-site-constant like bytecode_chunk itself, and every instantiation
@@ -559,7 +564,8 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
         // would strip again immediately.
         bool create_prototype = !tpl.is_arrow && !tpl.is_method_shorthand &&
                                 tpl.form != Form::Arrow;
-        fn = new Function(tpl.name, std::move(exe), &ctx, create_prototype, tpl.capture_free);
+        fn = new Function(tpl.name, std::move(exe), &ctx, create_prototype, tpl.capture_free,
+                          ctx_is_borrowed && !tpl.needs_own_context());
     }
     std::unique_ptr<Function> function(fn);
 
@@ -642,8 +648,8 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
 
 // FunctionDeclaration's own second half: instantiate, then bind the name where
 // the environment shape says it belongs. Shared with Op::DeclareFunction.
-Value declare_function(Context& ctx, const ClosureTemplate& tpl) {
-    Value function_value = instantiate_closure(ctx, tpl);
+Value declare_function(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_borrowed) {
+    Value function_value = instantiate_closure(ctx, tpl, ctx_is_borrowed);
     if (ctx.has_exception()) return Value();
     const std::string& function_name = tpl.name;
 

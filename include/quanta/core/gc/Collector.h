@@ -46,8 +46,11 @@ public:
     // rather than a derived "armed" flag: a second copy of this state would
     // have to be updated at every site that arms or disarms one of them, and
     // an undercount there means a collection that silently never runs.
+    static bool safepoint_armed() {
+        return Heap::gc_requested() || major_in_progress_ || stress_mode_ != 0;
+    }
     static void safepoint() {
-        if (Heap::gc_requested() || major_in_progress_ || stress_mode_ != 0) {
+        if (safepoint_armed()) {
             safepoint_slow();
         }
     }
@@ -56,6 +59,15 @@ public:
     // True between an incremental major cycle's first slice and its last;
     // read directly by safepoint() above and by the barriers in Collector.cpp.
     static constinit thread_local bool major_in_progress_;
+
+    // Counts the points at which cells may be freed: the start of every minor
+    // collection, of every major's sweep, and of a heap's teardown. A cache that
+    // keeps a raw pointer to a cell without keeping the cell alive (see the
+    // megamorphic property cache in Interpreter.cpp) stamps its entries with this
+    // and treats a different value as empty, because an address freed in between can
+    // be handed to an unrelated object and match an entry that no longer describes it.
+    static uint64_t sweep_generation() { return sweep_generation_; }
+    static constinit thread_local uint64_t sweep_generation_;
 
     // QUANTA_GC_STRESS, resolved on the first safepoint_slow(). Starts at -1
     // ("not resolved yet"), which reads as armed, so the inline test above
@@ -103,7 +115,19 @@ public:
     // Records `cell` (base address of a live cell) as mutated. Needed on
     // every post-construction write of a traced field or property slot;
     // no-op for young cells since a minor trace reaches them anyway.
-    static void write_barrier(const void* cell);
+    // A container nothing has marked yet -- the usual case, an object made a moment ago -- needs
+    // no record (a minor trace reaches it from the roots, and an open major will trace it after
+    // the write), so that is settled here from the block's mark bit; only a marked one pays for
+    // the call.
+    static void write_barrier(const void* cell) {
+        if (__builtin_expect(!cell, 0)) return;
+        if (__builtin_expect(!Heap::any_large_cell().load(std::memory_order_relaxed), 1) &&
+            !HeapBlock::from_cell(cell)->test_mark(cell)) {
+            return;
+        }
+        write_barrier_slow(cell);
+    }
+    static void write_barrier_slow(const void* cell);
     // The same barrier, for a caller that knows which value it is storing.
     // Incremental marking needs the new edge not to be missed, and there are
     // two ways to get that: re-trace the container, or shade the target. The
@@ -149,6 +173,10 @@ public:
     // malloc'd std::vector storage that the conservative stack scan cannot
     // reach. A vector registered here is traced (its current data pointer is
     // re-read each collection, so reallocation during push_back is safe).
+    // The interpreter's side stack of stackless-call registers (see VM::InlineArena): the
+    // Values in [base, *top) are exact roots for as long as the range is registered. One range
+    // per thread; pass nulls to unregister.
+    static void set_value_stack(Value* base, Value* const* top);
     static void push_value_vector(const std::vector<Value>* vec);
     static void pop_value_vector(const std::vector<Value>* vec);
 
@@ -196,19 +224,35 @@ private:
     const std::vector<Value>* vec_;
 };
 
-// RAII form of push_environment_root/pop_environment_root -- see its own
-// comment for why this exists at all.
+// Roots one Environment pointer for as long as this object lives (see push_environment_root
+// for why environments need it at all). The roots are chained through the objects themselves,
+// which live in their owners' stack frames: registering one is two stores and dropping it one,
+// where the vector this replaced cost a thread-local guard and a bounds check on each side of
+// every call that has an environment of its own. Nearly always strictly nested; generator
+// fibers can interleave, which unlink_slow handles.
 class EnvironmentRoot {
 public:
-    explicit EnvironmentRoot(Environment* const* env_ptr) : env_ptr_(env_ptr) {
-        Collector::push_environment_root(env_ptr_);
+    explicit EnvironmentRoot(Environment* const* env_ptr) : env_ptr_(env_ptr), prev_(head_) { head_ = this; }
+    ~EnvironmentRoot() {
+        if (__builtin_expect(head_ == this, 1)) head_ = prev_;
+        else unlink_slow();
     }
-    ~EnvironmentRoot() { Collector::pop_environment_root(env_ptr_); }
     EnvironmentRoot(const EnvironmentRoot&) = delete;
     EnvironmentRoot& operator=(const EnvironmentRoot&) = delete;
 
+    // Drops every root that lives in [lo, hi): a fiber's stack is freed without unwinding it, so
+    // whatever it still had registered would otherwise stay in the chain, dangling.
+    static void purge(const void* lo, const void* hi);
+    // The innermost live root of this thread, and the next one out.
+    static EnvironmentRoot* head() { return head_; }
+    EnvironmentRoot* outer() const { return prev_; }
+    Environment* environment() const { return *env_ptr_; }
+
 private:
+    void unlink_slow();
+    static inline constinit thread_local EnvironmentRoot* head_ = nullptr;
     Environment* const* env_ptr_;
+    EnvironmentRoot* prev_;
 };
 
 // A chunk whose inline caches hold real cells -- a prototype, a holder, a

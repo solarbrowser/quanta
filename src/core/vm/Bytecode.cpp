@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/vm/Bytecode.h"
+#include "JitLayout.h"
 #include "quanta/parser/AST.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/parser/FunctionExecutable.h"
@@ -18,8 +19,11 @@ namespace Quanta {
 // carries prebuilt ClosureTemplates, while ast_nodes holds the nodes
 // Op::DefineClass reads as a description of itself.
 #if defined(__GLIBCXX__)
-// 128 plus the position table (a FixedArray: pointer and count).
-static_assert(sizeof(BytecodeChunk) == 144);
+// 128 plus the position table (a FixedArray: pointer and count) plus the
+// baseline JIT's code pointer and its two small counters, plus the sixteen bytes
+// that say whether the function is a bare `return <constant | this | this.name>`,
+// plus the stackless-call verdict (padded to a word).
+static_assert(sizeof(BytecodeChunk) == 184);
 #else
 static_assert(sizeof(BytecodeChunk) <= 192);
 #endif
@@ -32,10 +36,25 @@ std::vector<ClosureTemplate>& BytecodeChunk::ensure_closures() {
     return *closures;
 }
 
+bool BytecodeChunk::shares_caller_context() const {
+    if (needs_own_context) return false;
+    if (!closures) return true;
+    for (const ClosureTemplate& tpl : *closures) {
+        if (tpl.needs_own_context()) return false;
+    }
+    return true;
+}
+
 const FeedbackBody FeedbackSlot::kEmpty;
 
 void BytecodeChunk::drop_feedback() const {
-    for (const auto& slot : feedback) const_cast<FeedbackSlot&>(slot).body.reset();
+    // The baseline JIT's caches hold cells of their own (a prototype, a holder, a
+    // cached value) and are keyed by their addresses. They outlive the realm that
+    // learned them exactly as the interpreter's feedback does, and a realm created
+    // later can be handed the same addresses: a stale entry would then hit and
+    // return the old realm's object. Forgetting them is what keeps the two in step.
+    if (jit) jit_forget_cells(jit.get());
+    for (const auto& slot : feedback) const_cast<FeedbackSlot&>(slot).reset();
     if (ic_feedback) {
         for (auto& kfb : ic_feedback->keyed_feedback) kfb.reset();
     }
@@ -118,6 +137,9 @@ void BytecodeChunk::trace(Visitor& v) const {
             }
         }
     }
+    // The baseline JIT's own inline caches keep their prototypes, holders and
+    // cached values alive for the same reason the feedback above does.
+    if (jit) jit_trace(jit.get(), v);
 }
 
 namespace {
@@ -183,7 +205,7 @@ const OpInfo& op_info(Op op) {
         {"LdarStar", 2, 'r'}, {"LdaSmiStar", 2, 'I'},
         {"LdaConstStar", 3, 'K'}, {"LdaZeroStar", 1, 'r'},
         {"LdaThisStar", 1, 'r'}, {"LdaEnvStar", 3, 'N'}, {"LdaLookupStar", 3, 'N'},
-        {"LdaEnvSlotStar", 4, 'F'}, {"GetNamedStar", 6, 'G'},
+        {"LdaEnvSlotStar", 4, 'F'}, {"GetNamedStar", 6, 'G'}, {"LdaTdzStar", 1, 'r'},
         {"Yield", 0, '-'}, {"Await", 1, 'i'},
         {"LdaNewTarget", 0, '-'}, {"LdaImportMeta", 0, '-'},
         {"SettleReturn", 1, 'i'}, {"YieldStar", 0, '-'},
@@ -233,6 +255,7 @@ const OpInfo& op_info(Op op) {
 
 int op_operand_bytes(Op op) { return op_info(op).operand_bytes; }
 char op_operand_kind(Op op) { return op_info(op).kind; }
+const char* op_name(Op op) { return op_info(op).name; }
 
 #ifdef QUANTA_VALIDATE_BYTECODE
 void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& name) {

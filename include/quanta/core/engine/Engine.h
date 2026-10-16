@@ -168,6 +168,13 @@ public:
     // Every live engine on this thread, for GC root enumeration (a
     // collection only ever scans the calling thread's own engines/heaps).
     static const std::vector<Engine*>& all_engines();
+    // Whether this thread has more than one engine, which is when a realm can differ
+    // from the running one. A plain counter read, not all_engines().size(): that is
+    // a call into a function-local thread_local with its init guard, and this is
+    // asked on every object literal, every sloppy call with a primitive `this`
+    // and every array creation.
+    static bool multi_engine() { return live_engines_ > 1; }
+    static constinit thread_local size_t live_engines_;
     // What the engine caches per thread about the realm it built (the iterator,
     // generator, Map/Set and primitive prototypes, %ThrowTypeError%, the job
     // queue, ...) is a pointer into that realm's cells. Run when the last engine
@@ -250,13 +257,13 @@ public:
     // no-op single vector-size check otherwise. `ctx` is the running
     // context at the literal's creation site (e.g. VM::run's own Frame::ctx).
     static void fixup_new_object_realm(Object* obj, Context* ctx) {
-        if (!obj || !ctx || all_engines().size() <= 1) return;
+        if (!obj || !ctx || !multi_engine()) return;
         if (Object* realm_proto = get_realm_intrinsic_prototype(ctx, "Object")) {
             obj->initialize_prototype_of_new(realm_proto);
         }
     }
     static void fixup_new_array_realm(Object* obj, Context* ctx) {
-        if (!obj || !ctx || all_engines().size() <= 1) return;
+        if (!obj || !ctx || !multi_engine()) return;
         if (Object* realm_proto = get_realm_intrinsic_prototype(ctx, "Array")) {
             obj->initialize_prototype_of_new(realm_proto);
         }
@@ -270,7 +277,7 @@ public:
     // for a specific OTHER realm than whichever one last ran its own setup
     // (e.g. ShadowRealm's WrappedFunctionCreate).
     static void fixup_new_function_realm(Object* fn, Context* ctx) {
-        if (!fn || !ctx || all_engines().size() <= 1) return;
+        if (!fn || !ctx || !multi_engine()) return;
         if (Object* realm_proto = get_realm_intrinsic_prototype(ctx, "Function")) {
             fn->initialize_prototype_of_new(realm_proto);
         }

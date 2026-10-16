@@ -30,6 +30,7 @@ class Error;
 class ExecContextScope;
 
 class Context {
+    friend struct JitEnvLayout;   // the baseline JIT reads lexical_environment_ directly
 public:
     enum class Type {
         Global,
@@ -55,13 +56,18 @@ private:
     // byte with whatever 8-byte-aligned field follows it) by 56 bytes total,
     // and beat grouping at the end of the class instead of here by a
     // further 8 bytes.
-    bool has_exception_ : 1 = false;
+    // The flags the call path reads and writes on every call are whole bytes, not
+    // bits of the group below: a bit-field store is a load, a mask and a store
+    // (and several of them are saved and restored around each call), a byte is
+    // one instruction -- and the exception test after every call is one compare
+    // instead of a load and a bit test. Nine bytes the packing used to save.
+    bool has_exception_ = false;
     bool has_return_value_ : 1 = false;
     bool has_break_ : 1 = false;
     bool has_continue_ : 1 = false;
-    bool is_in_constructor_call_ : 1 = false;
-    bool super_called_ : 1 = false;
-    bool this_needs_super_ : 1 = false;  // derived class ctor: accessing 'this' before super() throws
+    bool is_in_constructor_call_ = false;
+    bool super_called_ = false;
+    bool this_needs_super_ = false;  // derived class ctor: accessing 'this' before super() throws
     // Set when a native call reused this exact context (Function.cpp's
     // is_native_ branch), or when this context was captured as a Generator's
     // outer_context_ / an AsyncFunction's Promise::context_ -- both bypass
@@ -76,15 +82,15 @@ private:
     // Set by Function::construct() right before it calls Function::call() on the same
     // function, so call() can tell "I'm the construct invocation" apart from a plain call
     // made from inside that constructor's body (which must see new.target == undefined).
-    bool pending_construct_call_ : 1 = false;
-    bool strict_mode_ : 1 = false;
+    bool pending_construct_call_ = false;
+    bool strict_mode_ = false;
     bool in_param_eval_ : 1 = false;
     bool is_direct_eval_call_ : 1 = false;
     bool eval_arguments_conflict_ : 1 = false;
-    bool is_arrow_function_context_ : 1 = false;
+    bool is_arrow_function_context_ = false;
     bool in_class_field_init_ : 1 = false;
-    bool last_construct_explicit_return_ : 1 = false;  // see last_construct_explicit_return()
-    bool last_super_override_needs_reparent_ : 1 = false;  // see last_super_override_needs_reparent()
+    bool last_construct_explicit_return_ = false;  // see last_construct_explicit_return()
+    bool last_super_override_needs_reparent_ = false;  // see last_super_override_needs_reparent()
     // Owned by the Collector: which major epoch last reached this context
     // through a real edge (not through the survivor pool, which roots its
     // entries unconditionally). A stamp rather than a flag so that opening a
@@ -522,6 +528,7 @@ public:
     void set_new_target(const Value& val) { new_target_ = val; }
 
     void set_pending_construct_call(bool v) { pending_construct_call_ = v; }
+    bool has_pending_construct_call() const { return pending_construct_call_; }
     bool consume_pending_construct_call() {
         // Only Function::construct ever sets this, so nearly every call finds
         // it already false and the clear is a write for nothing.
@@ -580,6 +587,7 @@ private:
  * Environment for variable bindings
  */
 class Environment {
+    friend struct JitEnvLayout;   // the baseline JIT (Jit.inc) reads binding_object_ and the shadow epoch directly
 public:
     enum class Type {
         Declarative,
@@ -642,7 +650,12 @@ public:
             // comes from Shape::intern, so it is never null, which makes the
             // pointer both the key and the occupancy flag.
             const std::string* key = nullptr;
-            BindingSlot slot;
+            // Left unconstructed until the entry is taken: every way of taking one assigns
+            // `slot = BindingSlot{}` first, and nothing reads a slot whose key is null. An
+            // environment is built per call, and writing six empty slots into each of them
+            // was most of what building one cost.
+            union { BindingSlot slot; };
+            InlineEntry() noexcept {}
         };
         std::array<InlineEntry, kInlineCapacity> inline_entries;
         // Exact-sized continuation of inline_entries, for an environment whose
@@ -741,6 +754,34 @@ public:
 
         const BindingSlot* find_interned(const std::string* key) const {
             return const_cast<SlotMap*>(this)->find_interned(key);
+        }
+
+        // Creates the binding unless `key` is already bound, answering with its
+        // fresh slot or null. A scope being seeded asks this once per name and
+        // used to pay three scans of the entries for it: one to find the name,
+        // another inside get_or_create_interned to find it again, and a third
+        // for a free entry. One pass sees both the name and the first free
+        // entry. The overflow map is consulted even when a free entry turns
+        // up, since a name only lands there once the entries were full and an
+        // erase can have freed one since.
+        BindingSlot* create_interned_if_absent(const std::string* key) {
+            InlineEntry* free_entry_found = nullptr;
+            for (auto& e : inline_entries) {
+                if (e.key == key) return nullptr;
+                if (!e.key && !free_entry_found) free_entry_found = &e;
+            }
+            for (uint16_t i = 0; i < ext_capacity; i++) {
+                if (ext[i].key == key) return nullptr;
+                if (!ext[i].key && !free_entry_found) free_entry_found = &ext[i];
+            }
+            if (overflow && overflow->find(key) != overflow->end()) return nullptr;
+            if (free_entry_found) {
+                free_entry_found->key = key;
+                free_entry_found->slot = BindingSlot{};
+                return &free_entry_found->slot;
+            }
+            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            return &(*overflow)[key];
         }
 
         BindingSlot& get_or_create_interned(const std::string* key) {
@@ -1093,6 +1134,20 @@ public:
     // declares, so every declared binding gets an index instead of spilling
     // into the hash map. Sized once, never grown.
     void reserve_slots(size_t total) { slots_.reserve(total); }
+    // Whether this is a declarative environment that has nothing bound yet and room for `n`
+    // bindings in its entries, so that seed_binding can lay them down by index.
+    bool fresh_with_room(size_t n) const {
+        return type_ != Type::Object && !slots_.overflow && !slots_.inline_entries[0].key &&
+               n <= SlotMap::kInlineCapacity + slots_.ext_capacity;
+    }
+    // Binds `key` in entry `index` with no lookup. Only on an environment fresh_with_room says
+    // yes to, with distinct keys; no write barrier, since an environment nothing has traced
+    // yet needs none (see Collector::write_barrier_env).
+    void seed_binding(size_t index, const std::string* key, const BindingSlot& slot) {
+        SlotMap::InlineEntry* e = slots_.entry_at(index);
+        e->key = key;
+        e->slot = slot;
+    }
     // What this environment costs in real memory: the object plus whatever its
     // slot storage allocated alongside it. The survivor path charges this
     // toward the collector's budget, which only ever saw the object before.

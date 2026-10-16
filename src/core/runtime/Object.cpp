@@ -118,6 +118,10 @@ void Object::trace_default(Visitor& v) {
         uint32_t scount = shape_->slot_count();
         for (uint32_t i = 0; i < scount; i++) v.visit(*shape_slot_ptr(i));
     }
+    trace_extras(v);
+}
+
+void Object::trace_extras(Visitor& v) {
     // One walk to the extras, not three: all three of these live in the same
     // block, and an object that has none -- which is most of them -- used to
     // pay the trip to find that out once per question.
@@ -313,16 +317,6 @@ bool Object::try_read_own_data_slot(const std::string& key, Value& out) const {
     if (!slot) return false;
     out = *slot;
     return true;
-}
-
-void Object::add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape) {
-    shape_ = to_shape;
-    uint32_t new_count = to_shape->slot_count();
-    ensure_shape_capacity(new_count);
-    *shape_slot_ptr(new_count - 1) = value;
-    // Mirrors store_in_overflow's own bump for the equivalent slow-path
-    // branch -- this object may itself be used as another chain's prototype.
-    if (used_as_prototype()) bump_proto_epoch();
 }
 
 void Object::add_accessor_shape_property_cached(const std::string& key, const Value& getter,
@@ -3838,10 +3832,6 @@ Object* Object::get_prototype() const {
         return static_cast<const Proxy*>(this)->get_prototype();
     }
     return proto_;
-}
-
-bool Object::is_extensible() const {
-    return !proto_.flag(kNotExtensible);
 }
 
 void Object::prevent_extensions() {

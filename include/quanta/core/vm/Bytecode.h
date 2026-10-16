@@ -24,6 +24,22 @@ class Environment;
 class PropertyDescriptor;
 class Object;
 struct ClosureTemplate;
+struct JitCode;
+// Frees a chunk's baseline-JIT code (Jit.inc). Out of line so this header
+// does not need the JIT's definitions.
+void jit_free_code(JitCode* code) noexcept;
+// Empties the inline caches the generated code keeps (see BytecodeChunk::drop_feedback).
+void jit_forget_cells(JitCode* code) noexcept;
+
+struct BytecodeChunk;
+namespace VM {
+// Whether the chunk is a bare `return <constant | this | this.name>` (see try_leaf_call
+// in Interpreter.h). Looks at the bytes the first time and remembers the answer.
+bool leaf_candidate(const BytecodeChunk& chunk);
+}
+struct JitCodeDeleter {
+    void operator()(JitCode* p) const noexcept { jit_free_code(p); }
+};
 
 // Register-based, accumulator-centric instruction set (V8 Ignition model).
 // Encoding: u8 opcode + fixed operands -- r: u8 register, k: u16 constant-
@@ -244,6 +260,7 @@ enum class Op : uint8_t {
     LdaLookupStar, // n16, dst
     LdaEnvSlotStar,// slot, n16, dst
     GetNamedStar,  // recv, n16, fb16, dst
+    LdaTdzStar,    // dst
 
     // Suspends the generator or async generator this body is running in, with
     // the value in the accumulator, and resumes with what next() sent -- the
@@ -499,7 +516,23 @@ struct FeedbackBody {
     // it. Lives in the padding slot_index's alignment already leaves. Every
     // reader that stores through slot_index, or hands its contents back as a
     // value, has to exclude these.
-    struct Entry { Shape* shape = nullptr; uint32_t slot_index = 0; bool is_accessor = false; };
+    struct Entry {
+        // The receiver's shape pointer with its object-type bits (Object::raw_shape_word), so
+        // that one compare of the receiver's own word settles both shape and type for the
+        // own-property fast path. An entry that path must not serve -- an accessor, or a
+        // shape learned from a type the fast path excludes -- carries kSlow, which no
+        // receiver's word has; the general handlers recover the shape with shape().
+        static constexpr uint64_t kSlow = uint64_t{1} << 62;
+        static constexpr uint64_t kTypeBits = 31;
+        uint64_t word = kSlow;     // empty: no shape, and never a match
+        uint32_t slot_index = 0;
+        bool is_accessor = false;
+        Shape* shape() const { return reinterpret_cast<Shape*>(word & ~(kSlow | kTypeBits)); }
+        void set(Shape* s, uint64_t fast_word) {
+            word = fast_word ? fast_word : (reinterpret_cast<uint64_t>(s) | kSlow);
+        }
+        void clear() { word = kSlow; }
+    };
     static constexpr uint8_t kMaxEntries = 8;
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;
@@ -560,6 +593,15 @@ struct FeedbackBody {
     // write_barrier call in learn_proto.
     struct ProtoEntry {
         Shape* receiver_shape = nullptr;
+        // receiver_shape together with the receiver's object type, in the form
+        // Object::raw_shape_word() reads it: one compare of the receiver's own
+        // word settles both, exactly as Entry::word does for an own property.
+        // The type matters because Shape does not encode it -- an Array and an
+        // Ordinary object can share a shape and a prototype, and the names an
+        // entry may serve differ between them (get_named refuses `length` and
+        // the indices for an Array, `size` for a Map or a Set). Zero on an
+        // entry that has none, which no receiver's word equals.
+        uint64_t receiver_word = 0;
         Object* prototype = nullptr;
         uint64_t proto_epoch = 0;
         Object* holder = nullptr;
@@ -667,20 +709,35 @@ struct FeedbackSlot {
     using TransitionEntry = FeedbackBody::TransitionEntry;
     using ProtoEntry = FeedbackBody::ProtoEntry;
 
-    std::unique_ptr<FeedbackBody> body;
+    // Never null: a site that has learned nothing points at the shared empty
+    // body, so the readers on the property-access path load it and look at it
+    // without first asking whether it is there. The slot owns its body unless
+    // it is that one.
+    FeedbackBody* body_ = const_cast<FeedbackBody*>(&kEmpty);
 
-    // Null while the site has learned nothing, which every reader already
-    // treats as a miss -- the same answer an all-zero body would give.
-    FeedbackBody* peek() const { return body.get(); }
-    // For readers that would rather not carry the null: an untouched body
-    // answers every question with the miss the absent one means. A namespace
-    // static, not a function-local one, so reading it costs no guard on a
-    // path the interpreter takes for every property access.
+    FeedbackSlot() = default;
+    FeedbackSlot(const FeedbackSlot&) = delete;
+    FeedbackSlot& operator=(const FeedbackSlot&) = delete;
+    FeedbackSlot(FeedbackSlot&& o) noexcept : body_(o.body_) { o.body_ = const_cast<FeedbackBody*>(&kEmpty); }
+    FeedbackSlot& operator=(FeedbackSlot&& o) noexcept {
+        if (this != &o) { reset(); body_ = o.body_; o.body_ = const_cast<FeedbackBody*>(&kEmpty); }
+        return *this;
+    }
+    ~FeedbackSlot() { reset(); }
+
+    // The shared answer an untouched body gives to every question: a miss. A
+    // namespace static, not a function-local one, so reading it costs no guard
+    // on a path the interpreter takes for every property access.
     static const FeedbackBody kEmpty;
-    const FeedbackBody& read() const { return body ? *body : kEmpty; }
+    // Null while the site has learned nothing, for the writers that want to know.
+    FeedbackBody* peek() const { return body_ == &kEmpty ? nullptr : body_; }
+    const FeedbackBody& read() const { return *body_; }
     FeedbackBody& ensure() {
-        if (!body) body = std::make_unique<FeedbackBody>();
-        return *body;
+        if (body_ == &kEmpty) body_ = new FeedbackBody();
+        return *body_;
+    }
+    void reset() {
+        if (body_ != &kEmpty) { delete body_; body_ = const_cast<FeedbackBody*>(&kEmpty); }
     }
 };
 
@@ -923,6 +980,28 @@ struct BytecodeChunk {
     uint16_t register_count = 0;
     uint8_t parameter_count = 0;    // params occupy regs[0..parameter_count)
 
+    // Baseline JIT (Jit.inc). `jit` is the native translation of `code`, if
+    // there is one; jit_state: 0 not decided yet, 1 compiled, 2 refused (an
+    // op it cannot run, or compiling failed -- the interpreter owns the chunk
+    // for good). jit_hotness counts calls until the decision is made.
+    mutable std::unique_ptr<JitCode, JitCodeDeleter> jit;
+    mutable uint16_t jit_hotness = 0;
+    mutable uint8_t jit_state = 0;
+    // Whether a call of this chunk may run stackless (Interpreter.cpp): 0 not decided, 1 never,
+    // otherwise flag bits that say yes and what the per-call test still has to look at. Decided
+    // once jit_state is, from properties of the declaration site that do not change.
+    mutable uint8_t inline_state = 0;
+
+    // A function whose whole body is `return <constant>`, `return this` or
+    // `return this.name` is answered without a frame (VM::try_leaf_call). What the
+    // body is, found on the first call: 0 not looked at yet, otherwise a LeafKind
+    // (Interpreter.cpp). The name and feedback indices are `this.name`'s;
+    // leaf_bits is the constant, as the bits of a Value.
+    mutable uint8_t leaf_kind = 0;
+    mutable uint16_t leaf_name = 0;
+    mutable uint16_t leaf_feedback = 0;
+    mutable uint64_t leaf_bits = 0;
+
     // env_mode: every local lives in ctx.get_lexical_environment() instead of
     // a register. env_params/env_locals seed function entry, via VM::run.
     bool env_mode : 1 = false;
@@ -958,11 +1037,22 @@ struct BytecodeChunk {
     // its own execution, on any branch, so nothing it does can ever need its
     // own outer environment chain to survive past the call that's running it.
     bool has_nested_closures : 1 = false;
+    // Set by emit() for the opcodes whose result keeps a pointer to the Context
+    // that ran them: a class definition (its constructor and members are made
+    // around the running Context) and a direct eval (the code it compiles is
+    // instantiated against it). A call into such a chunk cannot borrow its
+    // caller's Context. Closures are the other half of that answer and live
+    // in shares_caller_context(), because it depends on what each template is.
+    bool needs_own_context : 1 = false;
     // Set when the body can observe `this`, which is exactly when it emits
     // Op::LdaThis -- the only opcode that reads the frame's this. A call into
     // a chunk without it can skip setting one up, including the sloppy-mode
     // substitution that boxes a primitive or reaches for the global object.
     bool uses_this : 1 = false;
+    // The part of uses_this that is not Op::LdaThis: super property access and
+    // super calls, which read `this` from the Context rather than the frame.
+    // Only these make a call write the Context's this_value.
+    bool uses_super : 1 = false;
     // Set by emit() when any opcode that can call await_value goes into the
     // code: Op::Await itself, Op::AsyncIteratorNextOrJump/AsyncIteratorClose
     // (for-await-of's own per-iteration await, a different opcode entirely
@@ -994,6 +1084,9 @@ struct BytecodeChunk {
     // since its own header needs BytecodeChunk.
     std::unique_ptr<std::vector<ClosureTemplate>> closures;
     std::vector<ClosureTemplate>& ensure_closures();
+    // Whether a call into this chunk may run on its caller's Context: nothing
+    // it executes makes anything that outlives the call hold that Context.
+    bool shares_caller_context() const;
 
     // Class definitions (Op::DefineClass). The node is read as the class's
     // description -- its members, their keys and flags -- not walked: every
@@ -1053,6 +1146,20 @@ struct BytecodeChunk {
         std::vector<const std::string*> env_param_keys;
         std::vector<const std::string*> env_local_keys;
         bool env_keys_ready = false;
+        // Whether a call environment can be filled by writing the bindings straight into its
+        // empty entries, in order, instead of creating them one by one: not a parameter scope
+        // that starts uninitialised, nor a split lexical scope, which each build in a different
+        // order. env_seed_plan is what creating them one by one comes to, worked out once: each
+        // distinct name in first-appearance order, a repeated parameter name taking the value of
+        // its last occurrence (the binding holds the last argument of that name), a local that
+        // repeats an earlier name creating nothing.
+        struct SeedEntry {
+            const std::string* key;
+            int16_t param_index;   // the argument it takes, -1 for a local
+            uint8_t flags;         // locals: 1 lexical (starts uninitialised), 2 const
+        };
+        bool env_seed_ok = false;
+        std::vector<SeedEntry> env_seed_plan;
         // Per-iteration Environment locals for one loop/block (Op::EnterLoopEnv).
         // copy_forward: a `for` header's own let/const carries across iterations;
         // everything else starts fresh each time.
@@ -1089,6 +1196,7 @@ struct BytecodeChunk {
 // else that needs to find instruction boundaries or an embedded jump offset.
 int op_operand_bytes(Op op);
 char op_operand_kind(Op op);
+const char* op_name(Op op);
 
 std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& name);
 

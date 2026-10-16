@@ -128,8 +128,15 @@ public:
 
     // GC cell protocol (see Object.h): heap strings are String-kind cells;
     // stack/value instances never touch these. Rope cons nodes are cells too.
+    // `new String(...)` allocates a leaf cell: the collector will not trace it. The three link
+    // forms (rope, slice, inline tail) point at other strings and must be allocated with
+    // `new (String::link) String(...)`, which makes them traced cells.
+    struct LinkAlloc {};
+    static constexpr LinkAlloc link{};
     static void* operator new(size_t size);
+    static void* operator new(size_t size, LinkAlloc);
     static void  operator delete(void* p) noexcept;
+    static void  operator delete(void* p, LinkAlloc) noexcept;
     static void* operator new[](size_t) = delete;
     static void  operator delete[](void*) = delete;
 
@@ -171,6 +178,8 @@ public:
         return *this;
     }
 
+    // Whether this string points at other strings (rope, slice or inline-tail link).
+    bool is_link() const noexcept { return is_cons_; }
     [[nodiscard]] const std::string& str()   const noexcept { if (is_cons_) ensure_flat(); return data_; }
     [[nodiscard]] const char*        c_str() const noexcept { return str().c_str(); }
     // A slice knows its byte count without materialising anything.

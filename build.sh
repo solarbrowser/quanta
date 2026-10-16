@@ -347,6 +347,13 @@ CXXFLAGS=(
     -pthread
 )
 
+# QUANTA_EXTRA_CXXFLAGS="..." appends to every compile and the link (profile-guided builds:
+# see tools/pgo/README.md).
+if [ -n "${QUANTA_EXTRA_CXXFLAGS:-}" ]; then
+    read -r -a _extra_cxxflags <<< "$QUANTA_EXTRA_CXXFLAGS"
+    CXXFLAGS+=("${_extra_cxxflags[@]}")
+fi
+
 # Added back for the lexer and parser objects only -- see the note above.
 HARDEN_FLAGS=(-fstack-protector-strong)
 
