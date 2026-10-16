@@ -56,7 +56,18 @@ REM The stack canary is a mitigation for overflowing a stack buffer, and the
 REM interpreter and runtime have none to overflow. It is kept where bytes the
 REM engine did not produce are first handled: the lexer and parser, which get
 REM it back per-file below. Same split the Makefile and build.sh make.
-set "CXXFLAGS=-fno-stack-protector -std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"1.0.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+REM The x86-64 flags below name instruction sets AArch64 does not have. On an ARM64 machine
+REM clang defaults to the x86-64 target unless told otherwise, and a portable baseline
+REM (armv8.2-a, the oldest core Windows on ARM shipped on) stands in for -march=native.
+set "ARCH_FLAGS=-march=native -mtune=native"
+set "SIMD_FLAGS=-msse4.2 -mavx -mavx2"
+set "TARGET_FLAGS="
+if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
+    set "ARCH_FLAGS=-march=armv8.2-a"
+    set "SIMD_FLAGS="
+    set "TARGET_FLAGS=--target=aarch64-pc-windows-msvc"
+)
+set "CXXFLAGS=%TARGET_FLAGS% -fno-stack-protector -std=c++20 -Wall -O3 %ARCH_FLAGS% -DQUANTA_VERSION=\"1.0.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize %SIMD_FLAGS% -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
 set "HARDEN=-fstack-protector-strong"
 set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include"
 REM advapi32/bcrypt/psapi/user32 are mimalloc's, and are the list its own
@@ -64,8 +75,8 @@ REM build links on Windows. Some of what it needs it loads by name at run
 REM time and some it calls directly -- reading the source to tell which is
 REM how the link broke once already, so this follows upstream's list.
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32 -ladvapi32 -lbcrypt -lpsapi -luser32"
-set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"
-set "UTF8PROC_FLAGS=-O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc -march=native -fomit-frame-pointer"
+set "PCRE2FLAGS=%TARGET_FLAGS% -O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -Ithird_party/pcre2/src %ARCH_FLAGS% -fomit-frame-pointer"
+set "UTF8PROC_FLAGS=%TARGET_FLAGS% -O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc %ARCH_FLAGS% -fomit-frame-pointer"
 REM One object for the whole library: static.c includes every other source.
 REM No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and
 REM only C++ operator new is redirected -- see src\core\runtime\MiMalloc.cpp.
@@ -75,7 +86,7 @@ REM clang targeting the MSVC ABI takes mimalloc's C atomic fallback, where
 REM every atomic is a uintptr_t, and a page's self-pointer is an atomic
 REM pointer -- so the C path does not compile at all. Its public header is
 REM extern "C" either way, so nothing about the symbols changes.
-set "MIMALLOC_FLAGS=-x c++ -O3 -DNDEBUG -Ithird_party/mimalloc/include -fomit-frame-pointer"
+set "MIMALLOC_FLAGS=%TARGET_FLAGS% -x c++ -O3 -DNDEBUG -Ithird_party/mimalloc/include -fomit-frame-pointer"
 set "STACK=-Xlinker /STACK:67108864"
 echo [%time%] Compiler flags: %CXXFLAGS% >> "%LOG_FILE%"
 

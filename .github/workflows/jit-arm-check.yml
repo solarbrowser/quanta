@@ -1,7 +1,7 @@
 name: JIT check (ARM)
 
 # Run by hand only (Actions tab -> "JIT check (ARM)" -> Run workflow). Builds the engine on real
-# AArch64 hardware (Apple Silicon and Linux) and runs a smoke test with the baseline JIT forced on
+# AArch64 hardware (Apple Silicon, Linux and Windows) and runs a smoke test with the baseline JIT forced on
 # for a small loop, which fails if the JIT compiled nothing: a process that cannot map executable
 # memory leaves every function interpreted, and that must not look like a pass.
 
@@ -54,3 +54,39 @@ jobs:
           QUANTA_JIT_LOG=1 QUANTA_JIT_THRESHOLD=1 QUANTA_JIT_MODE=0 build/bin/quanta /tmp/jit.js 2>&1 | grep -v tally | tee /tmp/jit.out
           grep -q '^9999800000$' /tmp/jit.out
           grep -q 'compiled=[1-9]' /tmp/jit.out
+
+  windows-arm:
+    name: Windows (ARM64)
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install LLVM/Clang
+        run: choco install llvm -y --no-progress
+
+      - name: Build
+        shell: cmd
+        run: build-windows.bat
+
+      - name: Smoke test
+        shell: cmd
+        run: |
+          echo console.log(1 + 2) > smoke.js
+          build\bin\quanta.exe smoke.js
+
+      - name: JIT smoke test
+        shell: pwsh
+        run: |
+          @'
+          function f(n) { var s = 0; for (var i = 0; i < n; i++) { s += i * 2 - 1; } return s; }
+          console.log(f(100000));
+          '@ | Set-Content -Path jit.js
+          $env:QUANTA_JIT_LOG = "1"
+          $env:QUANTA_JIT_THRESHOLD = "1"
+          $env:QUANTA_JIT_MODE = "0"
+          $out = & build\bin\quanta.exe jit.js 2>&1 | Where-Object { $_ -notmatch "tally" }
+          $out
+          if (-not ($out -match "^9999800000$")) { throw "wrong result" }
+          if (-not ($out -match "compiled=[1-9]")) { throw "the JIT compiled nothing" }

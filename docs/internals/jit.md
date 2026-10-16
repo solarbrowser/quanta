@@ -1,6 +1,6 @@
 # Baseline JIT
 
-Quanta has a baseline JIT: a template compiler that turns the bytecode of a hot function into machine code. It runs on x86-64 (Linux, macOS, Windows) and AArch64 (Linux, macOS). On any other target, and in any process that cannot map executable memory, every function stays with the interpreter and nothing else changes.
+Quanta has a baseline JIT: a template compiler that turns the bytecode of a hot function into machine code. It runs on x86-64 and AArch64, each on Linux, macOS and Windows. On any other target, and in any process that cannot map executable memory, every function stays with the interpreter and nothing else changes.
 
 Source: [`Jit.inc`](../../src/core/vm/Jit.inc) (the code generator and its runtime, included by `Interpreter.cpp`), [`JitLayout.h`](../../src/core/vm/JitLayout.h) (target detection and the layouts generated code depends on), [`JitPlatform.h`](../../src/core/vm/JitPlatform.h) / [`JitPlatform.cpp`](../../src/core/vm/JitPlatform.cpp) (executable memory), [`X64Asm.h`](../../src/core/vm/X64Asm.h) and [`A64Asm.h`](../../src/core/vm/A64Asm.h) (the two instruction encoders).
 
@@ -70,6 +70,7 @@ Everything operating-system dependent is in `JitPlatform.cpp` (declared in `JitP
 | Linux, macOS x86-64 | `mmap`, then `mprotect` to read+execute | coherent with stores |
 | Windows x86-64 | `VirtualAlloc`, then `VirtualProtect` | `FlushInstructionCache` |
 | Linux AArch64 | `mmap`, then `mprotect` | `__builtin___clear_cache` after the write |
+| Windows AArch64 | `VirtualAlloc`, then `VirtualProtect` | `FlushInstructionCache` |
 | macOS AArch64 (Apple Silicon) | `MAP_JIT` mapping; `pthread_jit_write_protect_np` turns this thread's write permission off after the copy | `sys_icache_invalidate` |
 
 ### x86-64
@@ -88,7 +89,7 @@ AAPCS64: arguments in x0-x3, callee-saved x19-x28, `sp` 16-byte aligned at every
 - `cvttsd2si` answers `0x80000000` for anything outside int32 on x86 and the code generator tests for that; `fcvtzs` saturates, so the encoder produces the x86 value.
 - Branches reach ±1 MB (`b.cond`) and ±128 MB (`b`). A chunk whose code needs more is refused ("branch out of range"), which the size limits make practically unreachable.
 
-Windows on ARM64 is not supported: the Microsoft ARM64 ABI reserves x18 and has its own unwinding and icache rules, none of which have been looked at.
+Windows on ARM64 uses the same encoder and the standard register convention with the platform's differences taken into account: x18 is the platform register (the thread environment block) and no role or scratch register is x18, and the instruction cache is flushed with `FlushInstructionCache` as on x64. Generated code has no unwind information and needs none, since nothing unwinds through it. It has not been run on Windows on ARM64 yet.
 
 Apple Silicon: a process using the JIT needs to be allowed to create `MAP_JIT` memory. An ad-hoc signed local build is; a binary built with the hardened runtime needs the `com.apple.security.cs.allow-jit` entitlement, and without it every function simply stays interpreted. (The macOS half has not been run on a Mac yet; it is written against Apple's documented interface.)
 
@@ -121,4 +122,4 @@ AArch64 can be tested from an x86-64 machine with no root access: cross-compile 
 ## Known limits
 
 - **Calls.** A call from generated code costs more than one from the interpreter (see `QUANTA_JIT_MAXCALLS`). The cost is building the callee's `Frame`, not the number of C++ layers around it: running the callee as a stackless interpreter frame from generated code was tried and was slower still. A real fix is a smaller frame, which would also speed up the interpreter.
-- Windows on ARM64, and 32-bit targets, are unsupported.
+- 32-bit targets are unsupported.

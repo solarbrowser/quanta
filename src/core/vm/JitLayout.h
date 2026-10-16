@@ -21,13 +21,13 @@
 #include <exception>
 #include <vector>
 
-// Targets the baseline JIT can run on: x86-64 (Linux, macOS, Windows) and AArch64 (Linux, macOS),
+// Targets the baseline JIT can run on: x86-64 and AArch64, each on Linux, macOS and Windows,
 // each with a way to get executable memory (JitPlatform.h). Anywhere else every function stays
 // with the interpreter.
 #if defined(__x86_64__) && (defined(__linux__) || defined(__APPLE__) || defined(_WIN32))
 #define QUANTA_JIT_PLATFORM_OK 1
 #define QUANTA_JIT_ARCH_X64 1
-#elif defined(__aarch64__) && (defined(__linux__) || defined(__APPLE__))
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__APPLE__) || defined(_WIN32))
 #define QUANTA_JIT_PLATFORM_OK 1
 #define QUANTA_JIT_ARCH_A64 1
 #endif
@@ -39,7 +39,7 @@
 // declaring every function the generated code touches with clang's ms_abi
 // attribute, which is how that half of the code generator is exercised and tested
 // without a Windows machine.
-#if defined(_WIN32) || defined(QUANTA_JIT_FORCE_WIN64)
+#if defined(QUANTA_JIT_ARCH_X64) && (defined(_WIN32) || defined(QUANTA_JIT_FORCE_WIN64))
 #define QUANTA_JIT_WIN64 1
 #endif
 #if defined(QUANTA_JIT_FORCE_WIN64) && !defined(_WIN32)

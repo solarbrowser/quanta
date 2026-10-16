@@ -36,7 +36,7 @@ const std::string kArrowNewTargetKey = "__arrow_new_target__";
 const std::string kBoundTargetKey = "__bound_target__";
 }
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <xmmintrin.h>
 #endif
 
