@@ -67,7 +67,7 @@ if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
     set "SIMD_FLAGS="
     set "TARGET_FLAGS=--target=aarch64-pc-windows-msvc"
 )
-set "CXXFLAGS=%TARGET_FLAGS% -fno-stack-protector -std=c++20 -Wall -O3 %ARCH_FLAGS% -DQUANTA_VERSION=\"1.0.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize %SIMD_FLAGS% -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+set "CXXFLAGS=%TARGET_FLAGS% -fno-stack-protector -std=c++20 -Wall -O3 %ARCH_FLAGS% -DQUANTA_VERSION=\"2.0.0.alpha\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize %SIMD_FLAGS% -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
 set "HARDEN=-fstack-protector-strong"
 set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include"
 REM advapi32/bcrypt/psapi/user32 are mimalloc's, and are the list its own

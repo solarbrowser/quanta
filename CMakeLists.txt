@@ -45,7 +45,7 @@ if(MSVC)
         /EHsc          
         /std:c++20        
         /D_CRT_SECURE_NO_WARNINGS
-        /DQUANTA_VERSION=\"1.0.0\"
+        /DQUANTA_VERSION=\"2.0.0.alpha\"
         /DPROMISE_STABILITY_FIXED
         /DNATIVE_BUILD
     )
@@ -70,7 +70,7 @@ else()
         -pthread
     )
     add_compile_definitions(
-        QUANTA_VERSION="1.0.0"
+        QUANTA_VERSION="2.0.0.alpha"
         PROMISE_STABILITY_FIXED
         NATIVE_BUILD
         UTF8PROC_STATIC
