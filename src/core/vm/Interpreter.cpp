@@ -19,6 +19,9 @@
 #include "JitPlatform.h"
 #endif
 #include <array>
+#ifdef _WIN32
+#include <malloc.h>   // _aligned_malloc
+#endif
 #include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/runtime/DOMObject.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
@@ -2299,11 +2302,28 @@ struct InlineArena {
 // Plain data and constant-initialised, so the hot path reads it with no thread-local guard;
 // the memory it points at is given back by ArenaOwner when the thread ends.
 constinit thread_local InlineArena g_arena;
+// The value stack is cache-line aligned. The two spellings of that request are not
+// interchangeable (the Microsoft C runtime has no aligned_alloc, and a block from its
+// _aligned_malloc may only go to _aligned_free).
+void* alloc_value_stack(size_t bytes) {
+#ifdef _WIN32
+    return _aligned_malloc(bytes, 64);
+#else
+    return std::aligned_alloc(64, bytes);
+#endif
+}
+void free_value_stack(void* p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+}
 struct ArenaOwner {
     ~ArenaOwner() {
         if (g_arena.values) Collector::set_value_stack(nullptr, nullptr);
         std::free(g_arena.slots);
-        std::free(g_arena.values);
+        free_value_stack(g_arena.values);
         g_arena = InlineArena{};
     }
 };
@@ -2323,10 +2343,10 @@ constexpr uint32_t inline_frame_words(uint32_t regs) { return 2 + ((regs + 3) & 
     constexpr size_t kDepth = CallStack::MAX_STACK_DEPTH;
     constexpr size_t kWords = kDepth * inline_frame_words(kInlineMaxRegs);
     g_arena.slots = static_cast<InlineSlot*>(std::malloc(sizeof(InlineSlot) * kDepth));
-    g_arena.values = static_cast<Value*>(std::aligned_alloc(64, sizeof(Value) * kWords));
+    g_arena.values = static_cast<Value*>(alloc_value_stack(sizeof(Value) * kWords));
     if (!g_arena.slots || !g_arena.values) {
         std::free(g_arena.slots);
-        std::free(g_arena.values);
+        free_value_stack(g_arena.values);
         g_arena.slots = nullptr;
         g_arena.values = nullptr;
         return false;
