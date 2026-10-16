@@ -414,12 +414,23 @@ public:
     // Points butterfly_ at the trailing space the cell was given. `object_bytes`
     // is where that space starts, which is the size of the concrete type.
     void adopt_inline_butterfly(size_t object_bytes, uint32_t slots);
+    // An array's first butterfly in the cell: room for `capacity` elements, the
+    // extras an element region needs, and no shape slots.
+    static constexpr size_t inline_array_bytes(uint32_t capacity) {
+        return static_cast<size_t>(capacity) * sizeof(Value) +
+               sizeof(ButterflyCore) + sizeof(ButterflyExtras);
+    }
+    void adopt_inline_array_butterfly(size_t object_bytes, uint32_t capacity);
 
     static void  operator delete(void* p) noexcept;
     static void* operator new[](size_t) = delete;
     static void  operator delete[](void*) = delete;
 
     Object(ObjectType type = ObjectType::Ordinary);
+    // An array that will be handed its storage by adopt_inline_array_butterfly,
+    // so the constructor does not allocate the block it would only replace.
+    struct StorageAdoptedTag {};
+    Object(ObjectType type, StorageAdoptedTag) { set_type(type); }
     explicit Object(Object* prototype, ObjectType type = ObjectType::Ordinary);
     // Non-virtual: Object carries no vtable at all. The GC sweep
     // (Collector.cpp run_sweep(), CellKind::Object case) switches on
@@ -2294,6 +2305,11 @@ namespace ObjectFactory {
     // literal, a constructor with a slot hint -- which is nearly all of them.
     std::unique_ptr<Object> create_object_with_slots(uint32_t slots);
     std::unique_ptr<Object> create_array(uint32_t length = 0);
+    // An empty array whose cell already holds room for `capacity` elements, for
+    // a literal that is about to store that many. Past kInlineArrayMax it is
+    // create_array(0) and the elements get a block of their own.
+    constexpr uint32_t kInlineArrayMax = 16;
+    std::unique_ptr<Object> create_array_with_room(uint32_t capacity);
     std::unique_ptr<Object> create_function();
     
     void set_object_prototype(Object* prototype);

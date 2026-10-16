@@ -9727,7 +9727,7 @@ Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t n = read_u16(code, pc);
                 pc += 2;
-                auto arr = ObjectFactory::create_array(0);
+                auto arr = ObjectFactory::create_array_with_room(n);
                 if (n) {
                     arr->set_length(n);  // trailing holes count toward length
                     arr->reserve_elements(n);

@@ -88,6 +88,18 @@ void Object::adopt_inline_butterfly(size_t object_bytes, uint32_t slots) {
     butterfly_ = slot_base;
 }
 
+void Object::adopt_inline_array_butterfly(size_t object_bytes, uint32_t capacity) {
+    char* trailing = reinterpret_cast<char*>(this) + object_bytes;
+    // Low to high: elements (element i at butterfly_ - kFullHeaderWidths - 1 - i),
+    // extras, core; the shape slots would follow and there are none.
+    Value* butterfly = reinterpret_cast<Value*>(trailing) + capacity + kFullHeaderWidths;
+    ButterflyCore* core = reinterpret_cast<ButterflyCore*>(butterfly) - 1;
+    core->shape_capacity = kInlineButterflyBit | kButterflyExtrasBit;
+    core->elements_capacity = capacity;
+    butterfly_ = butterfly;
+    ::new (butterfly_extras()) ButterflyExtras();
+}
+
 void Object::trace(Visitor& v) {
     switch (get_type()) {
         case ObjectType::Function: static_cast<Function*>(this)->trace(v); return;
@@ -4204,6 +4216,15 @@ std::unique_ptr<Object> create_object_with_slots(uint32_t slots) {
     obj->adopt_inline_butterfly(sizeof(Object), slots);
     if (Object* obj_proto = get_object_prototype()) obj->initialize_prototype_of_new(obj_proto);
     return std::unique_ptr<Object>(obj);
+}
+
+std::unique_ptr<Object> create_array_with_room(uint32_t capacity) {
+    if (capacity == 0 || capacity > kInlineArrayMax) return create_array(0);
+    void* cell = Object::operator new(sizeof(Object), Object::inline_array_bytes(capacity));
+    Object* array = ::new (cell) Object(Object::ObjectType::Array, Object::StorageAdoptedTag{});
+    array->adopt_inline_array_butterfly(sizeof(Object), capacity);
+    if (Object* array_proto = get_array_prototype()) array->initialize_prototype_of_new(array_proto);
+    return std::unique_ptr<Object>(array);
 }
 
 std::unique_ptr<Object> get_pooled_object() {
