@@ -2,7 +2,7 @@
 
 Quanta has a baseline JIT: a template compiler that turns the bytecode of a hot function into machine code. It runs on x86-64 (Linux, macOS, Windows) and AArch64 (Linux, macOS). On any other target, and in any process that cannot map executable memory, every function stays with the interpreter and nothing else changes.
 
-Source: [`Jit.inc`](../../src/core/vm/Jit.inc) (the code generator and its runtime, included by `Interpreter.cpp`), [`JitLayout.h`](../../src/core/vm/JitLayout.h) (target detection and the layouts generated code depends on), [`JitPlatform.h`](../../src/core/vm/JitPlatform.h) (executable memory), [`X64Asm.h`](../../src/core/vm/X64Asm.h) and [`A64Asm.h`](../../src/core/vm/A64Asm.h) (the two instruction encoders).
+Source: [`Jit.inc`](../../src/core/vm/Jit.inc) (the code generator and its runtime, included by `Interpreter.cpp`), [`JitLayout.h`](../../src/core/vm/JitLayout.h) (target detection and the layouts generated code depends on), [`JitPlatform.h`](../../src/core/vm/JitPlatform.h) / [`JitPlatform.cpp`](../../src/core/vm/JitPlatform.cpp) (executable memory), [`X64Asm.h`](../../src/core/vm/X64Asm.h) and [`A64Asm.h`](../../src/core/vm/A64Asm.h) (the two instruction encoders).
 
 ## What it does, and what it deliberately does not
 
@@ -63,7 +63,7 @@ Property reads and writes call shared per-thread **stubs** (4-way polymorphic ow
 
 ## Targets
 
-Everything operating-system dependent is in `JitPlatform.h`; everything architecture dependent is in the encoder (`X64Asm.h` / `A64Asm.h`) and a few `#ifdef QUANTA_JIT_ARCH_*` blocks in `Jit.inc` (the calling convention in `namespace abi`, the entry and exit sequences, the cycle counter).
+Everything operating-system dependent is in `JitPlatform.cpp` (declared in `JitPlatform.h`, which has nothing from the engine in it). It is a translation unit of its own because it is the only one that includes `<windows.h>`, whose macros (`IN`, `OUT`, `ERROR`, `DELETE`, ...) collide with identifiers in the engine's headers; everything architecture dependent is in the encoder (`X64Asm.h` / `A64Asm.h`) and a few `#ifdef QUANTA_JIT_ARCH_*` blocks in `Jit.inc` (the calling convention in `namespace abi`, the entry and exit sequences, the cycle counter).
 
 | | executable memory | instruction cache |
 |---|---|---|
