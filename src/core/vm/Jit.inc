@@ -153,7 +153,7 @@ struct Config {
     int32_t safepoint_reload = 64;
     uint32_t max_chunk_bytes = 16384;  // larger bytecode is not attempted at all
     uint32_t max_step_percent = 10;   // refuse a chunk that is more than this share plain steps
-    uint32_t max_call_percent = 10;   // refuse a chunk whose calls are more than this share of its instructions
+    uint32_t max_call_percent = 6;    // refuse a chunk whose calls are more than this share of its instructions
     uint32_t mode = 1;             // 1: functions with loops only (default), 0: any hot function
     uint32_t max_slow_per_entry = 10;
     uint32_t threshold = 6;        // calls before a loop-free function is compiled

@@ -49,7 +49,7 @@ Property reads and writes call shared per-thread **stubs** (4-way polymorphic ow
 - A chunk that cannot pay for itself is refused, before any code is mapped:
   - more than `QUANTA_JIT_MAXBYTES` (16 KB) of bytecode: decoding and emitting need scratch memory proportional to its size before there is a verdict;
   - more than `QUANTA_JIT_MAXSTEPS` percent (10) of its instructions are bare steps: each one costs more than the dispatch it saved;
-  - more than `QUANTA_JIT_MAXCALLS` percent (10) of its instructions are calls. A call from generated code is not cheaper than one from the interpreter (it builds the same `Frame`; measured at about 390 instructions against the interpreter's 300), so a function dominated by calls gains nothing and the interpreter's stackless calls serve it better.
+  - more than `QUANTA_JIT_MAXCALLS` percent (6) of its instructions are calls. A call from generated code is not cheaper than one from the interpreter (it builds the same `Frame`; measured at about 390 instructions against the interpreter's 300), so a function dominated by calls gains nothing and the interpreter's stackless calls serve it better.
 - A compiled function that keeps leaving its fast paths (more than `QUANTA_JIT_MAXSLOW` slow exits per call, usually a megamorphic site) is no longer entered. The code stays allocated, since frames may be running it.
 
 ## Memory safety
@@ -102,7 +102,7 @@ Apple Silicon: a process using the JIT needs to be allowed to create `MAP_JIT` m
 | `QUANTA_JIT_THRESHOLD=n` | calls before a loop-free function is compiled (default 6; loops: 2) |
 | `QUANTA_JIT_MAXBYTES=n` | largest bytecode attempted (default 16384) |
 | `QUANTA_JIT_MAXSTEPS=pct` | refuse a chunk with more plain steps than this share (default 10) |
-| `QUANTA_JIT_MAXCALLS=pct` | refuse a chunk with more calls than this share (default 10; 100 = never) |
+| `QUANTA_JIT_MAXCALLS=pct` | refuse a chunk with more calls than this share (default 6; 100 = never) |
 | `QUANTA_JIT_MAXSLOW=n` | slow exits per call after which compiled code stops being entered (default 10) |
 | `QUANTA_JIT_LOG=1` | compile log and per-chunk shape |
 | `QUANTA_JIT_STATS=1` | what is still stepped, per opcode and per site |
