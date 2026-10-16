@@ -77,28 +77,22 @@ static size_t widen_ascii_run(const unsigned char* src, size_t i, size_t size, c
     return i + taken;
 }
 
-// Decode WTF-8 (UTF-8 plus 3-byte-encoded lone surrogates) to UTF-16 code units.
-std::u16string wtf8_to_utf16(const std::string& s) {
-    // Written into a buffer sized up front: no encoding produces more units
-    // than bytes, so s.size() is an upper bound, and appending one unit at a
-    // time cost a capacity check per character of the subject.
-    std::u16string out;
-    out.resize(s.size());
-    char16_t* w = out.data();
+// Decodes WTF-8 (UTF-8 plus 3-byte-encoded lone surrogates) into `w`, which has room for
+// `size` units (no encoding produces more units than bytes), and returns how many it wrote.
+static size_t wtf8_decode(const unsigned char* src, size_t size, char16_t* w) {
     size_t n = 0, i = 0;
-    const unsigned char* src = reinterpret_cast<const unsigned char*>(s.data());
-    while (i < s.size()) {
+    while (i < size) {
         // A long ASCII run is most of what a large subject holds; widen it 16
         // bytes at a time, stopping at the first byte with a high bit.
-        i = widen_ascii_run(src, i, s.size(), w + n, n);
-        if (i >= s.size()) break;
-        unsigned char c = (unsigned char)s[i];
+        i = widen_ascii_run(src, i, size, w + n, n);
+        if (i >= size) break;
+        unsigned char c = src[i];
         if (c < 0x80) { w[n++] = (char16_t)c; i++; continue; }
         size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
-        if (i + len > s.size()) { w[n++] = u'�'; break; }
+        if (i + len > size) { w[n++] = u'\uFFFD'; break; }
         uint32_t cp = len == 2 ? (c & 0x1F) : len == 3 ? (c & 0x0F) : (c & 0x07);
         for (size_t k = 1; k < len; k++)
-            cp = (cp << 6) | ((unsigned char)s[i+k] & 0x3F);
+            cp = (cp << 6) | (src[i + k] & 0x3F);
         if (cp >= 0x10000) {
             cp -= 0x10000;
             w[n++] = (char16_t)(0xD800 + (cp >> 10));
@@ -108,8 +102,25 @@ std::u16string wtf8_to_utf16(const std::string& s) {
         }
         i += len;
     }
-    out.resize(n);
+    return n;
+}
+
+std::u16string wtf8_to_utf16(const std::string& s) {
+    // Written into a buffer sized up front, not appended to one unit at a time:
+    // that cost a capacity check per character of the subject.
+    std::u16string out;
+    out.resize(s.size());
+    out.resize(wtf8_decode(reinterpret_cast<const unsigned char*>(s.data()), s.size(), out.data()));
     return out;
+}
+
+size_t wtf8_decode_into(const std::string& s, std::u16string& buffer) {
+    // Only ever grows: resizing zero-fills what it adds, and a subject that is decoded
+    // and thrown away (most of the short ones a regex is run over) would otherwise pay
+    // an allocation, a fill and a free every time. The caller reads the first
+    // `return value` units; the rest of the buffer is whatever an earlier subject left.
+    if (buffer.size() < s.size()) buffer.resize(s.size());
+    return wtf8_decode(reinterpret_cast<const unsigned char*>(s.data()), s.size(), buffer.data());
 }
 
 // Encode UTF-16 back to WTF-8; unpaired surrogates get the 3-byte WTF-8 form.
@@ -2495,6 +2506,26 @@ static void sanitize_utf16_surrogates(std::u16string& s) {
 // Keyed on the bytes, not on the String object: this is not a GC-traced type,
 // so it must neither keep a cell alive nor read one that may have been swept.
 // The comparison is a memcmp where the miss is a full decode.
+// The buffer a short subject is decoded into. Callers hold the decoded view for the length of
+// their own work, and some of that work matches again (a global replace), so one buffer cannot
+// be shared blindly: the first holder on a thread leases the thread's own, whose capacity
+// survives from call to call; a nested one gets a buffer of its own.
+class SubjectBuffer {
+public:
+    SubjectBuffer() {
+        if (!busy_) { busy_ = true; buf_ = &shared_; }
+        else buf_ = &own_;
+    }
+    ~SubjectBuffer() { if (buf_ == &shared_) busy_ = false; }
+    SubjectBuffer(const SubjectBuffer&) = delete;
+    SubjectBuffer& operator=(const SubjectBuffer&) = delete;
+    std::u16string& get() { return *buf_; }
+private:
+    static inline thread_local bool busy_ = false;
+    static inline thread_local std::u16string shared_;
+    std::u16string own_;
+    std::u16string* buf_;
+};
 static constexpr size_t kSubjectWays = 4;
 // Source bytes the ways may hold between them. A way also holds the units it
 // decoded, which cost twice its source again, so the real ceiling is three
@@ -2523,8 +2554,8 @@ static std::u16string_view decode_subject(const std::string& str, std::u16string
     // against -- each one different, so never a hit -- that copy is pure loss.
     if (id) *id = 0;
     if (str.size() < 256 || str.size() > kSubjectBudget) {
-        scratch = wtf8_to_utf16(str);
-        return scratch;
+        const size_t n = wtf8_decode_into(str, scratch);
+        return std::u16string_view(scratch.data(), n);
     }
     for (Way& w : ways) {
         if (w.used && w.src.size() == str.size() && w.src == str) {
@@ -2653,7 +2684,8 @@ static bool subject_has_lone_surrogate(const String* cell, std::u16string_view u
 
 bool RegExp::test(const std::string& str, const String* cell) {
     resource_exhausted_ = false;
-    std::u16string decode_scratch;
+    SubjectBuffer decode_buffer;
+    std::u16string& decode_scratch = decode_buffer.get();
     uint64_t subject_id = 0;
     std::u16string_view decoded = decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
@@ -2726,7 +2758,8 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     if (!code_) return false;
     resource_exhausted_ = false;
 
-    std::u16string decode_scratch;
+    SubjectBuffer decode_buffer;
+    std::u16string& decode_scratch = decode_buffer.get();
     uint64_t subject_id = 0;
     std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id);
     std::u16string sanitized;
@@ -2775,7 +2808,8 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
 Value RegExp::exec(const std::string& str, const String* cell, const std::u16string* precomputed_units, Context* realm_hint) {
     resource_exhausted_ = false;
     // orig holds the unsanitized units so capture text preserves lone surrogates.
-    std::u16string decode_scratch;
+    SubjectBuffer decode_buffer;
+    std::u16string& decode_scratch = decode_buffer.get();
     uint64_t subject_id = 0;
     std::u16string_view orig = precomputed_units
         ? std::u16string_view(*precomputed_units)

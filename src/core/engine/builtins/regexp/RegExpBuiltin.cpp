@@ -160,12 +160,28 @@ static std::string regexp_escape_string(const std::string& s) {
 // it back, and both went through the general get_property/set_property
 // dispatch: a multi-way type switch before ever reaching the shape-slot
 // read/write this always was.
+// Where a shape keeps "lastIndex" as a plain data slot, or -1 (absent, or an accessor). A shape fixes
+// its object's whole set of own names and which of them are accessors, and never changes, so the
+// answer is the shape's for good; the last one asked about is remembered because nearly every
+// RegExp in a program was built the same way and so shares it. Asking costs a string built from the
+// literal and a hash probe, twice, on every exec -- which is what this replaces.
+static thread_local Shape* g_last_index_shape = nullptr;
+static thread_local int32_t g_last_index_slot = -1;
+static int32_t last_index_slot_of(Shape* s) {
+    if (s == g_last_index_shape) return g_last_index_slot;
+    int32_t idx = s->find_slot("lastIndex");
+    if (idx >= 0 && s->is_accessor_slot("lastIndex")) idx = -1;
+    g_last_index_shape = s;
+    g_last_index_slot = idx;
+    return idx;
+}
+
 static bool regexp_read_last_index(Object* r, Value& out) {
     if (r->get_type() != Object::ObjectType::RegExp) return false;
     Shape* s = r->get_shape();
     if (!s) return false;
-    int32_t idx = s->find_slot("lastIndex");
-    if (idx < 0 || s->is_accessor_slot("lastIndex")) return false;
+    int32_t idx = last_index_slot_of(s);
+    if (idx < 0) return false;
     const Value* slot = r->get_shape_slot_unchecked(static_cast<uint32_t>(idx));
     if (!slot) return false;
     out = *slot;
@@ -180,8 +196,8 @@ static bool regexp_write_last_index(Object* r, double value, bool& ok) {
     if (r->get_type() != Object::ObjectType::RegExp) return false;
     Shape* s = r->get_shape();
     if (!s) return false;
-    int32_t idx = s->find_slot("lastIndex");
-    if (idx < 0 || s->is_accessor_slot("lastIndex")) return false;
+    int32_t idx = last_index_slot_of(s);
+    if (idx < 0) return false;
     Value* slot = r->get_shape_slot_unchecked(static_cast<uint32_t>(idx));
     if (!slot) return false;
     // The attribute override -- specifically {writable:false} from a

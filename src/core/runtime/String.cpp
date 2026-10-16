@@ -10,6 +10,7 @@ namespace Quanta {
 // Defined in RegExp.cpp; declared here so a string can decode itself without
 // pulling in the regex engine's headers.
 std::u16string wtf8_to_utf16(const std::string& s);
+size_t wtf8_decode_into(const std::string& s, std::u16string& buffer);
 }
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
@@ -426,8 +427,15 @@ Cursor* find_cursor(const String* s) {
 // subject at a time, bounded because the units cost twice the bytes they
 // decode.
 namespace {
-constexpr size_t kUnitWays = 2;
-constexpr size_t kUnitsMinBytes = 1024;
+constexpr size_t kUnitWays = 4;
+// Below this a subject is decoded again on every use. It used to be 1024, which put the
+// few-hundred-byte strings a pattern is run over many times (each one a different cell,
+// handed to several patterns in turn) outside the cache entirely; measured on the V8 RegExp
+// benchmark, 256 with four ways recovers nearly all of what eight ways at 128 does.
+constexpr size_t kUnitsMinBytes = 256;
+// Source bytes the ways may hold between them (the units cost twice that again). More ways
+// would hold more, so the sum is capped and the least recently used way is dropped to meet it.
+constexpr size_t kUnitsBudget = 48u << 20;
 constexpr size_t kUnitsMaxBytes = 24u << 20;
 struct UnitWay {
     const String* owner = nullptr;
@@ -488,9 +496,9 @@ std::u16string_view String::utf16_units(uint64_t* id) const {
     // long subject that is being walked.
     static thread_local std::u16string scratch;
     if (s.size() < kUnitsMinBytes || s.size() > kUnitsMaxBytes) {
-        scratch = wtf8_to_utf16(s);
+        const size_t n = wtf8_decode_into(s, scratch);
         if (id) *id = 0;
-        return scratch;
+        return std::u16string_view(scratch.data(), n);
     }
     UnitWay* victim = &g_units[0];
     for (UnitWay& w : g_units) if (w.used < victim->used) victim = &w;
@@ -504,6 +512,24 @@ std::u16string_view String::utf16_units(uint64_t* id) const {
     victim->used = ++g_units_tick;
     in_side_cache_ = true;
     if (id) *id = victim->id;
+    for (;;) {
+        size_t held = 0;
+        for (const UnitWay& w : g_units) held += w.units.size();
+        if (held * 2 <= kUnitsBudget) break;
+        UnitWay* coldest = nullptr;
+        for (UnitWay& w : g_units) {
+            if (&w == victim || !w.owner) continue;
+            if (!coldest || w.used < coldest->used) coldest = &w;
+        }
+        if (!coldest) break;
+        const String* evicted_owner = coldest->owner;
+        coldest->owner = nullptr;
+        coldest->used = 0;
+        coldest->id = 0;
+        coldest->units.clear();
+        coldest->units.shrink_to_fit();
+        evicted_owner->in_side_cache_ = evicted_owner->still_cached_elsewhere();
+    }
     return victim->units;
 }
 
