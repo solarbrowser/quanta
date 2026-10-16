@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <chrono>
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/runtime/SmallMapPool.h"
 #include "quanta/core/runtime/Value.h"
@@ -511,10 +512,21 @@ void Heap::decommit_idle_memory() {
     // malloc_trim still earns its keep for the handful of sites that call
     // the C allocator directly (ArrayBuffer's detachable storage, this
     // file's own LargeCell path).
+    // At most once a second. Forcing mimalloc to hand its idle pages back walks every one of its
+    // heaps, and a program that allocates steadily has none to give: its major collections come
+    // many a second and each found the same footprint, so the walk was about a twelfth of a
+    // tree-building benchmark's time for ten megabytes of peak footprint. A program whose heap
+    // really shrinks still returns the memory within the second.
+    using Clock = std::chrono::steady_clock;
+    static thread_local Clock::time_point last_forced{};
+    const Clock::time_point now = Clock::now();
+    if (now - last_forced >= std::chrono::seconds(1)) {
+        last_forced = now;
 #ifdef __GLIBC__
-    malloc_trim(0);
+        malloc_trim(0);
 #endif
-    mi_collect(true);
+        mi_collect(true);
+    }
     // Same idle-capacity problem as the block allocator above, for the
     // small-map/vector free lists SmallMapAllocator-backed containers
     // (Environment/Shape/Object overflow maps, per-instance lookup caches)
