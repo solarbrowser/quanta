@@ -2436,9 +2436,11 @@ constexpr uint8_t kInlineWantsThis = 8;   // a sloppy callee that reads `this` (
 constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_call_enter_env)
 
 [[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn) {
-    // jit_state 0 is "not decided yet": ask again next call. Once the JIT has refused the chunk
-    // its shape is final, so the verdict is kept.
-    if (chunk.jit_state == 0) return 0;
+    // Only a state the JIT will not leave is a verdict to keep: 1 (compiled) and 2 (refused or off).
+    // 0 is "not seen yet" and 3 and 4 are "counting calls toward a decision", and a chunk in any of
+    // them goes on to 1 or 2 -- a verdict cached then (a loop function is in 3 on its first call)
+    // would hold the stackless path closed against it for good, though the JIT refuses most of them.
+    if (chunk.jit_state != 1 && chunk.jit_state != 2) return 0;
     const bool strict = fn->is_strict() || exe.fast_strict;
     uint8_t v = kInlineNever;
     if (chunk.jit_state == 2 && !chunk.env_mode && chunk.register_count <= kInlineMaxRegs && !fn->is_arrow() &&
