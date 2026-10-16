@@ -73,6 +73,13 @@ static size_t widen_ascii_run(const unsigned char* src, size_t i, size_t size, c
         taken += 16;
     }
 #endif
+    // What is left once fewer than sixteen bytes remain (the whole of a short subject) is taken
+    // here too, up to the first byte with a high bit: handing it back one byte at a time cost the
+    // caller a trip through this function for each.
+    while (i + taken < size && src[i + taken] < 0x80) {
+        out[taken] = src[i + taken];
+        taken++;
+    }
     written += taken;
     return i + taken;
 }
@@ -1171,9 +1178,7 @@ static std::string wrap_lookaheads_atomic(const std::string& pat) {
 // PCRE2 retains inner captures from previous iterations of * / +; ES spec requires
 // them undefined if they didn't participate in the last iteration. Reset captures
 // whose span falls outside their nearest enclosing repeated capturing group's span.
-static void reset_stale_captures(const std::string& pat,
-                                  std::vector<PCRE2_SIZE>& ov, uint32_t cap_count) {
-    if (cap_count == 0) return;
+static std::vector<int> compute_stale_capture_parents(const std::string& pat, uint32_t cap_count) {
 
     struct GInfo { int num; bool is_cap; bool repeated; };
     std::vector<GInfo> groups;
@@ -1229,6 +1234,46 @@ static void reset_stale_captures(const std::string& pat,
         }
     }
 
+    return rep_parent;
+}
+
+// The nearest enclosing repeated capture of each capture group depends on the pattern alone, and
+// working it out reads the whole pattern twice and builds three vectors. It was being redone for
+// every successful match of a pattern that has captures. Kept per compiled pattern in a small
+// direct-mapped table keyed on the compiled code's address; an entry holds the code's owner, so the
+// address cannot be reused for another pattern while the entry names it.
+namespace {
+struct StaleCaptureEntry {
+    const void* code = nullptr;
+    std::shared_ptr<void> owner;
+    std::vector<int> parent;   // per capture, 1-based group number of its repeated parent or 0
+    bool any = false;          // some capture has one: otherwise there is nothing to reset
+};
+constexpr size_t kStaleCaptureWays = 32;
+thread_local StaleCaptureEntry g_stale_capture[kStaleCaptureWays];
+}
+
+static void reset_stale_captures(const std::string& pat, const void* code,
+                                 const std::shared_ptr<void>& owner,
+                                 std::vector<PCRE2_SIZE>& ov, uint32_t cap_count) {
+    if (cap_count == 0) return;
+    StaleCaptureEntry scratch;
+    StaleCaptureEntry* e = &scratch;
+    if (code && owner) {
+        e = &g_stale_capture[(reinterpret_cast<uintptr_t>(code) >> 4) % kStaleCaptureWays];
+        if (e->code != code) {
+            e->code = nullptr;
+            e->owner = owner;
+            e->parent = compute_stale_capture_parents(pat, cap_count);
+            e->any = std::any_of(e->parent.begin(), e->parent.end(), [](int v) { return v > 0; });
+            e->code = code;
+        }
+    } else {
+        e->parent = compute_stale_capture_parents(pat, cap_count);
+        e->any = true;
+    }
+    if (!e->any) return;
+    const std::vector<int>& rep_parent = e->parent;
     for (uint32_t i = 1; i <= cap_count; ++i) {
         int rp = rep_parent[i - 1];
         if (rp <= 0 || rp > (int)cap_count) continue;
@@ -2884,7 +2929,7 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
                 match_start = ov[0];
                 match_end = ov[1];
                 saved.assign(ov, ov + (capture_count + 1) * 2);
-                reset_stale_captures(pattern_, saved, capture_count);
+                reset_stale_captures(pattern_, code_, code_owner_, saved, capture_count);
             }
         }
     }

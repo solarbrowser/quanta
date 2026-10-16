@@ -160,6 +160,14 @@ static std::string regexp_escape_string(const std::string& s) {
 // it back, and both went through the general get_property/set_property
 // dispatch: a multi-way type switch before ever reaching the shape-slot
 // read/write this always was.
+// The realm a match result's arrays and objects belong to, for the fixup_new_*_realm calls that
+// give them that realm's prototypes. Every one of those does nothing unless more than one engine
+// is alive, but the answer is a walk of all engines with two named-property reads each, and it was
+// being worked out for every exec -- a tenth of a regex-heavy run -- only to be thrown away.
+static Context* regexp_realm_hint(Object* r) {
+    return Engine::multi_engine() ? Engine::find_realm_owning_object(r, "RegExp") : nullptr;
+}
+
 // Where a shape keeps "lastIndex" as a plain data slot, or -1 (absent, or an accessor). A shape fixes
 // its object's whole set of own names and which of them are accessors, and never changes, so the
 // answer is the shape's for good; the last one asked about is remembered because nearly every
@@ -213,7 +221,10 @@ static bool regexp_write_last_index(Object* r, double value, bool& ok) {
     if (PropertyDescriptor* d = r->find_descriptor_override("lastIndex")) {
         if (d->has_writable() && !d->is_writable()) { ok = false; return true; }
         if (d->is_data_descriptor()) {
-            Object::bump_descriptor_epoch();
+            // Only a cache that holds a copy of the value (note_descriptor_value_cached) needs the
+            // epoch moved, as in the general write path. Moving it for every global exec retired
+            // every descriptor-keyed cache in the program each time.
+            if (d->value_cached()) Object::bump_descriptor_epoch();
             d->set_value(Value(value));
         }
     }
@@ -258,7 +269,7 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const
     // The match result (and its .groups/.indices) must be created in the
     // RegExp instance's OWN realm (RegExpBuiltinExec's own "current realm"),
     // not the ambient caller's -- see RegExp::exec's own doc comment.
-    Context* realm_hint = Engine::find_realm_owning_object(r, "RegExp");
+    Context* realm_hint = regexp_realm_hint(r);
     Value result = re->exec(str, cell, precomputed_units, realm_hint);
     // A match that ran out of its budget has no answer, and null would read as
     // one. Every engine has some ceiling here and the spec names none, so the
@@ -897,7 +908,7 @@ void register_regexp_builtins(Context& ctx) {
                 if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
             }
             auto result_array = ObjectFactory::create_array();
-            Engine::fixup_new_array_realm(result_array.get(), Engine::find_realm_owning_object(this_obj, "RegExp"));
+            Engine::fixup_new_array_realm(result_array.get(), regexp_realm_hint(this_obj));
             size_t match_count = 0;
             while (true) {
                 Value match;
@@ -1416,7 +1427,7 @@ void register_regexp_builtins(Context& ctx) {
                 }
             }
             auto result = ObjectFactory::create_array();
-            Engine::fixup_new_array_realm(result.get(), Engine::find_realm_owning_object(this_obj, "RegExp"));
+            Engine::fixup_new_array_realm(result.get(), regexp_realm_hint(this_obj));
             uint32_t length_a = 0;
             if (lim == 0) { result->set_length(0); return Value(result.release()); }
 
@@ -1519,7 +1530,7 @@ void register_regexp_builtins(Context& ctx) {
                     Value stored_re = self->get_own_property("[[RegExpStringIteratorRegExp]]");
                     Object* stored_re_obj = stored_re.is_function()
                         ? static_cast<Object*>(stored_re.as_function()) : stored_re.as_object_or_null();
-                    Engine::fixup_new_object_realm(result.get(), Engine::find_realm_owning_object(stored_re_obj, "RegExp"));
+                    Engine::fixup_new_object_realm(result.get(), regexp_realm_hint(stored_re_obj));
                     result->set_property("value", value);
                     result->set_property("done", Value(done));
                     return Value(result.release());
