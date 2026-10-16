@@ -149,8 +149,15 @@ std::string utf16_to_wtf8(const char16_t* p, size_t len) {
         }
     }
 #endif
-    out.resize(i0);
+    // The rest of an ASCII subject (all of a short one, such as a capture) goes straight into the
+    // buffer already sized for it; shrinking it and reserving three times the room was an
+    // allocation for anything past the small-string size, and a character at a time besides.
+    {
+        char* o = out.data();
+        while (i0 < len && p[i0] < 0x80) { o[i0] = static_cast<char>(p[i0]); i0++; }
+    }
     if (i0 == len) return out;
+    out.resize(i0);
     out.reserve(i0 + (len - i0) * 3);
     for (size_t i = i0; i < len; i++) {
         uint32_t cp = p[i];
