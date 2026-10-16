@@ -78,6 +78,10 @@ public:
         if (!instance_) init_default_instance();
         return *instance_;
     }
+    // The thread's stack, for a caller that knows it has been made: instance() has run on this
+    // thread already (nothing ever replaces or clears it). The lazy-start branch behind
+    // instance() is a call, and a call is enough to give its caller a frame to build.
+    static CallStack& established() { return *instance_; }
     static void set_instance(CallStack* stack);
     
     // Inline, and deliberately so: a frame is two pointers, but reaching a

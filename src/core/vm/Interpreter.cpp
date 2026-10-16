@@ -2012,7 +2012,9 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 // isn't enough there).
 
 struct Frame {
-    const BytecodeChunk& chunk;
+    // A pointer, not a reference: a reference binds once, so a frame built into a reused slot
+    // (stackless calls) had to be constructed afresh, every field, on every call.
+    const BytecodeChunk* chunk;
     // Repointable, not a reference: a frame-resident Context (once wired in)
     // can be materialized to a fresh heap address mid-call, and every
     // subsequent read here needs to see the new address, not the one this
@@ -2298,6 +2300,9 @@ struct InlineArena {
     Value* top = nullptr;
     Value* limit = nullptr;
     uint32_t depth = 0;
+    // Slots [0, ready) hold a Frame whose fields that never change from one call to the next are
+    // already set (see inline_slot_frame_init), so a call writes only the ones that do.
+    uint32_t ready = 0;
 };
 // Plain data and constant-initialised, so the hot path reads it with no thread-local guard;
 // the memory it points at is given back by ArenaOwner when the thread ends.
@@ -2354,10 +2359,38 @@ constexpr uint32_t inline_frame_words(uint32_t regs) { return 2 + ((regs + 3) & 
     g_arena.top = g_arena.values;
     g_arena.limit = g_arena.values + kWords;
     g_arena.depth = 0;
+    // Every stackless call pushes onto it without asking whether it exists yet.
+    (void)CallStack::instance();
     Collector::set_value_stack(g_arena.values, &g_arena.top);
     static thread_local ArenaOwner owner;
     (void)owner;
     return true;
+}
+
+// Sets the fields of a slot's Frame that stay the same for every call that ever uses the slot:
+// where its side stacks are, that its caches are traced, that calls from it may be stackless.
+// Nothing writes them afterwards (osr_budget is the one a loop's back edge counts down, and a
+// stackless frame never consults it: the callee's chunk is one the JIT declined).
+inline void inline_slot_frame_init(InlineSlot& slot) {
+    Frame* fr = new (slot.frame_storage) Frame{
+        nullptr, nullptr, std::span<const Value>(), nullptr, true, nullptr, slot.env_saves, slot.resolved_envs,
+        nullptr, nullptr, nullptr, nullptr, nullptr, Value(), Value(), 0, 0, 0, true};
+    fr->call_info = &slot.call_info;
+    fr->osr_budget = INT32_MAX;
+    fr->inline_ok = true;
+}
+
+// Frames are prepared a few dozen at a time: touching every slot of the arena up front would
+// commit memory a program that never recurses deeply does not need.
+[[gnu::noinline]] void inline_slots_grow() {
+    constexpr uint32_t kBatch = 64;
+    const uint32_t end = std::min<uint32_t>(g_arena.ready + kBatch, static_cast<uint32_t>(CallStack::MAX_STACK_DEPTH));
+    for (uint32_t i = g_arena.ready; i < end; i++) inline_slot_frame_init(g_arena.slots[i]);
+    g_arena.ready = end;
+}
+
+[[gnu::always_inline]] inline Frame* inline_slot_frame(InlineSlot& slot) {
+    return std::launder(reinterpret_cast<Frame*>(slot.frame_storage));
 }
 
 // Takes a stackless frame off the arena and the call stack, and tells its activation's base.
@@ -2381,6 +2414,7 @@ constexpr uint32_t inline_frame_words(uint32_t regs) { return 2 + ((regs + 3) & 
     Object::current_context_ = st.prev_context;
     ctx.set_strict_mode(st.saved_strict);
     ctx.set_this_value(st.saved_this);
+    f.env_call = false;   // the slot's next frame is a plain one unless it says otherwise
 }
 
 [[gnu::always_inline]] inline void inline_frame_pop(Frame& f) {
@@ -2389,7 +2423,7 @@ constexpr uint32_t inline_frame_words(uint32_t regs) { return 2 + ((regs + 3) & 
     f.base->active = (c == f.base) ? nullptr : c;
     g_arena.top -= f.value_words;
     g_arena.depth--;
-    CallStack::instance().pop_frame_unchecked();
+    CallStack::established().pop_frame_unchecked();
 }
 
 // What the chunk's verdict (BytecodeChunk::inline_state) says. Everything it is made from is
@@ -2471,7 +2505,7 @@ constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_
     if (UNLIKELY(!arena.values)) {
         if (!inline_arena_init()) return false;
     }
-    CallStack& stack = CallStack::instance();
+    CallStack& stack = CallStack::established();
     const uint32_t nregs = std::max<uint32_t>(chunk.register_count, chunk.parameter_count);
     const uint32_t words = inline_frame_words(nregs);
     if (UNLIKELY(stack.depth() + 1 >= CallStack::MAX_STACK_DEPTH || arena.top + words > arena.limit)) return false;
@@ -2519,23 +2553,30 @@ constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_
     for (uint32_t i = 0; i < copy; i++) regs[i] = argv[i];
     arena.top = bank + words;
 
+    if (UNLIKELY(arena.depth >= arena.ready)) inline_slots_grow();
     InlineSlot& slot = arena.slots[arena.depth++];
     slot.call_info.lexical_environment_ = call_env;
     slot.call_info.variable_environment_ = call_env;
-    Frame* callee = new (slot.frame_storage) Frame{
-        chunk, f.ctx, std::span<const Value>(argv, argc), fn, true, regs, slot.env_saves, slot.resolved_envs,
-        lookup_cache_data, private_feedback_data, chunk.code.data(), chunk.constants.data(), call_env,
-        actual_this, Value(), 0, 0, 0, true};
-    callee->call_info = &slot.call_info;
+    Frame* callee = inline_slot_frame(slot);
+    callee->chunk = &chunk;
+    callee->ctx = f.ctx;
+    callee->args = std::span<const Value>(argv, argc);
+    callee->owner = fn;
+    callee->regs = regs;
+    callee->lookup_cache_data = lookup_cache_data;
+    callee->private_feedback_data = private_feedback_data;
+    callee->code = chunk.code.data();
+    callee->constants = chunk.constants.data();
+    callee->entry_env = call_env;
+    callee->this_value = actual_this;
+    callee->env_save_top = 0;
     callee->current_lexical_env = call_env;
     callee->current_variable_env = call_env;
-    callee->osr_budget = INT32_MAX;
     callee->caller = &f;
     Frame* base = f.base ? f.base : &f;
     callee->base = base;
     callee->return_pc = return_pc;
     callee->value_words = words;
-    callee->inline_ok = true;
     callee->env_call = true;
 
     InlineEnvState& st = slot.env;
@@ -2582,7 +2623,7 @@ constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_
     if (UNLIKELY(!arena.values)) {
         if (!inline_arena_init()) return false;
     }
-    CallStack& stack = CallStack::instance();
+    CallStack& stack = CallStack::established();
     const uint32_t nregs = std::max<uint32_t>(chunk.register_count, chunk.parameter_count);
     const uint32_t words = inline_frame_words(nregs);
     if (UNLIKELY(stack.depth() + 1 >= CallStack::MAX_STACK_DEPTH || arena.top + words > arena.limit)) return false;
@@ -2611,24 +2652,31 @@ constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_
     }
     arena.top = bank + words;
 
+    if (UNLIKELY(arena.depth >= arena.ready)) inline_slots_grow();
     InlineSlot& slot = arena.slots[arena.depth++];
     slot.call_info.lexical_environment_ = outer_env;
     slot.call_info.variable_environment_ = outer_env;
     // resolved_envs is not cleared: each slot is written by the resolve op before the op that reads it.
-    Frame* callee = new (slot.frame_storage) Frame{
-        chunk, f.ctx, std::span<const Value>(argv, argc), fn, true, regs, slot.env_saves, slot.resolved_envs,
-        lookup_cache_data, private_feedback_data, chunk.code.data(), chunk.constants.data(), outer_env,
-        this_value, Value(), 0, 0, 0, true};
-    callee->call_info = &slot.call_info;
+    Frame* callee = inline_slot_frame(slot);
+    callee->chunk = &chunk;
+    callee->ctx = f.ctx;
+    callee->args = std::span<const Value>(argv, argc);
+    callee->owner = fn;
+    callee->regs = regs;
+    callee->lookup_cache_data = lookup_cache_data;
+    callee->private_feedback_data = private_feedback_data;
+    callee->code = chunk.code.data();
+    callee->constants = chunk.constants.data();
+    callee->entry_env = outer_env;
+    callee->this_value = this_value;
+    callee->env_save_top = 0;
     callee->current_lexical_env = outer_env;
     callee->current_variable_env = outer_env;
-    callee->osr_budget = INT32_MAX;
     callee->caller = &f;
     Frame* base = f.base ? f.base : &f;
     callee->base = base;
     callee->return_pc = return_pc;
     callee->value_words = words;
-    callee->inline_ok = true;
     base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
     out = callee;
@@ -2983,7 +3031,7 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
 
 #define NUMERIC_COMPARE_HANDLER(name, binop, cmp)                          \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
-        const BytecodeChunk& chunk = f.chunk;                              \
+        const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
@@ -3004,7 +3052,7 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
 
 #define NUMERIC_BINARY_HANDLER(name, binop, expr)                          \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
-        const BytecodeChunk& chunk = f.chunk;                              \
+        const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
@@ -3062,7 +3110,7 @@ NUMERIC_COMPARE_HANDLER(h_TestGe, BinOp::GREATER_EQUAL, l >= r)
 // the common cases (loose_equal_quick) and only a conversion reaches apply_operator.
 #define LOOSE_EQUALITY_HANDLER(name, binop, want_equal)                    \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
-        const BytecodeChunk& chunk = f.chunk;                              \
+        const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
@@ -3091,7 +3139,7 @@ LOOSE_EQUALITY_HANDLER(h_TestNe, BinOp::NOT_EQUAL, false)
 // object, null, boolean and undefined it was handed.
 #define STRICT_EQUALITY_HANDLER(name, binop, want_equal)                   \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
-        const BytecodeChunk& chunk = f.chunk;                              \
+        const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                             \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
@@ -3130,7 +3178,7 @@ inline bool to_int32_by_cast(double d, int32_t& out) {
 
 #define BITWISE_BINARY_HANDLER(name, binop, expr)                          \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
-        const BytecodeChunk& chunk = f.chunk;                              \
+        const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
@@ -3178,7 +3226,7 @@ static Value step_numeric(Context& ctx, const Value& acc, double delta) {
 
 #define UNARY_STEP_HANDLER(name, delta)                                    \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
-        const BytecodeChunk& chunk = f.chunk;                              \
+        const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
@@ -3200,7 +3248,7 @@ UNARY_STEP_HANDLER(h_Inc, 1.0)
 UNARY_STEP_HANDLER(h_Dec, -1.0)
 
 Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     bool& this_resolved = f.this_resolved;
     Value& this_value = f.this_value;
@@ -3292,7 +3340,7 @@ Value h_LdaTdz(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdarChecked(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -3319,7 +3367,7 @@ Value h_gen_LdarChecked(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StarChecked(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -3346,7 +3394,7 @@ Value h_gen_StarChecked(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Div(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -3361,7 +3409,7 @@ Value h_gen_Div(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Mod(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -3386,7 +3434,7 @@ Value h_gen_Mod(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Exp(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -3423,7 +3471,7 @@ Value h_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -3444,7 +3492,7 @@ Value h_gen_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_TestIn(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -3487,7 +3535,7 @@ Value h_gen_TestIn(Frame& f, uint32_t pc, Value acc) {
 
 
 Value h_gen_Neg(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3505,7 +3553,7 @@ Value h_gen_Neg(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LogicalNot(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3532,7 +3580,7 @@ Value h_LogicalNotFast(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_BitNot(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3550,7 +3598,7 @@ Value h_gen_BitNot(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Await(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3562,7 +3610,7 @@ Value h_gen_Await(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_YieldStar(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3573,7 +3621,7 @@ Value h_gen_YieldStar(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SettleReturn(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3585,7 +3633,7 @@ Value h_gen_SettleReturn(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaNewTarget(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     pc += 1;
     acc = ctx.get_new_target();
@@ -3593,7 +3641,7 @@ Value h_gen_LdaNewTarget(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaImportMeta(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3605,7 +3653,7 @@ Value h_gen_LdaImportMeta(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Yield(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3620,7 +3668,7 @@ Value h_gen_Yield(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_TypeOf(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3634,7 +3682,7 @@ Value h_gen_TypeOf(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ToNumber(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3658,7 +3706,7 @@ Value h_gen_ToNumber(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ToNumeric(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3697,7 +3745,7 @@ Value h_BitNotFast(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ToTemplateString(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3720,7 +3768,7 @@ Value h_gen_ToTemplateString(Frame& f, uint32_t pc, Value acc) {
 // intermediate String cells; this sizes and fills one std::string, then
 // wraps it in exactly one.
 Value h_gen_BuildTemplateString(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -3750,7 +3798,7 @@ Value h_gen_BuildTemplateString(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ToPropertyKey(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3772,7 +3820,7 @@ Value h_gen_ToPropertyKey(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CheckObjectCoercible(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -3801,7 +3849,7 @@ Value h_CheckObjectCoercibleFast(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
     const uint8_t* code = f.code;
@@ -3918,7 +3966,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
 // as the same do/while(0)+break shape the narrow form uses, for the same
 // musttail/CHECK_EXC reason h_GetKeyedWide's own comment explains.
 Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
     const uint8_t* code = f.code;
@@ -4009,7 +4057,7 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4090,8 +4138,8 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
 inline void cache_store_binding(Frame& f, Environment* env, const std::string& name,
                                 uint32_t name_idx) {
     Environment* entry_env = f.entry_env;
-    if (!(env != entry_env || f.chunk.script_mode)) return;
-    bool beyond_frame = f.chunk.script_mode && env == entry_env;
+    if (!(env != entry_env || f.chunk->script_mode)) return;
+    bool beyond_frame = f.chunk->script_mode && env == entry_env;
     if (!beyond_frame) {
         for (Environment* e = entry_env->get_outer(); e; e = e->get_outer()) {
             if (e == env) { beyond_frame = true; break; }
@@ -4127,7 +4175,7 @@ inline void cache_store_binding(Frame& f, Environment* env, const std::string& n
 }
 
 Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
     const uint8_t* code = f.code;
@@ -4218,7 +4266,7 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
 
 // Wide counterpart of h_gen_StaLookup -- see h_LdaLookupWide's own comment.
 Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
     const uint8_t* code = f.code;
@@ -4298,7 +4346,7 @@ Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
 // answered here, not to whatever the right side may have introduced since --
 // a direct eval in there can declare a nearer one.
 Value h_gen_ResolveBindingEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4320,7 +4368,7 @@ Value h_gen_ResolveBindingEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4345,7 +4393,7 @@ Value h_gen_LdaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4391,7 +4439,7 @@ Value h_gen_StaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetDirectEval(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -4402,7 +4450,7 @@ Value h_gen_SetDirectEval(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_EnterParamEval(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4423,7 +4471,7 @@ Value h_gen_EnterParamEval(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4511,7 +4559,7 @@ Value h_StaLookupFast(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -4648,7 +4696,7 @@ Value h_LdaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
     Environment* env = frame_lexical_env(f);
     for (uint8_t h = code[pc + 1]; h > 0 && env; h--) env = env->get_outer();
     if (LIKELY(env != nullptr)) {
-        if (auto* e = env->inline_slot_interned(code[pc + 2], f.chunk.names[read_u16(code, pc + 3)])) {
+        if (auto* e = env->inline_slot_interned(code[pc + 2], f.chunk->names[read_u16(code, pc + 3)])) {
             if (LIKELY(e->slot.initialized)) {
                 acc = e->slot.value;
                 pc += 5;
@@ -4662,7 +4710,7 @@ Value h_LdaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
 Value h_StaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     if (Environment* env = frame_lexical_env(f)) {
-        if (auto* e = env->inline_slot_interned(code[pc + 1], f.chunk.names[read_u16(code, pc + 2)])) {
+        if (auto* e = env->inline_slot_interned(code[pc + 1], f.chunk->names[read_u16(code, pc + 2)])) {
             if (LIKELY(e->slot.initialized && e->slot.mutable_flag)) {
                 Collector::write_barrier_env_for(env, acc);
                 e->slot.value = acc;
@@ -4679,7 +4727,7 @@ Value h_StaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
     Environment* env = frame_lexical_env(f);
     for (uint8_t h = code[pc + 1]; h > 0 && env; h--) env = env->get_outer();
     if (LIKELY(env != nullptr)) {
-        if (auto* e = env->inline_slot_interned(code[pc + 2], f.chunk.names[read_u16(code, pc + 3)])) {
+        if (auto* e = env->inline_slot_interned(code[pc + 2], f.chunk->names[read_u16(code, pc + 3)])) {
             if (LIKELY(e->slot.initialized && e->slot.mutable_flag)) {
                 Collector::write_barrier_env_for(env, acc);
                 e->slot.value = acc;
@@ -4700,7 +4748,7 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc);
 template <bool Fused>
 Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
     static const std::string* kThis = Shape::intern("this");
-    const std::string* key = f.chunk.names[read_u16(f.code, pc + 1)];
+    const std::string* key = f.chunk->names[read_u16(f.code, pc + 1)];
     if (LIKELY(key != kThis)) {
         if (Environment* env = frame_lexical_env(f)) {
             Value out;
@@ -4714,7 +4762,7 @@ Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4782,7 +4830,7 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4822,7 +4870,7 @@ Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaEnvInit(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4856,7 +4904,7 @@ template <bool Fused>
 Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const uint8_t slot = code[pc + 1];
-    const std::string* key = f.chunk.names[read_u16(code, pc + 2)];
+    const std::string* key = f.chunk->names[read_u16(code, pc + 2)];
     if (Environment* env = frame_lexical_env(f)) {
         if (auto* e = env->inline_slot_interned(slot, key)) {
             if (LIKELY(e->slot.initialized)) {
@@ -4869,7 +4917,7 @@ Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4922,7 +4970,7 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -4989,7 +5037,7 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5031,7 +5079,7 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
 // (see EnvSlotInfo's doc comment): a wrong hop count only costs the miss
 // path, never a wrong answer.
 Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5093,7 +5141,7 @@ Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5159,7 +5207,7 @@ Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -5246,7 +5294,7 @@ static bool seed_scope_bindings(Environment* env, const std::vector<BytecodeChun
 }
 
 Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5277,7 +5325,7 @@ Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5320,7 +5368,7 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ExitLoopEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -5334,7 +5382,7 @@ Value h_gen_ExitLoopEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SaveEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Environment** env_saves = f.env_saves;
     uint8_t& env_save_top = f.env_save_top;
@@ -5350,7 +5398,7 @@ Value h_gen_SaveEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_RestoreEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Environment** env_saves = f.env_saves;
     uint8_t& env_save_top = f.env_save_top;
@@ -5366,7 +5414,7 @@ Value h_gen_RestoreEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_PopEnvSave(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint8_t& env_save_top = f.env_save_top;
     uint32_t& instr_pc = f.instr_pc;
@@ -5381,7 +5429,7 @@ Value h_gen_PopEnvSave(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetIterator(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5407,7 +5455,7 @@ Value h_gen_GetIterator(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_IteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5439,7 +5487,7 @@ Value h_gen_IteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_IteratorClose(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5468,7 +5516,7 @@ Value h_gen_IteratorClose(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetAsyncIterator(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5493,7 +5541,7 @@ Value h_gen_GetAsyncIterator(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_AsyncIteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5520,7 +5568,7 @@ Value h_gen_AsyncIteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_AsyncIteratorClose(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5592,7 +5640,7 @@ bool for_in_proto_chain_silent(Object* obj) {
 // -- moves the object off that shape or gives it an extras block, and either
 // makes this test fail and fall through to the real `in`.
 Value h_gen_ForInKeyPresent(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5623,7 +5671,7 @@ Value h_gen_ForInKeyPresent(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5691,7 +5739,7 @@ Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_TryCollectRestArray(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -5739,7 +5787,7 @@ Value h_gen_TryCollectRestArray(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_JumpIfNotNullish(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5758,7 +5806,7 @@ Value h_gen_JumpIfNotNullish(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_JumpIfNullish(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5777,7 +5825,7 @@ Value h_gen_JumpIfNullish(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_JumpIfNotUndefined(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5801,7 +5849,7 @@ Value h_gen_JumpIfNotUndefined(Frame& f, uint32_t pc, Value acc) {
 // literals, so no ordering comparison ever runs against a mismatched type --
 // see BytecodeCompiler.cpp's SWITCH_STATEMENT case for why that matters.
 Value h_gen_JumpIfNotNumber(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5820,7 +5868,7 @@ Value h_gen_JumpIfNotNumber(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_JumpIfNotString(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5839,7 +5887,7 @@ Value h_gen_JumpIfNotString(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5890,7 +5938,7 @@ Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5929,7 +5977,7 @@ Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
 // comment (same alloc_feedback_slot-style overflow, this time on
 // chunk_->ensure_closures() rather than a feedback pool).
 Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5957,7 +6005,7 @@ Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
 // Wide counterpart of h_gen_DeclareFunction -- see h_CreateClosureWide's
 // own comment.
 Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -5984,7 +6032,7 @@ Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
 
 
 Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -6005,7 +6053,7 @@ Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_BuildClass(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6043,7 +6091,7 @@ Value h_gen_BuildClass(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_BindClassName(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -6064,7 +6112,7 @@ Value h_gen_BindClassName(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6144,7 +6192,7 @@ Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6174,7 +6222,7 @@ Value h_gen_RunStaticElement(Frame& f, uint32_t pc, Value acc) {
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6197,7 +6245,7 @@ Value h_gen_RunStaticElement(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_AddFieldInitializerKeyed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6222,7 +6270,7 @@ Value h_gen_AddFieldInitializerKeyed(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DeclarePrivateName(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6275,7 +6323,7 @@ Value h_gen_DeclarePrivateName(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DefinePrivateMember(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6323,7 +6371,7 @@ Value h_gen_DefinePrivateMember(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LinkPrivateBrands(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6379,7 +6427,7 @@ Value h_gen_LinkPrivateBrands(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DefinePrivateStatic(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6399,7 +6447,7 @@ Value h_gen_DefinePrivateStatic(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LinkExports(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -6416,7 +6464,7 @@ Value h_gen_LinkExports(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CopyRestProperties(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6443,7 +6491,7 @@ Value h_gen_CopyRestProperties(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6480,7 +6528,7 @@ Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CallDirectEval(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -6521,7 +6569,7 @@ Value h_gen_CallDirectEval(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     std::span<const Value> args = f.args;
     Value* regs = f.regs;
@@ -6567,7 +6615,7 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
 // so the call handlers below keep the search -- a loop over the handler table --
 // out of the body that every call, thrown or not, has to run.
 [[gnu::noinline]] Value h_ExceptionAt(Frame& f, uint32_t instr_pc_value, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     uint32_t pc = instr_pc_value;
     uint32_t instr_pc = instr_pc_value;
     CHECK_EXC_TAIL();
@@ -6722,7 +6770,7 @@ Value h_ConstructLean(Frame& f, uint32_t pc, Value acc) {
 // next call at this site checks) and invokes whatever that yields exactly
 // like CallResolved would.
 Value h_gen_CallViaFunctionCall(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -6791,7 +6839,7 @@ Value h_gen_CallViaFunctionCall(Frame& f, uint32_t pc, Value acc) {
 // own comment. Identical body past the operand-read prologue; only fb_idx
 // widens.
 Value h_CallViaFunctionCallWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -6857,7 +6905,7 @@ Value h_CallViaFunctionCallWide(Frame& f, uint32_t pc, Value acc) {
 // spread CallSpread uses, since apply's argsArray only has to be
 // array-like, never iterable.
 Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -6983,7 +7031,7 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
 // own comment. Identical body past the operand-read prologue; only fb_idx
 // widens.
 Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -7091,7 +7139,7 @@ Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7130,7 +7178,7 @@ Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CallSpread(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7190,7 +7238,7 @@ Value h_gen_CallSpread(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7249,7 +7297,7 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CreateRegExp(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -7290,7 +7338,7 @@ Value h_gen_LdaEngineHelper(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_HasPrivate(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -7310,7 +7358,7 @@ Value h_gen_HasPrivate(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetSuper(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -7330,7 +7378,7 @@ Value h_gen_GetSuper(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetSuper(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7352,7 +7400,7 @@ Value h_gen_SetSuper(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ResolveSuperBase(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7382,7 +7430,7 @@ Value h_gen_ResolveSuperBase(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7405,7 +7453,7 @@ Value h_gen_GetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7429,7 +7477,7 @@ Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ThrowSuperDelete(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -7443,7 +7491,7 @@ Value h_gen_ThrowSuperDelete(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SuperCallSpread(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7471,7 +7519,7 @@ Value h_gen_SuperCallSpread(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SuperCall(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7497,7 +7545,7 @@ Value h_gen_SuperCall(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ObjectSpreadInto(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7519,7 +7567,7 @@ Value h_gen_ObjectSpreadInto(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SpreadInto(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -7549,7 +7597,7 @@ Value h_gen_SpreadInto(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -7586,7 +7634,7 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
 // path's own optimizations don't apply either, since this opcode only
 // exists on a path already vanishingly rare.
 Value h_GetNamedWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -7646,7 +7694,7 @@ inline int call_cached_getter(Frame& f, uint32_t& pc, Value& acc, Function* gett
     f.instr_pc = pc;
     Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
     if (!f.ctx->has_exception()) { acc = result; return 0; }
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     int32_t handler_pc = -1;
     uint32_t best_width = UINT32_MAX;
     if (chunk.handlers) for (const auto& h : *chunk.handlers) {
@@ -7675,7 +7723,7 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
         const FeedbackSlot::Entry& e = fb.entries[0];
         // The receiver's own word -- shape and object type together -- against the one the site
         // learned: a hit means a plain data property on a type this path serves (anything else
@@ -7731,7 +7779,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
     // It sits ahead of the is_object() gate because a constructor namespace
     // is a function object, and those never reach that gate at all.
     {
-        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
         if (fb.own_desc_receiver != nullptr &&
             fb.own_desc_epoch == Object::descriptor_epoch() &&
             as_object_like(receiver) == fb.own_desc_receiver) {
@@ -7746,7 +7794,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // never become an accessor on one, so the count answers the read
             // exactly. A length moved into a descriptor fails the dense check
             // and takes the general path.
-            const FeedbackBody& afb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+            const FeedbackBody& afb = f.chunk->feedback[read_u16(code, pc + 4)].read();
             if (LIKELY(afb.array_length && obj->has_only_dense_elements())) {
                 acc = Value(static_cast<double>(obj->element_count()));
                 FUSED_TAIL(6);
@@ -7767,11 +7815,11 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // The same for a Map or a Set, whose only own name besides the
             // shape's is `size` -- never learned, for the same reason.
             if (f.feedback_rooted &&
-                inherited_data_entry(f.chunk.feedback[read_u16(code, pc + 4)].read(), obj, acc)) {
+                inherited_data_entry(f.chunk->feedback[read_u16(code, pc + 4)].read(), obj, acc)) {
                 FUSED_TAIL(6);
             }
         } else if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
-            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+            const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
             // Every learned entry, not just the first. The handler above tries
             // that one and hands the rest here, so a site that has seen more
             // than one shape -- three objects taking turns is enough -- reached
@@ -7847,7 +7895,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                                     f.instr_pc = pc;
                                     Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
                                     if (f.ctx->has_exception()) {
-                                        const BytecodeChunk& chunk = f.chunk;
+                                        const BytecodeChunk& chunk = *f.chunk;
                                         int32_t handler_pc = -1;
                                         uint32_t best_width = UINT32_MAX;
                                         if (chunk.handlers) for (const auto& h : *chunk.handlers) {
@@ -7892,7 +7940,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // thread_local, so the test is one load rather than a guarded static).
             static constinit thread_local const std::string* prototype_name = nullptr;
             if (UNLIKELY(!prototype_name)) prototype_name = Shape::intern("prototype");
-            if (f.chunk.names[read_u16(code, pc + 2)] == prototype_name) {
+            if (f.chunk->names[read_u16(code, pc + 2)] == prototype_name) {
                 Function* fn = receiver.as_function();
                 if (fn->has_plain_prototype()) {
                     acc = fn->constructor_prototype();
@@ -7914,10 +7962,10 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
         // an own "call" a shadow would create (a different shape than any
         // entry learned here could match).
         Object* obj = receiver.as_object();
-        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
         if (f.feedback_rooted && !fb.proto_mega && fb.proto_count > 0 &&
             !obj->has_any_descriptor_override() &&
-            function_proto_read_cacheable(f.chunk.name_at(read_u16(code, pc + 2)))) {
+            function_proto_read_cacheable(f.chunk->name_at(read_u16(code, pc + 2)))) {
             Shape* rs = obj->get_shape();
             // Not get_prototype(): a Proxy is the only type whose answer is not the
             // stored pointer, and neither gate this sits behind lets one through.
@@ -7937,7 +7985,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                                 f.instr_pc = pc;
                                 Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
                                 if (f.ctx->has_exception()) {
-                                    const BytecodeChunk& chunk = f.chunk;
+                                    const BytecodeChunk& chunk = *f.chunk;
                                     int32_t handler_pc = -1;
                                     uint32_t best_width = UINT32_MAX;
                                     if (chunk.handlers) for (const auto& h : *chunk.handlers) {
@@ -7985,7 +8033,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
         // returns before the cache is ever written, so a site whose name is one
         // of them can only carry a prim entry learned from a DIFFERENT kind --
         // whose prototype then fails the identity check below.
-        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
         if (LIKELY(fb.prim_valid && !fb.prim_is_getter &&
                    fb.prim_desc_epoch == Object::descriptor_epoch())) {
             using PK = Context::PrimitiveKind;
@@ -8004,7 +8052,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
     // Past the site's own entries: the shared cache for what it cannot hold.
     if (receiver.is_object()) {
         Value cached;
-        if (mega_probe(receiver.as_object(), &f.chunk.name_at(read_u16(code, pc + 2)), cached)) {
+        if (mega_probe(receiver.as_object(), &f.chunk->name_at(read_u16(code, pc + 2)), cached)) {
             acc = cached;
             FUSED_TAIL(6);
         }
@@ -8013,7 +8061,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -8038,7 +8086,7 @@ Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
 
 // Wide counterpart of h_gen_SetNamed -- see h_GetNamedWide's own comment.
 Value h_SetNamedWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
     Value* regs = f.regs;
@@ -8087,7 +8135,7 @@ inline bool store_needs_barrier(const Value& value) {
 // stores; a store that needs the collector's barrier or a bigger butterfly is the slow form's.
 Value h_SetNamedTransition(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
-    const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+    const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
     if (LIKELY(!fb.transition_mega && fb.transition_count != 0 && !store_needs_barrier(acc))) {
         const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
         Object* obj = f.regs[code[pc + 1]].as_object();
@@ -8107,7 +8155,7 @@ Value h_SetNamedTransition(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& receiver = f.regs[code[pc + 1]];
     Object* obj = receiver.as_object();
-    const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+    const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
     // transitions[0] only -- the entry the sole-shape monomorphic case always hits;
     // te.from_shape's own null-ness (not fb.transition_count) is the guard, since an
     // unlearned slot must never be trusted even when obj->get_shape() itself happens to
@@ -8118,7 +8166,7 @@ Value h_SetNamedTransition(Frame& f, uint32_t pc, Value acc) {
             te.prototype == obj->get_prototype_raw() &&
             te.proto_epoch == Object::proto_epoch() &&
             obj->is_extensible()) {
-            const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
+            const std::string& name = f.chunk->name_at(read_u16(code, pc + 2));
             if (!obj->has_descriptor_override(name)) {
                 // A number or boolean store needs no barrier, and the barrier is a
                 // call: asking first keeps it (and the saves around it) off the
@@ -8138,7 +8186,7 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
         const FeedbackSlot::Entry& e = fb.entries[0];
         // Same word compare as the read side; the stamp is global and never revived, the
         // receiver's own map answers for itself.
@@ -8169,7 +8217,7 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
-            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+            const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
             Shape* own_shape = obj->get_shape();
             for (uint8_t k = 1; k < fb.count; k++) {
                 const FeedbackSlot::Entry& e = fb.entries[k];
@@ -8192,7 +8240,7 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
                     const auto& te = fb.transitions[i];
                     if (te.from_shape != own_shape || te.prototype != proto0 ||
                         te.proto_epoch != epoch) continue;
-                    const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
+                    const std::string& name = f.chunk->name_at(read_u16(code, pc + 2));
                     if (obj->has_descriptor_override(name)) break;
                     write_barrier_for(obj, acc);
                     obj->add_shape_property_cached(name, acc, te.to_shape);
@@ -8200,7 +8248,7 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
                     DISPATCH();
                 }
             } else if (fb.transition_mega) {
-                const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
+                const std::string& name = f.chunk->name_at(read_u16(code, pc + 2));
                 if (Shape* to = mega_transition_probe(obj, &name)) {
                     write_barrier_for(obj, acc);
                     obj->add_shape_property_cached(name, acc, to);
@@ -8360,7 +8408,7 @@ Value h_LdaArgAt(Frame& f, uint32_t pc, Value acc) {
 // the prototype chain answers, or a key whose conversion runs script all come
 // out exactly as they would have.
 Value h_LdaArgAtSlow(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -8380,7 +8428,7 @@ Value h_LdaArgAtSlow(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
@@ -8407,7 +8455,7 @@ Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
 // private_feedback_data is its own pool (alloc_private_feedback), separate
 // from chunk.feedback -- indexed here the same way, just with a u32 index.
 Value h_GetPrivateWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
@@ -8424,7 +8472,7 @@ Value h_GetPrivateWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
@@ -8449,7 +8497,7 @@ Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
 
 // Wide counterpart of h_gen_SetPrivate -- see h_GetPrivateWide's own comment.
 Value h_SetPrivateWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
@@ -8466,7 +8514,7 @@ Value h_SetPrivateWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8535,7 +8583,7 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
 // DISPATCH() would refuse the tail call outright, which is exactly why
 // the narrow form scopes it inside the block too.
 Value h_GetKeyedWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8587,7 +8635,7 @@ Value h_GetKeyedWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8647,7 +8695,7 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
 // for why this keeps the do/while(0)+break shape rather than early
 // DISPATCH()s per branch.
 Value h_SetKeyedWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8701,7 +8749,7 @@ Value h_SetKeyedWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DeleteNamed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8763,7 +8811,7 @@ Value h_gen_DeleteNamed(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DeleteKeyed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8825,7 +8873,7 @@ Value h_gen_DeleteKeyed(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8852,9 +8900,9 @@ Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
 [[gnu::noinline]] Value h_DefineOwnAdd(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     Object* obj = f.regs[code[pc + 1]].as_object();
-    const FeedbackBody* fb = f.chunk.feedback[read_u16(code, pc + 4)].peek();
+    const FeedbackBody* fb = f.chunk->feedback[read_u16(code, pc + 4)].peek();
     write_barrier_for(obj, acc);
-    obj->add_shape_property_cached(f.chunk.name_at(read_u16(code, pc + 2)), acc,
+    obj->add_shape_property_cached(f.chunk->name_at(read_u16(code, pc + 2)), acc,
                                    fb->transitions[0].to_shape);
     pc += 6;
     DISPATCH();
@@ -8878,7 +8926,7 @@ Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
         Object* obj = target.as_object();
         if (LIKELY(shape_fast_path_ok(obj->get_type()) && obj->is_extensible() &&
                    !obj->has_any_descriptor_override())) {
-            const FeedbackBody* fb = f.chunk.feedback[read_u16(code, pc + 4)].peek();
+            const FeedbackBody* fb = f.chunk->feedback[read_u16(code, pc + 4)].peek();
             if (LIKELY(fb && !fb->transition_mega && fb->transition_count != 0)) {
                 const FeedbackSlot::TransitionEntry& te = fb->transitions[0];
                 if (te.from_shape == obj->get_shape()) {
@@ -8897,7 +8945,7 @@ Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
 
 // Wide counterpart of h_gen_DefineOwn -- see h_GetNamedWide's own comment.
 Value h_DefineOwnWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8914,7 +8962,7 @@ Value h_DefineOwnWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DefineElement(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -8959,7 +9007,7 @@ Value h_DefineElementFast(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ToPropertyKeyStrict(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -8976,7 +9024,7 @@ Value h_gen_ToPropertyKeyStrict(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DefineOwnKeyed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -9019,7 +9067,7 @@ Value h_gen_DefineOwnKeyed(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -9126,7 +9174,7 @@ Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
 // own comment. Identical body past the operand-read prologue; only fb_idx
 // widens (raw_kind stays put, it sits before fb in both forms).
 Value h_FinalizeStaticPropertyWide(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -9192,7 +9240,7 @@ Value h_FinalizeStaticPropertyWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -9278,7 +9326,7 @@ Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_PushDisposeScope(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     pc += 1;
     ctx.push_dispose_scope();
@@ -9286,7 +9334,7 @@ Value h_gen_PushDisposeScope(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_RegisterDisposable(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9299,7 +9347,7 @@ Value h_gen_RegisterDisposable(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_LdaWith(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9338,7 +9386,7 @@ Value h_gen_LdaWith(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ResolveWithTarget(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9370,7 +9418,7 @@ Value h_gen_ResolveWithTarget(Frame& f, uint32_t pc, Value acc) {
 // The read half, for a compound assignment or an update: the same verdict
 // decides where the old value comes from.
 Value h_gen_LdaWithResolved(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -9410,7 +9458,7 @@ Value h_gen_LdaWithResolved(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_StaWithResolved(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -9466,7 +9514,7 @@ Value h_gen_StaWithResolved(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_PushWithEnv(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -9477,7 +9525,7 @@ Value h_gen_PushWithEnv(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DisposeScope(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9494,7 +9542,7 @@ Value h_gen_DisposeScope(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9528,7 +9576,7 @@ Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetLiteralProto(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
     uint8_t obj_reg = code[pc + 1];
@@ -9545,7 +9593,7 @@ Value h_gen_SetLiteralProto(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_FinalizeComputedAccessor(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
@@ -9606,7 +9654,7 @@ Value h_gen_FinalizeComputedAccessor(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_SetFunctionNameIfUnnamed(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9630,7 +9678,7 @@ Value h_gen_SetFunctionNameIfUnnamed(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CreateObject(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9667,7 +9715,7 @@ Value h_gen_CreateObject(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -9692,7 +9740,7 @@ Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_CreateRestArray(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     std::span<const Value> args = f.args;
     const uint8_t* code = f.code;
@@ -9726,7 +9774,7 @@ Value h_gen_CreateRestArray(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_Throw(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -9741,7 +9789,7 @@ Value h_gen_Throw(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_ReraiseGeneratorReturn(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -9997,7 +10045,7 @@ bool osr_try(Frame& f, uint32_t, const Value&) { f.osr_budget = INT32_MAX; retur
 
 // Where a frame starts or resumes: in generated code when the chunk has any.
 [[gnu::always_inline]] inline Value run_entry(Frame& f) {
-    if (JitCode* jc = f.chunk.jit.get()) return jit::run(f, jc);
+    if (JitCode* jc = f.chunk->jit.get()) return jit::run(f, jc);
     return run_dispatch(f);
 }
 
@@ -10208,7 +10256,7 @@ template <bool Fast>
     // chunk gets its root -- so script_mode is exactly "this chunk's caches
     // are traced".
     const bool feedback_rooted = Fast || owner != nullptr || chunk.script_mode;
-    Frame frame{chunk, &ctx, args, owner, feedback_rooted, regs, env_saves, resolved_envs,
+    Frame frame{&chunk, &ctx, args, owner, feedback_rooted, regs, env_saves, resolved_envs,
                 lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
                 this_value, (!Fast && initial_acc) ? *initial_acc : Value(), 0, 0, 0, this_resolved};
@@ -10317,7 +10365,7 @@ template <bool Fast>
           for (;;) {
               int32_t handler_pc = -1;
               uint32_t best_width = UINT32_MAX;
-              if (cur->chunk.handlers) for (const auto& h : *cur->chunk.handlers) {
+              if (cur->chunk->handlers) for (const auto& h : *cur->chunk->handlers) {
                   if (cur->instr_pc >= h.start_pc && cur->instr_pc < h.end_pc) {
                       uint32_t width = h.end_pc - h.start_pc;
                       if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }

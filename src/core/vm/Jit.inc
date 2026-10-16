@@ -306,15 +306,15 @@ void init_once() {
 void learn_ic(Frame* f, JitCode* jc, uint32_t pc, uint32_t block) noexcept {
     if (block + JitIC::kWays > jc->ics.size()) return;
     const uint32_t fb_index = read_u16(jc->code_copy.data(), pc + 4);
-    if (fb_index >= f->chunk.feedback.size()) return;
-    const FeedbackBody* fb = f->chunk.feedback[fb_index].peek();
+    if (fb_index >= f->chunk->feedback.size()) return;
+    const FeedbackBody* fb = f->chunk->feedback[fb_index].peek();
     if (!fb) return;
     JitIC* ics = &jc->ics[block];
     const uint32_t sig = 0x80000000u | fb->count | (static_cast<uint32_t>(fb->proto_count) << 8) |
                          (static_cast<uint32_t>(fb->mega) << 16) | (static_cast<uint32_t>(fb->proto_mega) << 17) |
                          (static_cast<uint32_t>(f->feedback_rooted) << 18);
     if (ics[0].signature == sig) return;
-    const bool is_set = static_cast<Op>(f->chunk.code[pc]) == Op::SetNamed;
+    const bool is_set = static_cast<Op>(f->chunk->code[pc]) == Op::SetNamed;
     JitIC fresh[JitIC::kWays];
     uint32_t n = 0;
     if (!fb->mega) {
@@ -373,15 +373,15 @@ void learn_ic(Frame* f, JitCode* jc, uint32_t pc, uint32_t block) noexcept {
 //
 // Returns the pc to continue at, or a kStep* code.
 int32_t step_impl(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noexcept {
-    JitCode* jc = f->chunk.jit.get();
+    JitCode* jc = f->chunk->jit.get();
     jc->slow++;
     const uint32_t size = jc->code_size;
     if (__builtin_expect(g_cfg.debug, 0)) {
-        if (g_cfg.stats) { g_cfg.steps[f->chunk.code[pc]]++; g_cfg.step_total++; note_site(f->chunk, pc); }
-        if (g_cfg.trace) std::fprintf(stderr, "[jit] step pc=%u op=%u\n", pc, f->chunk.code[pc]);
+        if (g_cfg.stats) { g_cfg.steps[f->chunk->code[pc]]++; g_cfg.step_total++; note_site(*f->chunk, pc); }
+        if (g_cfg.trace) std::fprintf(stderr, "[jit] step pc=%u op=%u\n", pc, f->chunk->code[pc]);
     }
 
-    const uint8_t op = f->chunk.code[pc];
+    const uint8_t op = f->chunk->code[pc];
     // The length the code generator decoded this instruction with. Not passed in: the
     // Microsoft ABI has four argument registers and a fifth would go on the stack.
     const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(static_cast<Op>(op)));
@@ -398,7 +398,7 @@ int32_t step_impl(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noe
         // `code[pc + n]` lands in the copy while `pc` stays the chunk's real one
         // (positions, stack traces and instr_pc all want that).
         uint8_t stub[16];
-        const uint8_t* src = f->chunk.code.data() + pc;
+        const uint8_t* src = f->chunk->code.data() + pc;
         if (pc + 16 <= size) {                        // two fixed-size copies, not a call to memcpy
             uint64_t lo, hi;
             std::memcpy(&lo, src, 8);
@@ -465,7 +465,7 @@ int32_t step_impl(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noe
 
 QUANTA_JIT_ABI int32_t step(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noexcept {
     if (__builtin_expect(g_cfg.stats, 0)) {
-        const uint8_t op = f->chunk.code[pc];
+        const uint8_t op = f->chunk->code[pc];
         const uint64_t t0 = cycle_counter();
         const int32_t r = step_impl(f, pc, target, ic_index);
         g_cfg.step_cycles[op] += cycle_counter() - t0;
@@ -491,7 +491,7 @@ int32_t find_handler(const BytecodeChunk& chunk, uint32_t pc) noexcept {
 // the safepoint the call handlers end with. Returns the pc to continue at.
 [[gnu::always_inline]] inline int32_t after_op(Frame* f, JitCode* jc, uint32_t pc, uint32_t next) noexcept {
     if (f->ctx->has_exception()) {
-        const int32_t handler_pc = find_handler(f->chunk, pc);
+        const int32_t handler_pc = find_handler(*f->chunk, pc);
         if (handler_pc < 0) { f->acc = Value(); return kStepFinished; }
         f->acc = f->ctx->get_exception();
         f->ctx->clear_exception();
@@ -523,22 +523,22 @@ int32_t find_handler(const BytecodeChunk& chunk, uint32_t pc) noexcept {
 // minus the paths that call a getter (a call can throw and re-enter; the step
 // does those).
 int fast_get_named_impl(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
-    f->chunk.jit->slow++;
+    f->chunk->jit->slow++;
     if (__builtin_expect(g_cfg.debug && g_cfg.stats, 0)) {
-        note_site(f->chunk, pc);
-        if (g_cfg.trace && ic_index != kNoOperand && ic_index < f->chunk.jit->ics.size()) {
-            const Value& rv = f->regs[f->chunk.code[pc + 1]];
+        note_site(*f->chunk, pc);
+        if (g_cfg.trace && ic_index != kNoOperand && ic_index < f->chunk->jit->ics.size()) {
+            const Value& rv = f->regs[f->chunk->code[pc + 1]];
             uint64_t shape_word = 0;
             if (rv.is_object()) shape_word = *reinterpret_cast<const uint64_t*>(reinterpret_cast<const char*>(rv.as_object()) + JitObjectLayout::shape());
-            const JitIC& ic = f->chunk.jit->ics[ic_index];
+            const JitIC& ic = f->chunk->jit->ics[ic_index];
             static int budget = 40; static uint64_t calls = 0; calls++;
             if (calls > 3000000 && budget-- > 0) std::fprintf(stderr, "[jit] get_named miss pc=%u recv_obj=%d shape_word=%llx ic.kind=%u ic.shape=%llx\n", pc, rv.is_object(),
                 (unsigned long long)shape_word, ic.kind, (unsigned long long)ic.shape_word);
         }
     }
-    const uint8_t* code = f->chunk.code.data();
+    const uint8_t* code = f->chunk->code.data();
     const Value& receiver = f->regs[code[pc + 1]];
-    const FeedbackBody& fb = f->chunk.feedback[read_u16(code, pc + 4)].read();
+    const FeedbackBody& fb = f->chunk->feedback[read_u16(code, pc + 4)].read();
     if (fb.own_desc_receiver != nullptr && fb.own_desc_epoch == Object::descriptor_epoch() &&
         as_object_like(receiver) == fb.own_desc_receiver) {
         f->acc = fb.own_desc_value;
@@ -552,12 +552,12 @@ int fast_get_named_impl(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
                 f->acc = Value(static_cast<double>(obj->element_count()));
                 return 1;
             }
-            if (f->feedback_rooted && f->chunk.name_at(read_u16(code, pc + 2)) != "length" &&
+            if (f->feedback_rooted && f->chunk->name_at(read_u16(code, pc + 2)) != "length" &&
                 inherited_data_entry(fb, obj, f->acc)) {
                 return 1;
             }
         } else if (type == Object::ObjectType::Map || type == Object::ObjectType::Set) {
-            if (f->feedback_rooted && f->chunk.name_at(read_u16(code, pc + 2)) != "size" &&
+            if (f->feedback_rooted && f->chunk->name_at(read_u16(code, pc + 2)) != "size" &&
                 inherited_data_entry(fb, obj, f->acc)) {
                 return 1;
             }
@@ -595,7 +595,7 @@ int fast_get_named_impl(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
     } else if (receiver.is_function()) {
         Object* obj = receiver.as_object();
         if (f->feedback_rooted && !fb.proto_mega && fb.proto_count > 0 && !obj->has_any_descriptor_override() &&
-            function_proto_read_cacheable(f->chunk.name_at(read_u16(code, pc + 2)))) {
+            function_proto_read_cacheable(f->chunk->name_at(read_u16(code, pc + 2)))) {
             Shape* rs = obj->get_shape();
             Object* p0 = obj->get_prototype_raw();
             const uint64_t pep = Object::proto_epoch();
@@ -637,21 +637,21 @@ QUANTA_JIT_ABI int fast_get_named(Frame* f, uint32_t pc, uint32_t ic_index) noex
     // The interpreter has already learned this site (that is what let the helper
     // answer), so the generated code's own cache can copy it now rather than wait
     // for a step that will never come.
-    if (handled && ic_index != kNoOperand) learn_ic(f, f->chunk.jit.get(), pc, ic_index);
+    if (handled && ic_index != kNoOperand) learn_ic(f, f->chunk->jit.get(), pc, ic_index);
     return handled;
 }
 
 // SetNamed beyond the monomorphic own-slot store: the other learned shapes and
 // the new-property transition cache (h_SetNamedFast / h_SetNamedRest).
 int fast_set_named_impl(Frame* f, uint32_t pc) noexcept {
-    f->chunk.jit->slow++;
-    const uint8_t* code = f->chunk.code.data();
+    f->chunk->jit->slow++;
+    const uint8_t* code = f->chunk->code.data();
     const Value& receiver = f->regs[code[pc + 1]];
     const Value& acc = f->acc;
     if (!receiver.is_object()) return 0;
     Object* obj = receiver.as_object();
     if (!shape_fast_path_ok(obj->get_type())) return 0;
-    const FeedbackBody& fb = f->chunk.feedback[read_u16(code, pc + 4)].read();
+    const FeedbackBody& fb = f->chunk->feedback[read_u16(code, pc + 4)].read();
     Shape* own_shape = obj->get_shape();
     for (uint8_t k = 0; k < fb.count; k++) {
         const FeedbackSlot::Entry& e = fb.entries[k];
@@ -670,7 +670,7 @@ int fast_set_named_impl(Frame* f, uint32_t pc) noexcept {
         for (uint8_t i = 0; i < fb.transition_count; i++) {
             const auto& te = fb.transitions[i];
             if (te.from_shape != own_shape || te.prototype != proto0 || te.proto_epoch != epoch) continue;
-            const std::string& name = f->chunk.name_at(read_u16(code, pc + 2));
+            const std::string& name = f->chunk->name_at(read_u16(code, pc + 2));
             if (obj->has_descriptor_override(name)) break;
             write_barrier_for(obj, acc);
             obj->add_shape_property_cached(name, acc, te.to_shape);
@@ -682,14 +682,14 @@ int fast_set_named_impl(Frame* f, uint32_t pc) noexcept {
 
 QUANTA_JIT_ABI int fast_set_named(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
     const int handled = fast_set_named_impl(f, pc);
-    if (handled && ic_index != kNoOperand) learn_ic(f, f->chunk.jit.get(), pc, ic_index);
+    if (handled && ic_index != kNoOperand) learn_ic(f, f->chunk->jit.get(), pc, ic_index);
     return handled;
 }
 
 // LdaLookup / LdaLookupStar: every cached form (h_LdaLookupFast).
 QUANTA_JIT_ABI int fast_lookup(Frame* f, uint32_t pc) noexcept {
-    f->chunk.jit->slow++;
-    const auto& entry = f->lookup_cache_data[read_u16(f->chunk.code.data(), pc + 1)];
+    f->chunk->jit->slow++;
+    const auto& entry = f->lookup_cache_data[read_u16(f->chunk->code.data(), pc + 1)];
     if (entry.shadow_epoch != Environment::binding_shadow_epoch()) return 0;
     if (entry.dict_desc) {
         Object* bo = entry.env->get_binding_object();
@@ -717,7 +717,7 @@ QUANTA_JIT_ABI int fast_lookup(Frame* f, uint32_t pc) noexcept {
 // hop-walking counterparts): kind 0 LdaEnvSlot, 1 StaEnvSlot, 2 LdaEnvSlotAt,
 // 3 StaEnvSlotAt.
 QUANTA_JIT_ABI int fast_env_slot(Frame* f, uint32_t pc, uint32_t kind) noexcept {
-    const uint8_t* code = f->chunk.code.data();
+    const uint8_t* code = f->chunk->code.data();
     Environment* env = frame_lexical_env(*f);
     uint32_t slot, name_at;
     if (kind >= 2) {
@@ -727,7 +727,7 @@ QUANTA_JIT_ABI int fast_env_slot(Frame* f, uint32_t pc, uint32_t kind) noexcept 
         slot = code[pc + 1]; name_at = pc + 2;
     }
     if (!env) return 0;
-    auto* e = env->inline_slot_interned(slot, f->chunk.names[read_u16(code, name_at)]);
+    auto* e = env->inline_slot_interned(slot, f->chunk->names[read_u16(code, name_at)]);
     if (!e || !e->slot.initialized) return 0;
     if (kind & 1) {
         if (!e->slot.mutable_flag) return 0;
@@ -742,8 +742,8 @@ QUANTA_JIT_ABI int fast_env_slot(Frame* f, uint32_t pc, uint32_t kind) noexcept 
 // SetKeyed's element stores (h_SetKeyedFast / h_SetKeyedElement): an in-range or
 // appending store to a dense array, and a typed-array number store.
 QUANTA_JIT_ABI int fast_set_keyed(Frame* f, uint32_t pc) noexcept {
-    f->chunk.jit->slow++;
-    const uint8_t* code = f->chunk.code.data();
+    f->chunk->jit->slow++;
+    const uint8_t* code = f->chunk->code.data();
     const Value& acc = f->acc;
     uint32_t index;
     if (!array_index_key(f->regs[code[pc + 2]], index)) return 0;
@@ -764,12 +764,12 @@ QUANTA_JIT_ABI int fast_set_keyed(Frame* f, uint32_t pc) noexcept {
 // `_slow`, and TestInstanceOf): acc = binary_slow(regs[r], acc), then the
 // exception routing. `op` is the BinaryExpression::Operator.
 QUANTA_JIT_ABI int32_t binary_op(Frame* f, uint32_t pc, uint32_t op) noexcept {
-    JitCode* jc = f->chunk.jit.get();
+    JitCode* jc = f->chunk->jit.get();
     jc->slow++;
-    if (__builtin_expect(g_cfg.stats, 0)) { g_cfg.steps[f->chunk.code[pc]]++; g_cfg.step_total++; }
+    if (__builtin_expect(g_cfg.stats, 0)) { g_cfg.steps[f->chunk->code[pc]]++; g_cfg.step_total++; }
     f->instr_pc = pc;
     try {
-        const uint8_t* code = f->chunk.code.data();
+        const uint8_t* code = f->chunk->code.data();
         f->acc = binary_slow(*f->ctx, static_cast<BinOp>(op), f->regs[code[pc + 1]], f->acc);
     } catch (...) {
         jc->pending = std::current_exception();
@@ -783,9 +783,9 @@ QUANTA_JIT_ABI int32_t binary_op(Frame* f, uint32_t pc, uint32_t op) noexcept {
 // code cannot do inline, and routing it through `step` would pay the stop-byte
 // machinery for an instruction that never needs it.
 QUANTA_JIT_ABI int32_t call_op(Frame* f, uint32_t pc, uint32_t kind) noexcept {
-    JitCode* jc = f->chunk.jit.get();
-    if (__builtin_expect(g_cfg.stats, 0)) { g_cfg.steps[f->chunk.code[pc]]++; g_cfg.step_total++; }
-    const uint8_t* code = f->chunk.code.data();
+    JitCode* jc = f->chunk->jit.get();
+    if (__builtin_expect(g_cfg.stats, 0)) { g_cfg.steps[f->chunk->code[pc]]++; g_cfg.step_total++; }
+    const uint8_t* code = f->chunk->code.data();
     Context& ctx = *f->ctx;
     f->instr_pc = pc;
     uint32_t next;
@@ -813,7 +813,7 @@ QUANTA_JIT_ABI int32_t call_op(Frame* f, uint32_t pc, uint32_t kind) noexcept {
             } else if (callee.is_object() && callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                 acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
             } else {
-                ctx.throw_type_error(f->chunk.name_at(name_idx) + " is not a constructor");
+                ctx.throw_type_error(f->chunk->name_at(name_idx) + " is not a constructor");
             }
         } else if (callee.is_function()) {
             Function* fn = callee.as_function();
@@ -831,7 +831,7 @@ QUANTA_JIT_ABI int32_t call_op(Frame* f, uint32_t pc, uint32_t kind) noexcept {
             std::vector<Value> trap_args(call_args.begin(), call_args.end());
             acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, receiver);
         } else {
-            ctx.throw_type_error(f->chunk.name_at(name_idx) + " is not a function");
+            ctx.throw_type_error(f->chunk->name_at(name_idx) + " is not a function");
         }
         f->acc = acc;
     } catch (...) {
@@ -842,7 +842,7 @@ QUANTA_JIT_ABI int32_t call_op(Frame* f, uint32_t pc, uint32_t kind) noexcept {
 }
 
 QUANTA_JIT_ABI void safepoint(Frame* f) noexcept {
-    f->chunk.jit->rt.sp_counter = g_cfg.safepoint_reload;
+    f->chunk->jit->rt.sp_counter = g_cfg.safepoint_reload;
     Collector::safepoint();
 }
 
@@ -2480,7 +2480,7 @@ bool tally(JitCode* jc) noexcept {
 bool osr(Frame& f, uint32_t target, const Value& acc) noexcept {
     // One offer per activation unless it is taken: if compiling is refused, asking again
     // at every back edge would cost more than the loop saves.
-    const BytecodeChunk& chunk = f.chunk;
+    const BytecodeChunk& chunk = *f.chunk;
     if (chunk.jit_state == 2) return false;
     if (chunk.jit_state != 1) {
         init_once();
