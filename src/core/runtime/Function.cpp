@@ -2127,6 +2127,19 @@ bool Function::new_target_is_self_or_none(const Context& ctx) const {
     return nt.is_undefined() || (nt.is_function() && nt.as_function() == this);
 }
 
+Object* Function::new_construct_object(Object* pending_proto) {
+    const uint32_t construct_slot_hint = get_construct_slot_hint();
+    std::unique_ptr<Object> new_object;
+    if (construct_slot_hint <= 4) {
+        new_object = ObjectFactory::create_object_with_slots((construct_slot_hint + 1) & ~1u);
+    } else {
+        new_object = ObjectFactory::create_object();
+        new_object->reserve_property_slots(construct_slot_hint);
+    }
+    new_object->initialize_prototype_of_new(pending_proto);
+    return new_object.release();
+}
+
 bool Function::construct_plain(Context& ctx, std::span<const Value> args, Value& out) {
     const Value proto_value = constructor_prototype();
     Object* pending_proto = proto_value.is_function() ? static_cast<Object*>(proto_value.as_function())

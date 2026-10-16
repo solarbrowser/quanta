@@ -2175,6 +2175,15 @@ public:
     Value construct(Context& ctx, std::span<const Value> args);
     void learn_construct_slot_hint(const Object* built);
     bool construct_plain(Context& ctx, std::span<const Value> args, Value& out);
+    // The stackless `new` (Interpreter.cpp, h_ConstructInlineGo) builds the object and runs the body
+    // itself; these are the two questions it asks of the function. The first is construct()'s own gate
+    // for construct_plain, the second is construct_plain's allocation, so the object is the one the
+    // general road would have made.
+    bool stackless_constructible() const {
+        return is_constructor_ && !is_native_ && executable_ && executable_->fast_gate &&
+               get_function_kind() == FunctionKind::Plain && !is_derived_ctor() && !is_default_ctor();
+    }
+    Object* new_construct_object(Object* pending_proto);
     Value construct_general(Context& ctx, std::span<const Value> args);
     bool new_target_is_self_or_none(const Context& ctx) const;
     // For a caller that arrived with a vector: its storage is malloc'd and

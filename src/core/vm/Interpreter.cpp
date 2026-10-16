@@ -2089,6 +2089,11 @@ struct Frame {
     // A stackless frame of an environment-mode function: popping it releases the call
     // environment, restores the context's strictness and `this`, and drops its two roots.
     bool env_call = false;
+    // A stackless frame of a `new` (h_ConstructInlineGo): its Return picks between the value and `this`,
+    // and popping it puts back the context flags the construction set.
+    bool construct_call = false;
+    // Either of the two above: the one test the return and pop paths make on the way through.
+    bool rare_pop = false;
 };
 
 // The permanent form of the diagnostic's frame_lex_env_diag(f): falls back
@@ -2286,12 +2291,25 @@ struct InlineEnvState {
     alignas(EnvironmentRoot) unsigned char roots[2][sizeof(EnvironmentRoot)];
 };
 
+// What a stackless `new` changed on the context, to be put back when its frame ends -- the same five
+// flags construct_plain's ConstructFlagsGuard keeps, and new.target.
+struct InlineConstructState {
+    Value saved_new_target;
+    Object* proto;
+    Object* super_override;
+    bool super_called;
+    bool in_constructor_call;
+    bool super_override_needs_reparent;
+    bool construct_explicit_return;
+};
+
 struct InlineSlot {
     alignas(Frame) unsigned char frame_storage[sizeof(Frame)];
     CallInfo call_info;
     Environment* env_saves[64];
     Environment* resolved_envs[8];
     InlineEnvState env;
+    InlineConstructState construct;
     Frame& frame() { return *reinterpret_cast<Frame*>(frame_storage); }
 };
 
@@ -2418,8 +2436,29 @@ inline void inline_slot_frame_init(InlineSlot& slot) {
     f.env_call = false;   // the slot's next frame is a plain one unless it says otherwise
 }
 
+// What a stackless `new` put on the context, undone: new.target and the flags construct_plain's guard keeps.
+void inline_construct_restore(Frame& f) {
+    InlineConstructState& st = reinterpret_cast<InlineSlot*>(&f)->construct;
+    Context& ctx = *f.ctx;
+    ctx.set_new_target(st.saved_new_target);
+    ctx.set_super_called(st.super_called);
+    ctx.set_in_constructor_call(st.in_constructor_call);
+    ctx.set_last_super_override(st.super_override);
+    ctx.set_last_super_override_needs_reparent(st.super_override_needs_reparent);
+    ctx.set_last_construct_explicit_return(st.construct_explicit_return);
+    f.construct_call = false;
+}
+
+// Popping a frame that holds more than its registers, without returning from it (an exception is
+// passing through): the construction's context flags, then the call environment.
+[[gnu::noinline]] void inline_release_rare(Frame& f) {
+    if (f.construct_call) inline_construct_restore(f);
+    if (f.env_call) inline_env_release(f);
+    f.rare_pop = false;
+}
+
 [[gnu::always_inline]] inline void inline_frame_pop(Frame& f) {
-    if (UNLIKELY(f.env_call)) inline_env_release(f);
+    if (UNLIKELY(f.rare_pop)) inline_release_rare(f);
     Frame* c = f.caller;
     f.base->active = (c == f.base) ? nullptr : c;
     g_arena.top -= f.value_words;
@@ -2581,6 +2620,7 @@ constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_
     callee->return_pc = return_pc;
     callee->value_words = words;
     callee->env_call = true;
+    callee->rare_pop = true;
 
     InlineEnvState& st = slot.env;
     st.call_env = call_env;
@@ -2785,18 +2825,32 @@ Value h_LdaConstWide(Frame& f, uint32_t pc, Value acc) {
 
 Value h_ReturnInline(Frame& f, uint32_t pc, Value acc);
 
-// The return of an environment-mode frame: its own state is undone (a call, so it is not
-// folded into h_ReturnInline, which would then save registers on every return), and the rest is
-// the ordinary return.
-[[gnu::noinline]] Value h_ReturnInlineEnv(Frame& f, uint32_t pc, Value acc) {
-    inline_env_release(f);
-    f.env_call = false;   // released; the pop below must not do it again
+// The return of a frame that holds more than its registers: the call environment is undone, and a
+// construction's result is chosen (an object the body returned, or `this`) before the flags it set go
+// back. Calls, so not folded into h_ReturnInline, which would then save registers on every return.
+[[gnu::noinline]] Value h_ReturnInlineRare(Frame& f, uint32_t pc, Value acc) {
+    if (f.construct_call) {
+        InlineConstructState& st = reinterpret_cast<InlineSlot*>(&f)->construct;
+        Object* self = f.this_value.as_object();
+        // construct_plain's ending: an explicit `return obj` is used as it is, and an object that came
+        // back with no prototype gets the one `this` would have had.
+        if ((acc.is_object() || acc.is_function()) && acc.as_object() != self) {
+            Object* ret_obj = acc.as_object();
+            if (!ret_obj->get_prototype_raw()) ret_obj->set_prototype(st.proto);
+        } else {
+            f.owner->learn_construct_slot_hint(self);
+            acc = f.this_value;
+        }
+        inline_construct_restore(f);
+    }
+    if (f.env_call) inline_env_release(f);
+    f.rare_pop = false;
     [[clang::musttail]] return h_ReturnInline(f, pc, acc);
 }
 
 [[gnu::noinline]] Value h_ReturnInline(Frame& f, uint32_t pc, Value acc) {
     (void)pc;
-    if (UNLIKELY(f.env_call)) [[clang::musttail]] return h_ReturnInlineEnv(f, pc, acc);
+    if (UNLIKELY(f.rare_pop)) [[clang::musttail]] return h_ReturnInlineRare(f, pc, acc);
     Frame* const caller = f.caller;
     const uint32_t return_pc = f.return_pc;
     inline_frame_pop(f);
@@ -6739,7 +6793,62 @@ Value h_gen_Construct(Frame& f, uint32_t pc, Value acc);
 
 // `new F(...)` with F a function, keeping only the frame and pc across the call (see
 // h_CallLean). Anything else -- a Proxy, a non-constructor -- is the generated handler's.
+Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc);
+
+// `new F(...)` as a stackless call, for the commonest F (construct_plain's: a base constructor that
+// is not a default one). The object is made as construct_plain makes it and handed to the callee as
+// `this`; what the call changes on the context is kept in the frame's slot and put back when it ends,
+// and its Return (h_ReturnInlineRare) chooses between the value and `this`. Anything the stackless
+// entry declines is the ordinary road's, before it has done anything the road would repeat.
+[[gnu::noinline]] Value h_ConstructInlineGo(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    Function* fn = f.regs[code[pc + 1]].as_function();
+    Context& ctx = *f.ctx;
+    f.instr_pc = pc;
+    const Value proto_value = fn->constructor_prototype();
+    Object* proto = proto_value.is_function() ? static_cast<Object*>(proto_value.as_function())
+                  : proto_value.is_object()   ? proto_value.as_object() : nullptr;
+    Frame* callee;
+    if (proto) {
+        Object* self = fn->new_construct_object(proto);
+        if (inline_call_enter(f, fn, f.regs + code[pc + 2], code[pc + 3], Value(self), pc + 6, callee)) {
+            // The brand and fields of a class come on before its body (InitializeInstanceElements); it
+            // can run script, with the callee's frame already holding `this` for the collector.
+            fn->initialize_base_instance(ctx, self);
+            if (UNLIKELY(ctx.has_exception())) {
+                inline_frame_pop(*callee);
+                [[clang::musttail]] return h_ExceptionAt(f, pc, Value());
+            }
+            InlineConstructState& st = reinterpret_cast<InlineSlot*>(callee)->construct;
+            st.saved_new_target = ctx.get_new_target();
+            st.proto = proto;
+            st.super_called = ctx.was_super_called();
+            st.in_constructor_call = ctx.is_in_constructor_call();
+            st.super_override = ctx.last_super_override();
+            st.super_override_needs_reparent = ctx.last_super_override_needs_reparent();
+            st.construct_explicit_return = ctx.last_construct_explicit_return();
+            ctx.set_in_constructor_call(true);
+            ctx.set_super_called(false);
+            ctx.set_new_target(Value(static_cast<Object*>(fn)));
+            ctx.set_last_super_override(nullptr);
+            ctx.set_last_super_override_needs_reparent(false);
+            callee->construct_call = true;
+            callee->rare_pop = true;
+            [[clang::musttail]] return kHandlers[callee->code[0]](*callee, 0, Value());
+        }
+    }
+    [[clang::musttail]] return h_ConstructPlain(f, pc, acc);
+}
+
 Value h_ConstructLean(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& callee = f.regs[code[pc + 1]];
+    if (LIKELY(callee.is_function() && f.inline_ok && callee.as_function()->stackless_constructible()))
+        [[clang::musttail]] return h_ConstructInlineGo(f, pc, acc);
+    [[clang::musttail]] return h_ConstructPlain(f, pc, acc);
+}
+
+Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& callee = f.regs[code[pc + 1]];
     if (LIKELY(callee.is_function())) {
