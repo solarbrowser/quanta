@@ -1704,7 +1704,8 @@ inline bool dense_element_slot(const Value& receiver, uint32_t index, Object*& o
 // and only for the appending case.
 inline bool dense_element_store_slot(const Value& receiver, uint32_t index, Object*& out) {
     Object* obj = as_object_like(receiver);
-    if (!obj || !obj->has_only_dense_elements()) return false;
+    if (!obj) return false;
+    if (!obj->has_only_dense_elements() && !obj->is_dense_with_trailing_holes()) return false;
     const uint32_t count = obj->element_count();
     if (index > count) return false;  // past the end: a hole, for the general path to place
     if (index == count &&

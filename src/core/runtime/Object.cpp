@@ -2048,6 +2048,14 @@ bool Object::dense_check_slow() const {
     return true;
 }
 
+bool Object::is_dense_with_trailing_holes() const {
+    if (get_type() != ObjectType::Array) return false;
+    if (has_index_descriptor()) return false;
+    if (auto* holes = deleted_elements(); holes && !holes->empty()) return false;
+    if (auto* sparse = sparse_overflow(); sparse && !sparse->empty()) return false;
+    return get_length() > elements_length();
+}
+
 Value Object::get_element(uint32_t index) const {
     if (get_type() == ObjectType::Proxy) {
         return static_cast<const Proxy*>(this)->get_element(index);

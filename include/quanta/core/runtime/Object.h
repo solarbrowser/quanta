@@ -677,6 +677,12 @@ public:
     // it while the chain is clear.
     // has_only_dense_elements()'s uncached half; sets the flag when it passes.
     bool dense_check_slow() const;
+    // An array that is dense up to elements_length() and whose length runs past
+    // it: `new Array(n)` before it is filled in, or a literal still being built.
+    // Every index below the storage is a real element and every one above it a
+    // hole, which is all a keyed store to the end of the storage needs to know.
+    // Not cached: dense_verified() says the length matches the storage.
+    bool is_dense_with_trailing_holes() const;
 
     bool proto_chain_has_no_indices() const;
 private:
