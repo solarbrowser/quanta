@@ -1,0 +1,105 @@
+name: Benchmark
+
+# Run by hand only (Actions tab -> "Benchmark" -> Run workflow). Builds the engine, builds the
+# v8-v7 suite from ahaoboy/js-engine-benchmark (its scripts are TypeScript and need bun; they
+# inline the suites into dist/run.js) and runs it with the engine just built. The output goes to the
+# job summary and is kept as an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark_ref:
+        description: 'Branch, tag or commit of ahaoboy/js-engine-benchmark'
+        required: false
+        default: 'main'
+
+jobs:
+  macos-arm64:
+    name: macOS (Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build engine
+        env:
+          QUANTA_ARCH_FLAGS: '-mcpu=apple-m1'
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ahaoboy/js-engine-benchmark
+          ref: ${{ inputs.benchmark_ref }}
+          path: bench
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build benchmark (dist/run.js)
+        working-directory: bench
+        run: |
+          bun install
+          bun run build
+          ls -l dist/run.js
+
+      - name: Run benchmark
+        run: |
+          build/bin/quanta bench/dist/run.js 2>&1 | tee benchmark-macos-arm64.txt
+          {
+            echo '## macOS (Apple Silicon)'
+            echo '```'
+            cat benchmark-macos-arm64.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-macos-arm64
+          path: benchmark-macos-arm64.txt
+
+  windows-x64:
+    name: Windows (x86-64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install LLVM/Clang
+        run: choco install llvm -y --no-progress
+
+      - name: Build engine
+        shell: cmd
+        run: build-windows.bat
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ahaoboy/js-engine-benchmark
+          ref: ${{ inputs.benchmark_ref }}
+          path: bench
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build benchmark (dist/run.js)
+        working-directory: bench
+        shell: pwsh
+        run: |
+          bun install
+          bun run build
+          Get-Item dist/run.js
+
+      - name: Run benchmark
+        shell: pwsh
+        run: |
+          & build\bin\quanta.exe bench\dist\run.js 2>&1 | Tee-Object -FilePath benchmark-windows-x64.txt
+          "## Windows (x86-64)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          '```' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          Get-Content benchmark-windows-x64.txt | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          '```' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-windows-x64
+          path: benchmark-windows-x64.txt
