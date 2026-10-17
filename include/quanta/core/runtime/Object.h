@@ -2162,7 +2162,11 @@ public:
     // The cheap part of the above, for the call handlers' screen: the executable's own bits.
     bool maybe_env_callable() const { return executable_ && executable_->fast_env_gate && !is_native_; }
     bool fast_env_callable() const {
-        if (!executable_ || !executable_->fast_env_gate || !executable_->fast_no_closures || is_native_ ||
+        // A body that makes closures qualifies when none of them can hold the Context (fast_shared_ctx);
+        // they keep the call's environment instead, which the frame's release hands to the survivors
+        // when it has escaped.
+        if (!executable_ || !executable_->fast_env_gate ||
+            !(executable_->fast_no_closures || executable_->fast_shared_ctx) || is_native_ ||
             is_class_constructor_ || is_arrow_ || is_param_default_ || get_function_kind() != FunctionKind::Plain) {
             return false;
         }

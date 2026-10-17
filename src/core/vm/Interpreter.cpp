@@ -2496,7 +2496,8 @@ constexpr uint8_t kInlineLeaf = 32;
         !exe.fast_uses_super && !exe.fast_leaf) {
         v = kInlineOk | (strict ? kInlineStrict : 0) | (exe.fast_uses_this ? kInlineWantsThis : 0);
     } else if (chunk.jit_state == 2 && chunk.env_mode && chunk.env && chunk.register_count <= kInlineMaxRegs &&
-               exe.fast_env_gate && exe.fast_no_closures && !fn->is_arrow() && !exe.fast_uses_super) {
+               exe.fast_env_gate && (exe.fast_no_closures || exe.fast_shared_ctx) && !fn->is_arrow() &&
+               !exe.fast_uses_super) {
         // An environment-mode function whose bindings can be laid down by index. The keys are
         // interned by the first call through the ordinary path, so until then: not decided.
         if (!chunk.env->env_keys_ready) return 0;
@@ -2541,6 +2542,9 @@ constexpr uint8_t kInlineLeaf = 32;
                  (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()))) {
         return false;
     }
+    // A closure made here takes the enclosing new.target and class-field-init state off the context
+    // at creation (the shared-context call in call_default_impl asks the same).
+    if (!exe.fast_no_closures && (!ctx.get_new_target().is_undefined() || ctx.is_in_class_field_init())) return false;
     const bool strict = (verdict & kInlineStrict) != 0;
     Value actual_this = this_value;
     if (!strict) {
@@ -2564,6 +2568,8 @@ constexpr uint8_t kInlineLeaf = 32;
     Environment* outer_env = fn->get_closure_environment();
     if (!outer_env && fn->get_closure_context()) outer_env = fn->get_closure_context()->get_lexical_environment();
     if (!outer_env) outer_env = ctx.get_lexical_environment();
+    // Only a chunk that can hand out a closure can make this chain outlive the call.
+    if (outer_env && !exe.fast_no_closures) outer_env->mark_escaped();
 
     // The environment, seeded before anything is committed: if it cannot be laid down by index
     // it is simply dropped again.
