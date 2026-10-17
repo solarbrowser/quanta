@@ -204,6 +204,7 @@ struct JitEnvLayout {
     static size_t initialized() { return offsetof(Entry, slot) + offsetof(Environment::BindingSlot, initialized); }
     static size_t mutable_flag() { return offsetof(Entry, slot) + offsetof(Environment::BindingSlot, mutable_flag); }
     static size_t binding_object() { return offsetof(Environment, binding_object_); }
+    static size_t outer() { return offsetof(Environment, outer_environment_); }
     // Slots past the inline ones: a pointer to an exact-sized array that is never reallocated.
     static size_t ext() { return offsetof(Environment, slots_) + offsetof(Environment::SlotMap, ext); }
     static size_t ext_capacity() { return offsetof(Environment, slots_) + offsetof(Environment::SlotMap, ext_capacity); }

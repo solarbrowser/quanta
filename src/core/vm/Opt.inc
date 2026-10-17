@@ -362,6 +362,7 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::LdaConst: case Op::LdaZero: case Op::LdaSmi: case Op::LdaUndefined: case Op::LdaNull:
     case Op::LdaTrue: case Op::LdaFalse: case Op::LdaThis: case Op::LdaLookup: case Op::LdaEnvSlot:
         e.wr(acc); break;
+    case Op::LdaEnvSlotAt: e.wr(acc); break;
     case Op::Ldar: R(pc + 1); e.wr(acc); break;
     case Op::Star: e.rd(acc); W(pc + 1); break;
     case Op::Mov: R(pc + 1); W(pc + 2); break;
@@ -386,7 +387,7 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::SetNamed: R(pc + 1); e.rd(acc); break;
     case Op::GetKeyed: R(pc + 1); e.rd(acc); e.wr(acc); break;
     case Op::SetKeyed: R(pc + 1); R(pc + 2); e.rd(acc); break;
-    case Op::StaEnvSlot: case Op::StaEnvSlotInit: case Op::StaEnv: case Op::StaEnvInit: case Op::StaLookup:
+    case Op::StaEnvSlotAt: case Op::StaEnvSlot: case Op::StaEnvSlotInit: case Op::StaEnv: case Op::StaEnvInit: case Op::StaLookup:
     case Op::CheckObjectCoercible:
         e.rd(acc); break;
     case Op::LdaEnv: case Op::CreateClosure: case Op::CreateObject: case Op::CreateArray: case Op::LdaTdz:
@@ -861,6 +862,19 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         const int32_t v = guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot, reinterpret_cast<uint64_t>(g_.chunk->names[nidx]));
         set(acc(), v);
         if (fused) set(dst, v);
+        return true;
+    }
+    case Op::LdaEnvSlotAt: {
+        const uint32_t hops = reg(pc + 1), slot = reg(pc + 2), nidx = u16(pc + 3);
+        if (nidx >= g_.chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
+        set(acc(), guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(g_.chunk->names[nidx])));
+        return true;
+    }
+    case Op::StaEnvSlotAt: {
+        const uint32_t hops = reg(pc + 1), slot = reg(pc + 2), nidx = u16(pc + 3);
+        if (nidx >= g_.chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
+        const int32_t val = tagged(value(acc()));
+        guarded(K::StoreEnv, Rep::None, val, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(g_.chunk->names[nidx]));
         return true;
     }
     case Op::StaEnvSlot: {
@@ -2691,13 +2705,19 @@ inline void Emitter::emit_node(int32_t id) {
         a_.bind(have);
         a_.test(RAX, RAX);
         a_.jcc(CC_E, slow);
+        for (uint32_t h = n.aux >> 8; h > 0; h--) {      // the enclosing scopes, for a variable of an outer function
+            a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(JitEnvLayout::outer())));
+            a_.test(RAX, RAX);
+            a_.jcc(CC_E, slow);
+        }
+        const uint32_t slot_index = n.aux & 0xFF;
         // The entry: one of the inline ones, or one in the exact-sized array behind them.
         Reg base = RAX;
         int32_t disp;
-        if (n.aux < JitEnvLayout::kInlineSlots) {
-            disp = static_cast<int32_t>(JitEnvLayout::entry(n.aux));
+        if (slot_index < JitEnvLayout::kInlineSlots) {
+            disp = static_cast<int32_t>(JitEnvLayout::entry(slot_index));
         } else {
-            const uint32_t e = n.aux - JitEnvLayout::kInlineSlots;
+            const uint32_t e = slot_index - JitEnvLayout::kInlineSlots;
             a_.mov_load32(RCX, mem(RAX, static_cast<int32_t>(JitEnvLayout::ext_capacity())));
             a_.and32_imm(RCX, 0xFFFF);
             a_.cmp32_imm(RCX, static_cast<int32_t>(e));
