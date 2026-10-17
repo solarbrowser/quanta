@@ -2825,7 +2825,9 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
             return 2;
         }
         JitCode::OptUnit made;
-        if (!opt::compile(chunk, target, &f, made)) {
+        const bool compiled = opt::compile(chunk, target, &f, made);
+        chunk.inline_state &= ~kInlineRecordCalls;       // the profile has been used
+        if (!compiled) {
             refused.insert({&chunk, target});
             // Nothing for this chunk's loops: stop offering them at the first back edge of every call.
             if ((!jc || jc->opt_units.empty()) && chunk.opt_entry == 2) { chunk.inline_state &= ~kInlineHasOpt; chunk.jit_hotness = 0x80000000u; }
@@ -2944,17 +2946,32 @@ void opt_note_call(const BytecodeChunk& chunk, Frame& callee) {
     callee.code = chunk.ic_feedback->entry_code.get();
 }
 
+// The chunk has settled: no more profiling, and nothing left to watch for in a function without loops.
+static void opt_entry_settled(const BytecodeChunk& chunk, uint8_t state) {
+    chunk.opt_entry = state;
+    chunk.inline_state &= ~kInlineRecordCalls;
+    if (state == 2 && !chunk_has_loop(chunk)) chunk.inline_state &= ~kInlineHasOpt;
+}
+
 int opt_fn_enter(Frame& f) {
     const BytecodeChunk& chunk = *f.chunk;
+    if (chunk.opt_entry == 3) {
+        if (CallStack::established().depth() > kEntryMaxDepth) return 0;
+        const int r = opt_osr(f, 0, f.acc);
+        if (r == 0 && opt_refused().count({&chunk, 0})) opt_entry_settled(chunk, 2);
+        return r;
+    }
     if (chunk.opt_entry != 1) return 0;
     if (chunk.opt_calls < kEntryCompileAt) { chunk.opt_calls++; return 0; }
-    if (opt_refused().count({&chunk, 0})) {
-        chunk.opt_entry = 2;
-        if (!chunk_has_loop(chunk)) chunk.inline_state &= ~kInlineHasOpt;
-        return 0;
-    }
+    if (opt_refused().count({&chunk, 0})) { opt_entry_settled(chunk, 2); return 0; }
     if (CallStack::established().depth() > kEntryMaxDepth) return 0;
-    return opt_osr(f, 0, f.acc);
+    const int r = opt_osr(f, 0, f.acc);
+    if (JitCode* jc = chunk.jit.get()) {
+        for (auto& u : jc->opt_units)
+            for (auto& e : u.entries) if (e.first == 0) { opt_entry_settled(chunk, 3); return r; }
+    }
+    if (opt_refused().count({&chunk, 0})) opt_entry_settled(chunk, 2);
+    return r;
 }
 #else
 void opt_note_call(const BytecodeChunk& chunk, Frame&) { chunk.opt_entry = 2; }

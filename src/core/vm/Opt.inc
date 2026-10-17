@@ -77,6 +77,7 @@ enum class K : uint8_t {
     CheckProto,           // Ptr a: deopt unless its prototype is imm
     CheckEpoch,           // deopt unless the global prototype epoch (aux 0) or descriptor epoch (aux 1) is imm
     LoadHolder,           // Tagged, shape slot aux of the object at imm (a prototype that holds a method)
+    LoadPoly,             // Tagged, a Ptr: the slot of the entry in polys[aux] whose shape word the object has (deopt if none)
     IsNullish,            // Tagged a -> Bool: undefined or null
     LoadLookup,           // Tagged, a name's cached binding (cache entry: imm; aux bits 0-1 the form, bit 8 set when imm is an offset from the frame's cache)
 };
@@ -163,6 +164,8 @@ struct Graph {
     std::vector<Func> funcs;
     std::vector<Node> n;
     std::vector<Block> b;
+    struct Poly { uint8_t n = 0; uint64_t word[4] = {}; uint32_t slot[4] = {}; };
+    std::vector<Poly> polys;             // the shapes a polymorphic property read serves
     std::vector<State> states;
     std::vector<int32_t> entries;        // synthetic entry blocks
     std::vector<int32_t> rpo;
@@ -182,7 +185,7 @@ inline const char* kname(K k) {
         "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
         "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
         "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "IsNullish"};
+        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "IsNullish"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -1022,9 +1025,9 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         const BytecodeChunk::LookupCacheEntry* base = cf_ == 0 ? (g_.frame ? g_.frame->lookup_cache_data : nullptr) : F().lookup;
         if (!base) return false;
         const BytecodeChunk::LookupCacheEntry& e = base[nidx];
-        if (e.shadow_epoch != Environment::binding_shadow_epoch() || e.dict_desc) return false;
+        if (e.shadow_epoch != Environment::binding_shadow_epoch()) return false;
         uint32_t form;
-        if (e.obj_shape) form = 1; else if (e.slot) form = 0; else return false;
+        if (e.dict_desc) form = 2; else if (e.obj_shape) form = 1; else if (e.slot) form = 0; else return false;
         const bool root = cf_ == 0;
         const int32_t v = guarded(K::LoadLookup, Rep::Tagged, -1, -1, form | (root ? 0x100u : 0u),
                                   root ? static_cast<uint64_t>(nidx) * JitLookupLayout::kSize : reinterpret_cast<uint64_t>(&e));
@@ -1054,6 +1057,23 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         if (!object_value(value(rcv))) return false;
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
         int32_t v;
+        if (own && fb.count >= 2 && fb.count <= 4) {
+            Graph::Poly p;
+            bool plain = true;
+            for (uint8_t k = 0; k < fb.count; k++) {
+                if (fb.entries[k].is_accessor || (fb.entries[k].word & FeedbackBody::Entry::kSlow)) plain = false;
+                p.word[k] = fb.entries[k].word;
+                p.slot[k] = fb.entries[k].slot_index;
+            }
+            p.n = fb.count;
+            if (plain) {
+                g_.polys.push_back(p);
+                v = guarded(K::LoadPoly, Rep::Tagged, obj, -1, static_cast<uint32_t>(g_.polys.size() - 1));
+                set(acc(), v);
+                if (fused) set(dst, v);
+                return true;
+            }
+        }
         if (inh) {
             guarded(K::CheckShape, Rep::None, obj, -1, 0, inh->receiver_word);
             guarded(K::CheckProto, Rep::None, obj, -1, 0, reinterpret_cast<uint64_t>(inh->prototype));
@@ -1180,6 +1200,7 @@ inline bool Builder::translate_block(int32_t blk) {
         if (!translate(in, ended)) {
             if (cf_ != 0) {
                 // A callee is only worth inlining when all of it is ours: there is no register bank to step it in.
+                if (config().log) std::fprintf(stderr, "[opt] callee step %s\n", op_name(static_cast<Op>(in.op)));
                 if (!g_.failed_site.first) g_.failed_site = {g_.funcs[F().parent].chunk, F().call_pc};
                 return fail("an inlined callee needs a step");
             }
@@ -2082,7 +2103,7 @@ inline void Builder::cse() {
         case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish:
             return 1;
         case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen: case K::LoadEnv:
-        case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder:
+        case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly:
             return 2;
         default: return 0;
         }
@@ -2978,6 +2999,31 @@ inline void Emitter::emit_node(int32_t id) {
         commit_g(id, d);
         return;
     }
+    case K::LoadPoly: {
+        const Reg o = use_g(n.a, RAX);
+        const Reg d = def_g(id, RAX);
+        const Graph::Poly& p = g_.polys[n.aux];
+        Label& dl = deopt_label(n.state);
+        Label& done = new_label();
+        a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::shape())));
+        // An object with a descriptor map of its own may override the slot: not served here, as for CheckShape.
+        a_.test8_mem_imm(mem(o, static_cast<int32_t>(JitObjectLayout::proto())), static_cast<uint8_t>(JitObjectLayout::kHasDescriptors));
+        a_.jcc(CC_NE, dl);
+        for (uint8_t k = 0; k < p.n; k++) {
+            Label& miss = new_label();
+            a_.mov_imm64(RDX, p.word[k]);
+            a_.cmp(RCX, RDX);
+            a_.jcc(CC_NE, miss);
+            a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::butterfly())));
+            a_.mov_load(d, mem(RCX, static_cast<int32_t>(p.slot[k] * sizeof(Value))));
+            a_.jmp(done);
+            a_.bind(miss);
+        }
+        a_.jmp(dl);
+        a_.bind(done);
+        commit_g(id, d);
+        return;
+    }
     case K::IsNullish: {
         const Reg a = use_g(n.a, RAX);
         const Reg d = def_g(id, RDX);
@@ -3255,6 +3301,27 @@ inline void Emitter::emit_node(int32_t id) {
             a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())), 0);
             a_.jcc(CC_NE, dl);
             a_.mov_load(d, mem(RDX));
+        } else if ((n.aux & 3) == 2) {
+            // A global in dictionary mode: its value sits in a descriptor of the binding object.
+            a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::dict_desc())));
+            a_.test(RDX, RDX);
+            a_.jcc(CC_E, dl);
+            a_.mov_load(R11, mem(RCX, static_cast<int32_t>(JitLookupLayout::env())));
+            a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitEnvLayout::binding_object())));
+            a_.test(R11, R11);
+            a_.jcc(CC_E, dl);
+            a_.mov_load(RAX, mem(R11, static_cast<int32_t>(JitObjectLayout::shape())));
+            a_.shr_imm(RAX, 5);
+            a_.shl_imm(RAX, 5);
+            a_.test(RAX, RAX);
+            a_.jcc(CC_NE, dl);                       // it must still have no shape
+            a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(JitObjectLayout::descriptor_epoch_addr()));
+            a_.mov_load(RAX, mem(RAX));
+            a_.cmp_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::descriptor_epoch())));
+            a_.jcc(CC_NE, dl);
+            a_.cmp32_mem_imm(mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_type())), 0);
+            a_.jcc(CC_NE, dl);
+            a_.mov_load(d, mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_value())));
         } else {
             a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())));
             a_.test(RDX, RDX);

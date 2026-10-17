@@ -6744,7 +6744,7 @@ QUANTA_HANDLER Value h_CallResolvedLean(HANDLER_PARAMS) {
 
 // What the optimizing tier's profile phase adds in front of the call handlers: a chunk marked to record notes who each
 // of its call sites calls. Installed in the handler table only when the tier is on, so nothing else pays for it.
-[[gnu::noinline]] void note_call(const BytecodeChunk& caller, uint32_t pc, Function* fn) {
+[[gnu::noinline]] void note_call(const BytecodeChunk& caller, uint32_t pc, Function* fn, Function* owner) {
     auto& sites = const_cast<BytecodeChunk&>(caller).ensure_ic_feedback().call_sites;
     const FunctionExecutable* exe = fn->get_executable().get();
     const void* id = exe ? static_cast<const void*>(exe) : static_cast<const void*>(fn);
@@ -6754,17 +6754,20 @@ QUANTA_HANDLER Value h_CallResolvedLean(HANDLER_PARAMS) {
         return;
     }
     sites.push_back({pc, false, fn, id});
+    // A new reference to a cell from a chunk's feedback: the collector must see the chunk again (see learn_transition).
+    Collector::write_barrier(owner);
+    mark_owner_feedback_dirty(owner);
 }
 
 QUANTA_HANDLER Value h_CallLeanRec(HANDLER_PARAMS) {
-    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && regs[code[pc + 1]].is_function())
-        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function());
+    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && f.feedback_rooted && regs[code[pc + 1]].is_function())
+        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function(), f.owner);
     [[clang::musttail]] return h_CallLean(f, pc, acc, regs, code);
 }
 
 QUANTA_HANDLER Value h_CallResolvedLeanRec(HANDLER_PARAMS) {
-    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && regs[code[pc + 1]].is_function())
-        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function());
+    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && f.feedback_rooted && regs[code[pc + 1]].is_function())
+        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function(), f.owner);
     [[clang::musttail]] return h_CallResolvedLean(f, pc, acc, regs, code);
 }
 

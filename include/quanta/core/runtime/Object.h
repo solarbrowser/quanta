@@ -1168,6 +1168,7 @@ public:
  * Property descriptor for defineProperty operations
  */
 class PropertyDescriptor {
+    friend struct JitObjectLayout;      // the optimizing tier reads a dictionary global's value directly
 public:
     enum Type {
         Data,
