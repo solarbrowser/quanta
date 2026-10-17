@@ -953,7 +953,7 @@ public:
     // or a literal adds, and the work is a shape swap and one slot write; the
     // butterfly only grows (out of line) when the slot is not already there.
     // The same without any call: false (and nothing touched) when the butterfly has no room.
-    bool add_shape_property_in_place(const Value& value, Shape* to_shape) {
+    [[gnu::always_inline]] bool add_shape_property_in_place(const Value& value, Shape* to_shape) {
         const uint32_t new_count = to_shape->slot_count();
         if (new_count > shape_capacity()) return false;
         shape_ = to_shape;

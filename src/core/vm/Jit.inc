@@ -497,6 +497,59 @@ QUANTA_JIT_ABI int32_t step(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_
     return step_impl(f, pc, target, ic_index);
 }
 
+// step() with the opcode known at compile time. A step's cost is dominated by the one indirect call into
+// the interpreter's handler; made from a single place in step_impl it is predicted from a history of every
+// opcode the program steps, made from one place per opcode it is the same target every time. Only the
+// common shape is specialised (nothing leaves the instruction but falling through, no try region, bytes
+// that fit the copy); anything else is step()'s.
+template <int N>
+int32_t step_k(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noexcept {
+    constexpr uint8_t op = static_cast<uint8_t>(N);
+    JitCode* jc = f->chunk->jit.get();
+    const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(static_cast<Op>(op)));
+    const uint32_t size = jc->code_size;
+    if (__builtin_expect(g_cfg.debug, 0) || target != kNoOperand || jc->has_handlers || len > 15 || pc + 16 > size)
+        return step(f, pc, target, ic_index);
+    jc->slow++;
+    const uint8_t* saved_code = f->code;
+    f->jit_halted = false;
+    uint8_t stub[16];
+    const uint8_t* src = f->chunk->code.data() + pc;
+    uint64_t lo, hi;
+    std::memcpy(&lo, src, 8);
+    std::memcpy(&hi, src + 8, 8);
+    std::memcpy(stub, &lo, 8);
+    std::memcpy(stub + 8, &hi, 8);
+    stub[len] = kHaltOp;
+    f->code = reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(stub) - pc);
+    Value result;
+    try {
+        result = kHandlers[op](*f, pc, f->acc);
+    } catch (...) {
+        jc->pending = std::current_exception();
+        f->code = saved_code;
+        return kStepRethrow;
+    }
+    f->code = saved_code;
+    if (f->jit_halted) {
+        f->jit_halted = false;
+        const uint32_t npc = f->pc;
+        if (npc >= size) return kStepFinished;
+        if (ic_index != kNoOperand) learn_ic(f, jc, pc, ic_index);
+        if (jc->native_off[npc] == 0) return kStepBail;
+        return static_cast<int32_t>(npc);
+    }
+    f->acc = result;
+    return kStepFinished;
+}
+
+using StepFn = int32_t (*)(Frame*, uint32_t, uint32_t, uint32_t) noexcept;
+template <size_t... I>
+constexpr std::array<StepFn, 256> make_step_table(std::index_sequence<I...>) {
+    return {{&step_k<static_cast<int>(I)>...}};
+}
+const std::array<StepFn, 256> kStepFns = make_step_table(std::make_index_sequence<256>{});
+
 // The handler search CHECK_EXC does: the narrowest try region covering `pc`.
 int32_t find_handler(const BytecodeChunk& chunk, uint32_t pc) noexcept {
     int32_t handler_pc = -1;
@@ -676,6 +729,19 @@ int fast_set_named_impl(Frame* f, uint32_t pc) noexcept {
     if (!shape_fast_path_ok(obj->get_type())) return 0;
     const FeedbackBody& fb = f->chunk->feedback[read_u16(code, pc + 4)].read();
     Shape* own_shape = obj->get_shape();
+    // The add the site has seen (h_SetNamedTransition's own test, in its order): a site that adds a property
+    // has no own entry to find first, and the key is never looked up by name.
+    if (!fb.transition_mega && fb.transition_count != 0) {
+        const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
+        if (te.from_shape && te.from_shape == own_shape && te.prototype == obj->get_prototype_raw() &&
+            te.proto_epoch == Object::proto_epoch() && obj->is_extensible() && !obj->has_any_descriptor_override()) {
+            if (store_needs_barrier(acc)) Collector::write_barrier(obj);
+            if (!obj->add_shape_property_in_place(acc, te.to_shape)) {
+                obj->add_shape_property_cached(f->chunk->name_at(read_u16(code, pc + 2)), acc, te.to_shape);
+            }
+            return 1;
+        }
+    }
     for (uint8_t k = 0; k < fb.count; k++) {
         const FeedbackSlot::Entry& e = fb.entries[k];
         if (e.shape() != own_shape || e.is_accessor) continue;
@@ -705,7 +771,12 @@ int fast_set_named_impl(Frame* f, uint32_t pc) noexcept {
 
 QUANTA_JIT_ABI int fast_set_named(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
     const int handled = fast_set_named_impl(f, pc);
-    if (handled && ic_index != kNoOperand) learn_ic(f, f->chunk->jit.get(), pc, ic_index);
+    // A store's cache holds own slots only (learn_ic): a site that has none, which is every site that adds
+    // a property, has nothing to copy.
+    if (handled && ic_index != kNoOperand) {
+        const FeedbackBody* fb = f->chunk->feedback[read_u16(f->chunk->code.data(), pc + 4)].peek();
+        if (fb && fb->count != 0) learn_ic(f, f->chunk->jit.get(), pc, ic_index);
+    }
     return handled;
 }
 
@@ -1529,7 +1600,7 @@ void Compiler::emit_step_call(const Insn& in, uint32_t target, uint32_t ic) {
     a_.mov_imm32(abi::A1, in.pc);
     a_.mov_imm32(abi::A2, target);
     a_.mov_imm32(abi::A3, ic);
-    a_.call_abs(reinterpret_cast<const void*>(&step));
+    a_.call_abs(reinterpret_cast<const void*>(kStepFns[in.op]));
     reload_acc();
 }
 
