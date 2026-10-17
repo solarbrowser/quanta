@@ -80,6 +80,9 @@ enum class K : uint8_t {
     LoadPoly,             // Tagged, a Ptr: the slot of the entry in polys[aux] whose shape word the object has (deopt if none)
     CheckNotNullish,      // Tagged a -> a, deopt when it is undefined or null
     Trap,                 // always deoptimizes: the code after it has never run
+    CheckBits,            // Tagged a: deopt unless it is exactly the word imm (an object known by identity)
+    MathF,                // F64 a [, F64 b]: the Math function aux (kMathFns)
+    CallNative,           // Tagged a (this), b, c (arguments): calls the native in the NativeDesc at imm, or deopts
     NewLiteral,           // Tagged: a fresh object literal of the learned template at imm (a LiteralTemplate*), or deopt
     NewObject,            // Tagged a (the constructor): a fresh object of the shape described by imm (NewDesc*), or deopt
     IsNullish,            // Tagged a -> Bool: undefined or null
@@ -174,6 +177,7 @@ struct Graph {
     struct CtorPlan { std::vector<std::pair<uint32_t, uint32_t>> stores; uint64_t proto_epoch = 0; JitCode::OptUnit::NewDesc* desc = nullptr; };
     std::vector<CtorPlan> ctors;
     std::vector<std::unique_ptr<JitCode::OptUnit::NewDesc>> descs;
+    std::vector<std::unique_ptr<JitCode::OptUnit::NativeDesc>> natives;
     struct Poly { uint8_t n = 0; uint64_t word[4] = {}; uint32_t slot[4] = {}; };
     std::vector<Poly> polys;             // the shapes a polymorphic property read serves
     std::vector<State> states;
@@ -195,7 +199,7 @@ inline const char* kname(K k) {
         "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
         "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
         "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "CheckNotNullish", "Trap", "NewLiteral", "NewObject", "IsNullish"};
+        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "CheckNotNullish", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -208,6 +212,7 @@ inline bool is_pure_removable(K k) {
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
+    case K::CallNative: case K::CheckBits:
         return false;
     default: return true;
     }
@@ -241,6 +246,7 @@ struct Config {
     uint32_t max_deopts = 40;         // guard failures before a loop is given up on
     bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
     bool cold = true;                 // QUANTA_OPT_COLD=0 keeps never-executed blocks in the region
+    bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 120;      // largest callee (decoded instructions)
@@ -264,6 +270,7 @@ inline Config& config() {
         if (const char* e = std::getenv("QUANTA_OPT_ENTRY")) c.entry = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_ENTRY_MIN")) c.entry_min_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_COLD")) c.cold = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_NATIVES")) c.natives = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
     }
@@ -391,6 +398,8 @@ private:
     Function* inline_target(int32_t fi, const Insn& in);
     bool ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc);
     bool block_is_cold(int32_t fi, int32_t blk) const;
+    bool native_call(const Insn& in);
+    bool numeric_arg(int32_t x) { const Node& nd = g_.n[resolve(x)]; return nd.rep != Rep::Bool && nd.rep != Rep::I32 && nd.op != K::ConstTagged; }
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
     bool inline_enter(const Insn& in, int32_t callee, bool& ended);
@@ -1076,6 +1085,9 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         const FeedbackBody& fb = F().chunk->feedback[fbi].read();
         const bool own = fb.count >= 1 && !fb.mega && !fb.entries[0].is_accessor;
         const bool array_len = !own && fb.array_length && fb.count == 0;
+        // A property in the receiver's own descriptor map (every builtin namespace function): the receiver is known by
+        // identity and the value by the descriptor epoch.
+        const bool own_desc = !own && !array_len && fb.count == 0 && fb.own_desc_receiver && fb.own_desc_epoch == Object::descriptor_epoch();
         // A method (or other data property) found on a prototype: the receiver's shape and prototype and the global
         // epochs are what the interpreter's entry is valid under.
         const FeedbackBody::ProtoEntry* inh = nullptr;
@@ -1086,6 +1098,19 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
                 inh = &pe;
         }
         if (config().log) std::fprintf(stderr, "[opt] GetNamed pc=%u fb: count=%u mega=%d accessor=%d array_length=%d proto_count=%u\n", pc, fb.count, fb.mega, fb.count ? fb.entries[0].is_accessor : -1, fb.array_length, fb.proto_count);
+        if (own_desc) {
+            if (!object_value(value(rcv))) return false;
+            Object* r = fb.own_desc_receiver;
+            const Value rv = r->get_type() == Object::ObjectType::Function ? Value(static_cast<Function*>(r)) : Value(r);
+            uint64_t rbits;
+            std::memcpy(&rbits, &rv, 8);
+            guarded(K::CheckBits, Rep::None, tagged(value(rcv)), -1, 0, rbits);
+            epoch_guard(1, fb.own_desc_epoch);
+            const int32_t v = const_of(fb.own_desc_value);
+            set(acc(), v);
+            if (fused) set(dst, v);
+            return true;
+        }
         if (!own && !array_len && !inh) return false;
         if (!object_value(value(rcv))) return false;
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
@@ -1270,7 +1295,7 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     }
     case Op::Call: case Op::CallResolved: case Op::Construct: {
         const int32_t callee = site_of(cf_, pc);
-        if (callee < 0) return false;
+        if (callee < 0) return op != Op::Construct && native_call(in);
         return inline_enter(in, callee, ended);
     }
     default:
@@ -1401,6 +1426,74 @@ inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
         return fn;
     }
     return no_inline_reason(12);
+}
+
+// ---- natives ----
+
+// The Math functions the tier computes itself (kMathFns), by name and arity.
+constexpr struct { const char* name; uint8_t arity; } kMathNames[] = {
+    {"floor", 1}, {"ceil", 1}, {"trunc", 1}, {"round", 1}, {"sqrt", 1}, {"abs", 1}, {"min", 2}, {"max", 2}, {"pow", 2}};
+constexpr uint32_t kMathCount = sizeof(kMathNames) / sizeof(kMathNames[0]);
+
+// Natives a unit calls without a frame, and what each may be given. The helper checks these before it calls, and
+// hands the call back to the interpreter (a deoptimization) for anything else: a receiver or argument that could run
+// script, or a call that throws. None of these changes anything before it can throw, so running the call again there is
+// the same call. recv: 1 string, 2 array, 4 plain object, 8 anything (a static function).
+constexpr struct { const char* name; uint8_t recv; bool any_arg; uint8_t max_args; } kNativeRules[] = {
+    {"charCodeAt", 1, false, 1}, {"charAt", 1, false, 1}, {"codePointAt", 1, false, 1}, {"indexOf", 3, false, 2},
+    {"lastIndexOf", 1, false, 2}, {"slice", 3, false, 2}, {"substring", 1, false, 2}, {"substr", 1, false, 2},
+    {"toLowerCase", 1, false, 0}, {"toUpperCase", 1, false, 0}, {"trim", 1, false, 0}, {"startsWith", 1, false, 2},
+    {"endsWith", 1, false, 2}, {"includes", 1, false, 2}, {"fromCharCode", 8, false, 2}, {"isArray", 8, true, 1},
+    {"hasOwnProperty", 4, false, 1}, {"push", 2, false, 1}, {"pop", 2, false, 0}, {"sin", 8, false, 1}, {"cos", 8, false, 1},
+    {"tan", 8, false, 1}, {"atan", 8, false, 1}, {"atan2", 8, false, 2}, {"exp", 8, false, 1}, {"log", 8, false, 1}};
+
+inline bool Builder::native_call(const Insn& in) {
+    if (!config().natives || !g_.frame) return false;
+    const auto* fbk = F().chunk->ic_feedback.get();
+    if (!fbk) return false;
+    Function* fn = nullptr;
+    for (const auto& cs : fbk->call_sites) if (cs.pc == in.pc && !cs.mega) fn = cs.fn;
+    if (!fn || !fn->is_native()) return false;
+    const uint8_t* code = F().chunk->code.data();
+    const bool resolved = static_cast<Op>(in.op) == Op::CallResolved;
+    const uint32_t callee_r = F().var_base + code[in.pc + 1];
+    const uint32_t this_r = resolved ? F().var_base + code[in.pc + 2] : 0;
+    const uint32_t start = F().var_base + code[in.pc + (resolved ? 3 : 2)];
+    const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
+    if (callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
+    const std::string& name = fn->get_name();
+    // Math functions are computed here, so the function must be the real one.
+    for (uint32_t k = 0; k < kMathCount; k++) {
+        if (name != kMathNames[k].name || argc != kMathNames[k].arity) continue;
+        Object* global = g_.frame->ctx->get_global_object();
+        const Value m = global ? global->get_property("Math") : Value();
+        if (!m.is_object()) break;
+        const Value mf = m.as_object()->get_property(name);
+        if (!mf.is_function() || mf.as_function() != fn) break;
+        if (!numeric_arg(value(start)) || (argc == 2 && !numeric_arg(value(start + 1)))) return false;
+        guarded(K::CheckFn, Rep::None, tagged(value(callee_r)), -1, 1, reinterpret_cast<uint64_t>(fn));
+        const int32_t a = num(value(start));
+        const int32_t b = argc == 2 ? num(value(start + 1)) : -1;
+        set(acc(), emit(K::MathF, Rep::F64, a, b, k));
+        return true;
+    }
+    for (const auto& rule : kNativeRules) {
+        if (name != rule.name || argc > rule.max_args) continue;
+        auto d = std::make_unique<JitCode::OptUnit::NativeDesc>();
+        d->fn = fn;
+        d->argc = static_cast<uint8_t>(argc);
+        d->recv = rule.recv;
+        d->any_arg = rule.any_arg;
+        JitCode::OptUnit::NativeDesc* dp = d.get();
+        g_.natives.push_back(std::move(d));
+        guarded(K::CheckFn, Rep::None, tagged(value(callee_r)), -1, 1, reinterpret_cast<uint64_t>(fn));
+        const int32_t thisv = resolved ? tagged(value(this_r)) : const_of(Value());
+        const int32_t a0 = argc >= 1 ? tagged(value(start)) : -1;
+        const int32_t a1 = argc >= 2 ? tagged(value(start + 1)) : -1;
+        set(acc(), guarded(K::CallNative, Rep::Tagged, thisv, a0, 0, reinterpret_cast<uint64_t>(dp), a1));
+        return true;
+    }
+    return false;
 }
 
 // A block that has not run, going by what its property accesses have learned: a site that has seen no receiver of any
@@ -2340,7 +2433,7 @@ inline void Builder::cse() {
         case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::ModF:
         case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
         case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag:
-        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish:
+        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish: case K::CheckBits:
             return 1;
         case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen: case K::LoadEnv:
         case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly:
@@ -2349,7 +2442,8 @@ inline void Builder::cse() {
         }
     };
     auto breaks_memory = [](K op) {
-        return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreReg || op == K::StoreAcc;
+        return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreReg || op == K::StoreAcc ||
+               op == K::CallNative;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
     std::vector<Frame2> stack;
@@ -2476,6 +2570,63 @@ inline QUANTA_JIT_ABI uint64_t helper_truthy(uint64_t bits) noexcept {
     std::memcpy(&v, &bits, 8);
     return v.to_boolean() ? 1 : 0;
 }
+inline QUANTA_JIT_ABI double math_floor(double x) noexcept { return std::floor(x); }
+inline QUANTA_JIT_ABI double math_ceil(double x) noexcept { return std::ceil(x); }
+inline QUANTA_JIT_ABI double math_trunc(double x) noexcept { return std::trunc(x); }
+inline QUANTA_JIT_ABI double math_sqrt(double x) noexcept { return std::sqrt(x); }
+inline QUANTA_JIT_ABI double math_abs(double x) noexcept { return std::fabs(x); }
+inline QUANTA_JIT_ABI double math_round(double x) noexcept {
+    if (x >= -0.5 && x < 0) return -0.0;
+    const double r = std::floor(x);
+    return x - r >= 0.5 ? r + 1 : r;
+}
+inline QUANTA_JIT_ABI double math_min(double a, double b) noexcept {
+    if (a != a || b != b) return std::numeric_limits<double>::quiet_NaN();
+    if (a == b) { uint64_t x, y; std::memcpy(&x, &a, 8); std::memcpy(&y, &b, 8); x |= y; std::memcpy(&a, &x, 8); return a; }   // -0 beats +0
+    return a < b ? a : b;
+}
+inline QUANTA_JIT_ABI double math_max(double a, double b) noexcept {
+    if (a != a || b != b) return std::numeric_limits<double>::quiet_NaN();
+    if (a == b) { uint64_t x, y; std::memcpy(&x, &a, 8); std::memcpy(&y, &b, 8); x &= y; std::memcpy(&a, &x, 8); return a; }   // +0 beats -0
+    return a > b ? a : b;
+}
+inline QUANTA_JIT_ABI double math_pow(double x, double y) noexcept {
+    if (y != y) return std::numeric_limits<double>::quiet_NaN();
+    if (y == 0) return 1;
+    if ((x == 1 || x == -1) && std::isinf(y)) return std::numeric_limits<double>::quiet_NaN();
+    return std::pow(x, y);
+}
+inline const void* const kMathFns[] = {
+    reinterpret_cast<const void*>(&math_floor), reinterpret_cast<const void*>(&math_ceil), reinterpret_cast<const void*>(&math_trunc),
+    reinterpret_cast<const void*>(&math_round), reinterpret_cast<const void*>(&math_sqrt), reinterpret_cast<const void*>(&math_abs),
+    reinterpret_cast<const void*>(&math_min), reinterpret_cast<const void*>(&math_max), reinterpret_cast<const void*>(&math_pow)};
+
+// A whitelisted native called with its arguments in a small array (see kNativeRules). All ones is "no": the receiver or
+// an argument is not one it may be given, or the call threw; the exception is dropped and the unit deoptimizes to the
+// call, which the interpreter then makes (and throws again, if it throws).
+inline QUANTA_JIT_ABI uint64_t helper_call_native(VM::Frame* f, const JitCode::OptUnit::NativeDesc* d, uint64_t this_bits, const uint64_t* argv) noexcept {
+    constexpr uint64_t kNo = ~0ull;
+    Value th;
+    std::memcpy(&th, &this_bits, 8);
+    Value args[2];
+    for (uint32_t i = 0; i < d->argc; i++) std::memcpy(&args[i], &argv[i], 8);
+    const bool recv_ok = (d->recv & 8) || ((d->recv & 1) && th.is_string()) ||
+                         ((d->recv & 2) && th.is_object() && th.as_object()->is_array()) ||
+                         ((d->recv & 4) && th.is_object() && th.as_object()->get_type() == Object::ObjectType::Ordinary);
+    if (!recv_ok) return kNo;
+    if (!d->any_arg)
+        for (uint32_t i = 0; i < d->argc; i++) {
+            const Value& v = args[i];
+            if (!(v.is_number() || v.is_string() || v.is_boolean() || v.is_undefined() || v.is_null())) return kNo;
+        }
+    Context& ctx = *f->ctx;
+    const Value r = d->fn->call_register_args(ctx, std::span<const Value>(args, d->argc), th);
+    if (ctx.has_exception()) { ctx.clear_exception(); return kNo; }
+    uint64_t bits;
+    std::memcpy(&bits, &r, 8);
+    return bits == kNo ? kNo - 1 : bits;
+}
+
 // An inlined `new`: the constructor's object, already of the shape its stores would give it. 0 when the constructor's
 // prototype or the fresh object's shape is not what the unit was built for (the caller deoptimizes to run the `new`).
 inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
@@ -3277,6 +3428,57 @@ inline void Emitter::emit_node(int32_t id) {
     case K::Trap:
         a_.jmp(deopt_label(n.state));
         return;
+    case K::CheckBits: {
+        const Reg s = use_g(n.a, RAX);
+        a_.mov_imm64(RCX, n.imm);
+        a_.cmp(s, RCX);
+        a_.jcc(CC_NE, deopt_label(n.state));
+        return;
+    }
+    case K::MathF: {
+        const Xmm a = use_x(n.a, XMM0);
+        const Xmm b = n.b >= 0 ? use_x(n.b, XMM1) : XMM1;
+        const Xmm d = def_x(id, XMM0);
+        if (n.b >= 0 && b != XMM1) a_.movapd(XMM1, b);
+        if (a != XMM0) a_.movapd(XMM0, a);
+        int32_t bytes;
+        save_live(bytes);
+        call_c(kMathFns[n.aux]);
+        restore_live(bytes);
+        if (d != XMM0) a_.movapd(d, XMM0);
+        commit_x(id, d);
+        return;
+    }
+    case K::CallNative: {
+        Label& dl = deopt_label(n.state);
+        a_.sub_imm(RSP, 32);                        // [0] argument 0, [8] argument 1, [16] the receiver
+        const uint64_t undefined_bits = std::bit_cast<uint64_t>(Value());
+        for (int k = 0; k < 3; k++) {
+            const int32_t operand = k == 2 ? n.a : k == 0 ? n.b : n.c;
+            if (operand >= 0) {
+                const Reg r = use_g(operand, RAX);
+                a_.mov_store(mem(RSP, k * 8), r);
+            } else {
+                a_.mov_imm64(RAX, undefined_bits);
+                a_.mov_store(mem(RSP, k * 8), RAX);
+            }
+        }
+        int32_t bytes;
+        save_live(bytes);
+        a_.mov(abi::A0, RBX);
+        a_.mov_imm64(abi::A1, n.imm);
+        a_.mov_load(abi::A2, mem(RSP, bytes + 16));
+        a_.lea(abi::A3, mem(RSP, bytes));
+        call_c(reinterpret_cast<const void*>(&helper_call_native));
+        restore_live(bytes);
+        a_.add_imm(RSP, 32);
+        a_.cmp_imm(RAX, -1);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
     case K::NewLiteral: {
         Label& dl = deopt_label(n.state);
         int32_t bytes;
@@ -4118,6 +4320,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     unit.entries = std::move(entries);
     unit.guards = em.guard_kinds;
     unit.descs = std::move(g.descs);
+    unit.natives = std::move(g.natives);
     if (g.funcs.size() > 1) {
         // What a deoptimization inside an inlined callee needs to rebuild the interpreter frames it stands for.
         unit.root_vars = g.acc_var + 1;

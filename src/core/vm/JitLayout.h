@@ -159,6 +159,9 @@ struct JitCode {
         // What an inlined `new` allocates (helper_new_object): the object takes its final shape at once.
         struct NewDesc { Shape* from = nullptr; Shape* to = nullptr; Object* proto = nullptr; uint32_t nslots = 0; };
         std::vector<std::unique_ptr<NewDesc>> descs;
+        // A native function a unit calls directly (helper_call_native): what it may be given, and how many arguments.
+        struct NativeDesc { Function* fn = nullptr; uint8_t argc = 0; uint8_t recv = 0; bool any_arg = false; };
+        std::vector<std::unique_ptr<NativeDesc>> natives;
         std::vector<InlFrame> inl;
         struct InlState { int32_t func = 0; uint32_t pc = 0; std::vector<uint32_t> vars; };   // vars: global variable numbers
         std::vector<InlState> inl_states;       // by deopt state id; func 0 for a state of the root

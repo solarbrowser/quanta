@@ -2786,7 +2786,7 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     callee->return_pc = return_pc;
     callee->value_words = words;
     if (UNLIKELY(offer_loops)) {
-        callee->osr_budget = 1;
+        if (!chunk.opt_loops) callee->osr_budget = 1;
         opt_note_call(chunk, *callee);
     }
     base->active = callee;
@@ -10426,7 +10426,7 @@ template <bool Fast>
     FrameLinkScope frame_link(&chunk, &frame.instr_pc, owner);
     frame.call_info = call_info;
     if (UNLIKELY(chunk.inline_state & kInlineHasOpt)) {
-        frame.osr_budget = 1;
+        if (!chunk.opt_loops) frame.osr_budget = 1;
         opt_note_call(chunk, frame);
     }
     // Seeded even when call_info is null (frame_lexical_env/frame_variable_env

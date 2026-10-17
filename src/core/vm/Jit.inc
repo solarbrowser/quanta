@@ -2829,6 +2829,7 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         chunk.inline_state &= ~kInlineRecordCalls;       // the profile has been used
         if (!compiled) {
             refused.insert({&chunk, target});
+            if (!jc || jc->opt_units.empty()) chunk.opt_loops = 1;
             // Nothing for this chunk's loops: stop offering them at the first back edge of every call.
             if ((!jc || jc->opt_units.empty()) && chunk.opt_entry == 2) { chunk.inline_state &= ~kInlineHasOpt; chunk.jit_hotness = 0x80000000u; }
             return 0;
@@ -2838,6 +2839,7 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         if (!jc) jc = opt::ensure_jitcode(chunk);
         jc->opt_units.push_back(std::move(made));
         chunk.inline_state |= kInlineHasOpt;
+        chunk.opt_loops = 0;
         // The baseline JIT is not wanted for this chunk any more (and the stackless path may take it).
         if (chunk.jit_state != 1) chunk.jit_state = 2;
         ui = static_cast<long>(jc->opt_units.size() - 1);
@@ -2906,6 +2908,7 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
             if (opt::config().log) std::fprintf(stderr, "[opt] giving up on the loop at pc %u\n", target);
             jc->opt_units[ui].entries.clear();
             refused.insert({&chunk, target});
+            chunk.opt_loops = 1;
         }
     }
     if (status == opt::kStatusDeopt && jc->opt_units.size() > static_cast<size_t>(ui) && ui >= 0 &&

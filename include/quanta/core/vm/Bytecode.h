@@ -1029,6 +1029,7 @@ struct BytecodeChunk {
     // The optimizing tier's function-entry unit (Interpreter.cpp, Jit.inc): 0 counting calls, 1 armed (frames
     // start at a stop that offers them to the tier), 2 the tier has declined for good.
     mutable uint8_t opt_entry = 0;
+    mutable uint8_t opt_loops = 0;     // 1: the tier has declined this chunk's loops, so a call no longer offers them at its first back edge
     mutable uint16_t opt_calls = 0;
 
     // A function whose whole body is `return <constant>`, `return this` or
