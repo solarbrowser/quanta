@@ -2213,7 +2213,18 @@ inline void frame_set_lexical_env(Frame& f, Environment* env) {
 //
 // `pc` names the opcode byte itself, never its operands, so a handler that
 // only covers the common shape can hand that same pc to a slower one.
-using Handler = Value (*)(Frame&, uint32_t, Value);
+// regs/code ride in registers through the whole handler chain (preserve_none leaves enough of them
+// free) so a handler never reloads them from the Frame.
+#if defined(__clang__) && __has_attribute(preserve_none)
+#define QUANTA_HANDLER [[clang::preserve_none]]
+#define QUANTA_HANDLER_TYPE __attribute__((preserve_none))
+#else
+#define QUANTA_HANDLER_TYPE
+#define QUANTA_HANDLER
+#endif
+#define HANDLER_PARAMS Frame& f, uint32_t pc, Value acc, Value* regs, const uint8_t* code
+typedef Value HandlerFn(Frame&, uint32_t, Value, Value*, const uint8_t*) QUANTA_HANDLER_TYPE;
+using Handler = HandlerFn*;
 
 // Called at a loop's back edge once Frame::osr_budget runs out. True means the
 // baseline JIT ran the rest of the function and left its result in Frame::acc;
@@ -2743,12 +2754,12 @@ constexpr uint8_t kInlineLeaf = 32;
 
 }  // namespace
 
-#define DISPATCH() [[clang::musttail]] return kHandlers[f.code[pc]](f, pc, acc)
+#define DISPATCH() [[clang::musttail]] return kHandlers[code[pc]](f, pc, acc, regs, code)
 
 // Opcodes that cannot raise: nothing but the dispatch separates one from the
 // next, no exception check in between.
 #define CONST_HANDLER(name, val)                                           \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
         acc = (val);                                                       \
         pc += 1;                                                           \
         DISPATCH();                                                        \
@@ -2760,26 +2771,26 @@ CONST_HANDLER(h_LdaNull, Value::null())
 CONST_HANDLER(h_LdaTrue, Value(true))
 CONST_HANDLER(h_LdaFalse, Value(false))
 
-Value h_Ldar(Frame& f, uint32_t pc, Value acc) {
-    acc = f.regs[f.code[pc + 1]];
+QUANTA_HANDLER Value h_Ldar(HANDLER_PARAMS) {
+    acc = regs[code[pc + 1]];
     pc += 2;
     DISPATCH();
 }
 
-Value h_Star(Frame& f, uint32_t pc, Value acc) {
-    f.regs[f.code[pc + 1]] = acc;
+QUANTA_HANDLER Value h_Star(HANDLER_PARAMS) {
+    regs[code[pc + 1]] = acc;
     pc += 2;
     DISPATCH();
 }
 
-Value h_Mov(Frame& f, uint32_t pc, Value acc) {
-    f.regs[f.code[pc + 2]] = f.regs[f.code[pc + 1]];
+QUANTA_HANDLER Value h_Mov(HANDLER_PARAMS) {
+    regs[code[pc + 2]] = regs[code[pc + 1]];
     pc += 3;
     DISPATCH();
 }
 
-Value h_LdaSmi(Frame& f, uint32_t pc, Value acc) {
-    acc = Value(static_cast<double>(static_cast<int8_t>(f.code[pc + 1])));
+QUANTA_HANDLER Value h_LdaSmi(HANDLER_PARAMS) {
+    acc = Value(static_cast<double>(static_cast<int8_t>(code[pc + 1])));
     pc += 2;
     DISPATCH();
 }
@@ -2787,42 +2798,42 @@ Value h_LdaSmi(Frame& f, uint32_t pc, Value acc) {
 // The pair fuse_store_pairs rewrites: produce, then park. Each does exactly
 // what its two instructions did, in the same order, so the accumulator is
 // left holding the same value and only one dispatch is paid for.
-Value h_LdarStar(Frame& f, uint32_t pc, Value acc) {
-    acc = f.regs[f.code[pc + 1]];
-    f.regs[f.code[pc + 2]] = acc;
+QUANTA_HANDLER Value h_LdarStar(HANDLER_PARAMS) {
+    acc = regs[code[pc + 1]];
+    regs[code[pc + 2]] = acc;
     pc += 3;
     DISPATCH();
 }
 
-Value h_LdaSmiStar(Frame& f, uint32_t pc, Value acc) {
-    acc = Value(static_cast<double>(static_cast<int8_t>(f.code[pc + 1])));
-    f.regs[f.code[pc + 2]] = acc;
+QUANTA_HANDLER Value h_LdaSmiStar(HANDLER_PARAMS) {
+    acc = Value(static_cast<double>(static_cast<int8_t>(code[pc + 1])));
+    regs[code[pc + 2]] = acc;
     pc += 3;
     DISPATCH();
 }
 
-Value h_LdaZeroStar(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaZeroStar(HANDLER_PARAMS) {
     acc = Value(0.0);
-    f.regs[f.code[pc + 1]] = acc;
+    regs[code[pc + 1]] = acc;
     pc += 2;
     DISPATCH();
 }
 
-Value h_LdaConstStar(Frame& f, uint32_t pc, Value acc) {
-    acc = f.constants[read_u16(f.code, pc + 1)];
-    f.regs[f.code[pc + 3]] = acc;
+QUANTA_HANDLER Value h_LdaConstStar(HANDLER_PARAMS) {
+    acc = f.constants[read_u16(code, pc + 1)];
+    regs[code[pc + 3]] = acc;
     pc += 4;
     DISPATCH();
 }
 
-Value h_LdaConst(Frame& f, uint32_t pc, Value acc) {
-    acc = f.constants[read_u16(f.code, pc + 1)];
+QUANTA_HANDLER Value h_LdaConst(HANDLER_PARAMS) {
+    acc = f.constants[read_u16(code, pc + 1)];
     pc += 3;
     DISPATCH();
 }
 
-Value h_LdaConstWide(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* c = f.code + pc + 1;
+QUANTA_HANDLER Value h_LdaConstWide(HANDLER_PARAMS) {
+    const uint8_t* c = code + pc + 1;
     acc = f.constants[static_cast<uint32_t>(c[0]) | (static_cast<uint32_t>(c[1]) << 8) |
                       (static_cast<uint32_t>(c[2]) << 16) | (static_cast<uint32_t>(c[3]) << 24)];
     pc += 5;
@@ -2833,17 +2844,17 @@ Value h_LdaConstWide(Frame& f, uint32_t pc, Value acc) {
 // accumulator, exactly as the call handler would have gone on after a call that returned.
 // The collector's safepoint is a call on a path almost never taken, and having it here made this
 // handler save five registers on every return; so it only tests and hands the rare case on.
-[[gnu::noinline]] Value h_ReturnSafepoint(Frame& f, uint32_t pc, Value acc) {
+[[gnu::noinline]] QUANTA_HANDLER Value h_ReturnSafepoint(HANDLER_PARAMS) {
     Collector::safepoint_slow();
     DISPATCH();
 }
 
-Value h_ReturnInline(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_ReturnInline(HANDLER_PARAMS);
 
 // The return of a frame that holds more than its registers: the call environment is undone, and a
 // construction's result is chosen (an object the body returned, or `this`) before the flags it set go
 // back. Calls, so not folded into h_ReturnInline, which would then save registers on every return.
-[[gnu::noinline]] Value h_ReturnInlineRare(Frame& f, uint32_t pc, Value acc) {
+[[gnu::noinline]] QUANTA_HANDLER Value h_ReturnInlineRare(HANDLER_PARAMS) {
     if (f.construct_call) {
         InlineConstructState& st = reinterpret_cast<InlineSlot*>(&f)->construct;
         Object* self = f.this_value.as_object();
@@ -2860,21 +2871,21 @@ Value h_ReturnInline(Frame& f, uint32_t pc, Value acc);
     }
     if (f.env_call) inline_env_release(f);
     f.rare_pop = false;
-    [[clang::musttail]] return h_ReturnInline(f, pc, acc);
+    [[clang::musttail]] return h_ReturnInline(f, pc, acc, regs, code);
 }
 
-[[gnu::noinline]] Value h_ReturnInline(Frame& f, uint32_t pc, Value acc) {
+[[gnu::noinline]] QUANTA_HANDLER Value h_ReturnInline(HANDLER_PARAMS) {
     (void)pc;
-    if (UNLIKELY(f.rare_pop)) [[clang::musttail]] return h_ReturnInlineRare(f, pc, acc);
+    if (UNLIKELY(f.rare_pop)) [[clang::musttail]] return h_ReturnInlineRare(f, pc, acc, regs, code);
     Frame* const caller = f.caller;
     const uint32_t return_pc = f.return_pc;
     inline_frame_pop(f);
-    if (UNLIKELY(Collector::safepoint_armed())) [[clang::musttail]] return h_ReturnSafepoint(*caller, return_pc, acc);
-    [[clang::musttail]] return kHandlers[caller->code[return_pc]](*caller, return_pc, acc);
+    if (UNLIKELY(Collector::safepoint_armed())) [[clang::musttail]] return h_ReturnSafepoint(*caller, return_pc, acc, caller->regs, caller->code);
+    [[clang::musttail]] return kHandlers[caller->code[return_pc]](*caller, return_pc, acc, caller->regs, caller->code);
 }
 
-Value h_Return(Frame& f, uint32_t pc, Value acc) {
-    if (UNLIKELY(f.caller != nullptr)) [[clang::musttail]] return h_ReturnInline(f, pc, acc);
+QUANTA_HANDLER Value h_Return(HANDLER_PARAMS) {
+    if (UNLIKELY(f.caller != nullptr)) [[clang::musttail]] return h_ReturnInline(f, pc, acc, regs, code);
     return acc;
 }
 
@@ -2884,7 +2895,7 @@ Value h_Return(Frame& f, uint32_t pc, Value acc) {
 // way in -- three pushes and three pops, paid by every jump of every loop to guard a
 // path almost none of them take. So the hot handlers below only test whether either is
 // due and, if so, tail-call this, which owns the frame.
-[[gnu::noinline]] Value h_BackEdgeDue(Frame& f, uint32_t pc, Value acc) {
+[[gnu::noinline]] QUANTA_HANDLER Value h_BackEdgeDue(HANDLER_PARAMS) {
     Collector::safepoint();
     if (f.osr_budget < 0 && osr_try(f, pc, acc)) return f.acc;
     DISPATCH();
@@ -2894,16 +2905,16 @@ Value h_Return(Frame& f, uint32_t pc, Value acc) {
 // are combined with a non-short-circuit | so the budget is charged exactly once.
 #define BACK_EDGE_DUE() (Collector::safepoint_armed() | (--f.osr_budget < 0))
 
-Value h_Jump(Frame& f, uint32_t pc, Value acc) {
-    int16_t off = read_i16(f.code, pc + 1);
+QUANTA_HANDLER Value h_Jump(HANDLER_PARAMS) {
+    int16_t off = read_i16(code, pc + 1);
     pc += 3 + off;
-    if (off < 0 && UNLIKELY(BACK_EDGE_DUE())) [[clang::musttail]] return h_BackEdgeDue(f, pc, acc);
+    if (off < 0 && UNLIKELY(BACK_EDGE_DUE())) [[clang::musttail]] return h_BackEdgeDue(f, pc, acc, regs, code);
     DISPATCH();
 }
 
 #define BRANCH_HANDLER(name, cond)                                         \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        int16_t off = read_i16(f.code, pc + 1);                            \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
+        int16_t off = read_i16(code, pc + 1);                            \
         pc += 3;                                                           \
         if (cond) {                                                        \
             pc += off;                                                     \
@@ -2918,8 +2929,8 @@ Value h_Jump(Frame& f, uint32_t pc, Value acc) {
 // in the tag. A boolean is decided here; anything else tail-calls the general
 // handler, which keeps the coercion in one place.
 template <bool JumpWhen>
-Value h_JumpIfSlow(Frame& f, uint32_t pc, Value acc) {
-    int16_t off = read_i16(f.code, pc + 1);
+QUANTA_HANDLER Value h_JumpIfSlow(HANDLER_PARAMS) {
+    int16_t off = read_i16(code, pc + 1);
     pc += 3;
     if (acc.to_boolean() == JumpWhen) {
         pc += off;
@@ -2943,18 +2954,18 @@ inline bool truthiness_inline(const Value& v, bool& truthy) {
 }
 
 template <bool JumpWhen>
-Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_JumpIf(HANDLER_PARAMS) {
     bool truthy;
     if (LIKELY(truthiness_inline(acc, truthy))) {
-        int16_t off = read_i16(f.code, pc + 1);
+        int16_t off = read_i16(code, pc + 1);
         pc += 3;
         if (truthy == JumpWhen) {
             pc += off;
-            if (off < 0 && UNLIKELY(BACK_EDGE_DUE())) [[clang::musttail]] return h_BackEdgeDue(f, pc, acc);
+            if (off < 0 && UNLIKELY(BACK_EDGE_DUE())) [[clang::musttail]] return h_BackEdgeDue(f, pc, acc, regs, code);
         }
         DISPATCH();
     }
-    [[clang::musttail]] return h_JumpIfSlow<JumpWhen>(f, pc, acc);
+    [[clang::musttail]] return h_JumpIfSlow<JumpWhen>(f, pc, acc, regs, code);
 }
 
 // Numeric fast paths only. Anything else re-enters the switch at this same
@@ -3034,7 +3045,7 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
 #define FUSED_TAIL(base)                                                    \
     do {                                                                     \
         if constexpr (Fused) {                                               \
-            f.regs[f.code[pc + (base)]] = acc;                               \
+            regs[code[pc + (base)]] = acc;                               \
             pc += (base) + 1;                                                \
         } else {                                                             \
             pc += (base);                                                    \
@@ -3044,8 +3055,8 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
 
 #define FUSED_EPILOGUE(fused_op, base)                                      \
     if (pc == instr_pc + (base) &&                                          \
-        f.code[instr_pc] == static_cast<uint8_t>(fused_op)) {               \
-        f.regs[f.code[instr_pc + (base)]] = acc;                            \
+        code[instr_pc] == static_cast<uint8_t>(fused_op)) {               \
+        regs[code[instr_pc + (base)]] = acc;                            \
         pc = instr_pc + (base) + 1;                                         \
     } else ((void)0)
 
@@ -3087,54 +3098,54 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
         const bool truth_ = (truth);                                                  \
         acc = Value(truth_);                                                          \
         pc += 2;                                                                      \
-        const uint8_t next_ = f.code[pc];                                             \
+        const uint8_t next_ = code[pc];                                             \
         if (next_ == static_cast<uint8_t>(Op::JumpIfFalse) ||                         \
             next_ == static_cast<uint8_t>(Op::JumpIfTrue)) {                          \
-            const int16_t off_ = read_i16(f.code, pc + 1);                            \
+            const int16_t off_ = read_i16(code, pc + 1);                            \
             pc += 3;                                                                  \
             if (truth_ == (next_ == static_cast<uint8_t>(Op::JumpIfTrue))) {          \
                 pc += off_;                                                           \
                 if (off_ < 0 && UNLIKELY(BACK_EDGE_DUE()))                            \
-                    [[clang::musttail]] return h_BackEdgeDue(f, pc, acc);             \
+                    [[clang::musttail]] return h_BackEdgeDue(f, pc, acc, regs, code);             \
             }                                                                         \
         }                                                                             \
         DISPATCH();                                                                   \
     } while (0)
 
 #define NUMERIC_COMPARE_HANDLER(name, binop, cmp)                          \
-    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+    QUANTA_HANDLER Value name##_slow(HANDLER_PARAMS) {                  \
         const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
-        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        acc = binary_slow(ctx, binop, regs[code[pc + 1]], acc);        \
         pc += 2;                                                           \
         CHECK_EXC_TAIL();                                                  \
         DISPATCH();                                                        \
     }                                                                      \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
+        const Value& lhs = regs[code[pc + 1]];                         \
         if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
             const double l = lhs.as_finite_double();                       \
             const double r = acc.as_finite_double();                       \
             BRANCH_AFTER_COMPARE(cmp);                                     \
         }                                                                  \
-        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+        [[clang::musttail]] return name##_slow(f, pc, acc, regs, code);                \
     }
 
 #define NUMERIC_BINARY_HANDLER(name, binop, expr)                          \
-    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+    QUANTA_HANDLER Value name##_slow(HANDLER_PARAMS) {                  \
         const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
-        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        acc = binary_slow(ctx, binop, regs[code[pc + 1]], acc);        \
         pc += 2;                                                           \
         CHECK_EXC_TAIL();                                                  \
         DISPATCH();                                                        \
     }                                                                      \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
+        const Value& lhs = regs[code[pc + 1]];                         \
         if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
             double l = lhs.as_finite_double();                             \
             double r = acc.as_finite_double();                             \
@@ -3143,17 +3154,17 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
             pc += 2;                                                       \
             DISPATCH();                                                    \
         }                                                                  \
-        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+        [[clang::musttail]] return name##_slow(f, pc, acc, regs, code);                \
     }
 
-Value h_gen_Mod(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_gen_Mod(HANDLER_PARAMS);
 
 // Both operands int32-valued and the divisor neither 0 nor -1 is a hardware
 // remainder, which is most of what a loop's `% n` is; the sign of a zero result
 // follows the dividend (there is no negative zero in an int). Everything else,
 // fmod's cases included, is the generated handler's.
-Value h_Mod(Frame& f, uint32_t pc, Value acc) {
-    const Value& lhs = f.regs[f.code[pc + 1]];
+QUANTA_HANDLER Value h_Mod(HANDLER_PARAMS) {
+    const Value& lhs = regs[code[pc + 1]];
     if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {
         const double l = lhs.as_finite_double();
         const double r = acc.as_finite_double();
@@ -3168,7 +3179,7 @@ Value h_Mod(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_Mod(f, pc, acc);
+    [[clang::musttail]] return h_gen_Mod(f, pc, acc, regs, code);
 }
 
 NUMERIC_BINARY_HANDLER(h_Add, BinOp::ADD, Value(l + r))
@@ -3181,18 +3192,18 @@ NUMERIC_COMPARE_HANDLER(h_TestGe, BinOp::GREATER_EQUAL, l >= r)
 // == and != : two finite numbers compare as doubles; otherwise the values' bits settle
 // the common cases (loose_equal_quick) and only a conversion reaches apply_operator.
 #define LOOSE_EQUALITY_HANDLER(name, binop, want_equal)                    \
-    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+    QUANTA_HANDLER Value name##_slow(HANDLER_PARAMS) {                  \
         const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
-        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        acc = binary_slow(ctx, binop, regs[code[pc + 1]], acc);        \
         pc += 2;                                                           \
         CHECK_EXC_TAIL();                                                  \
         DISPATCH();                                                        \
     }                                                                      \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
+        const Value& lhs = regs[code[pc + 1]];                         \
         if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
             const bool equal = lhs.as_finite_double() == acc.as_finite_double(); \
             BRANCH_AFTER_COMPARE(equal == (want_equal));                   \
@@ -3201,7 +3212,7 @@ NUMERIC_COMPARE_HANDLER(h_TestGe, BinOp::GREATER_EQUAL, l >= r)
         if (q != 2) {                                                      \
             BRANCH_AFTER_COMPARE((q == 1) == (want_equal));                \
         }                                                                  \
-        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+        [[clang::musttail]] return name##_slow(f, pc, acc, regs, code);                \
     }
 LOOSE_EQUALITY_HANDLER(h_TestEq, BinOp::EQUAL, true)
 LOOSE_EQUALITY_HANDLER(h_TestNe, BinOp::NOT_EQUAL, false)
@@ -3210,23 +3221,23 @@ LOOSE_EQUALITY_HANDLER(h_TestNe, BinOp::NOT_EQUAL, false)
 // symbols reach the slow half. The macro's handler would have gone there for every
 // object, null, boolean and undefined it was handed.
 #define STRICT_EQUALITY_HANDLER(name, binop, want_equal)                   \
-    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+    QUANTA_HANDLER Value name##_slow(HANDLER_PARAMS) {                  \
         const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                             \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
-        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        acc = binary_slow(ctx, binop, regs[code[pc + 1]], acc);        \
         pc += 2;                                                           \
         CHECK_EXC_TAIL();                                                  \
         DISPATCH();                                                        \
     }                                                                      \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
+        const Value& lhs = regs[code[pc + 1]];                         \
         const int q = strict_equal_quick(lhs, acc);                        \
         if (LIKELY(q != 2)) {                                              \
             BRANCH_AFTER_COMPARE((q == 1) == (want_equal));                \
         }                                                                  \
-        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+        [[clang::musttail]] return name##_slow(f, pc, acc, regs, code);                \
     }
 STRICT_EQUALITY_HANDLER(h_TestStrictEq, BinOp::STRICT_EQUAL, true)
 STRICT_EQUALITY_HANDLER(h_TestStrictNe, BinOp::STRICT_NOT_EQUAL, false)
@@ -3249,18 +3260,18 @@ inline bool to_int32_by_cast(double d, int32_t& out) {
 }
 
 #define BITWISE_BINARY_HANDLER(name, binop, expr)                          \
-    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+    QUANTA_HANDLER Value name##_slow(HANDLER_PARAMS) {                  \
         const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
         instr_pc = pc;                                                     \
-        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        acc = binary_slow(ctx, binop, regs[code[pc + 1]], acc);        \
         pc += 2;                                                           \
         CHECK_EXC_TAIL();                                                  \
         DISPATCH();                                                        \
     }                                                                      \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
+        const Value& lhs = regs[code[pc + 1]];                         \
         int32_t l, r;                                                      \
         if (LIKELY(lhs.is_finite_double() && acc.is_finite_double() &&     \
                    to_int32_by_cast(lhs.as_finite_double(), l) &&          \
@@ -3269,7 +3280,7 @@ inline bool to_int32_by_cast(double d, int32_t& out) {
             pc += 2;                                                       \
             DISPATCH();                                                    \
         }                                                                  \
-        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+        [[clang::musttail]] return name##_slow(f, pc, acc, regs, code);                \
     }
 
 BITWISE_BINARY_HANDLER(h_BitAnd, BinOp::BITWISE_AND, Value(static_cast<double>(l & r)))
@@ -3297,7 +3308,7 @@ static Value step_numeric(Context& ctx, const Value& acc, double delta) {
 }
 
 #define UNARY_STEP_HANDLER(name, delta)                                    \
-    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+    QUANTA_HANDLER Value name##_slow(HANDLER_PARAMS) {                  \
         const BytecodeChunk& chunk = *f.chunk;                              \
         Context& ctx = *f.ctx;                                              \
         uint32_t& instr_pc = f.instr_pc;                                   \
@@ -3307,19 +3318,19 @@ static Value step_numeric(Context& ctx, const Value& acc, double delta) {
         CHECK_EXC_TAIL();                                                  \
         DISPATCH();                                                        \
     }                                                                      \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+    QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
         if (LIKELY(acc.is_finite_double())) {                              \
             acc = Value(acc.as_finite_double() + (delta));                 \
             pc += 1;                                                       \
             DISPATCH();                                                    \
         }                                                                  \
-        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+        [[clang::musttail]] return name##_slow(f, pc, acc, regs, code);                \
     }
 
 UNARY_STEP_HANDLER(h_Inc, 1.0)
 UNARY_STEP_HANDLER(h_Dec, -1.0)
 
-Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaThis(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     bool& this_resolved = f.this_resolved;
@@ -3386,36 +3397,34 @@ Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
 // resolve that a plain method or function never needs, so the settled case
 // answers from the frame and everything else tail-calls it.
 template <bool Fused>
-Value h_LdaThisFast(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaThisFast(HANDLER_PARAMS) {
     if (LIKELY(f.this_resolved && !f.ctx->this_needs_super())) {
         acc = f.this_value;
         FUSED_TAIL(1);
     }
-    [[clang::musttail]] return h_gen_LdaThis(f, pc, acc);
+    [[clang::musttail]] return h_gen_LdaThis(f, pc, acc, regs, code);
 }
 
 // Writes a constant and cannot raise, so it needs none of the generated
 // handler's bookkeeping -- like the other constant loads above.
-Value h_LdaTdzStar(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaTdzStar(HANDLER_PARAMS) {
     (void)acc;
     acc = Value::vm_tdz_sentinel();
-    f.regs[f.code[pc + 1]] = acc;
+    regs[code[pc + 1]] = acc;
     pc += 2;
     DISPATCH();
 }
 
-Value h_LdaTdz(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaTdz(HANDLER_PARAMS) {
     (void)acc;
     acc = Value::vm_tdz_sentinel();
     pc += 1;
     DISPATCH();
 }
 
-Value h_gen_LdarChecked(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdarChecked(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3438,11 +3447,9 @@ Value h_gen_LdarChecked(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StarChecked(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StarChecked(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3465,11 +3472,9 @@ Value h_gen_StarChecked(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Div(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Div(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3480,11 +3485,9 @@ Value h_gen_Div(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Mod(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Mod(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3505,11 +3508,9 @@ Value h_gen_Mod(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Exp(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Exp(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3526,27 +3527,25 @@ Value h_gen_Exp(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_TestInstanceOf(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_gen_TestInstanceOf(HANDLER_PARAMS);
 
 // The common `instanceof` -- an object, an unbound function, no Proxy, no
 // Symbol.hasInstance anywhere -- is a walk up the prototype chain, which needs
 // neither the context nor an exception check, so it is answered before the
 // general handler builds its frame.
-Value h_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_TestInstanceOf(HANDLER_PARAMS) {
     bool result;
-    if (LIKELY(instanceof_quick(f.regs[f.code[pc + 1]], acc, result))) {
+    if (LIKELY(instanceof_quick(regs[code[pc + 1]], acc, result))) {
         acc = Value(result);
         pc += 2;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_TestInstanceOf(f, pc, acc);
+    [[clang::musttail]] return h_gen_TestInstanceOf(f, pc, acc, regs, code);
 }
 
-Value h_gen_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_TestInstanceOf(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3563,11 +3562,9 @@ Value h_gen_TestInstanceOf(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_TestIn(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_TestIn(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3606,7 +3603,7 @@ Value h_gen_TestIn(Frame& f, uint32_t pc, Value acc) {
 }
 
 
-Value h_gen_Neg(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Neg(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3624,7 +3621,7 @@ Value h_gen_Neg(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LogicalNot(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LogicalNot(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3641,17 +3638,17 @@ Value h_gen_LogicalNot(Frame& f, uint32_t pc, Value acc) {
 // A condition is nearly always one of the values truthiness_inline decides, and
 // the answer is a boolean built from it; anything else -- a string, a BigInt --
 // goes to the generated handler.
-Value h_LogicalNotFast(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LogicalNotFast(HANDLER_PARAMS) {
     bool truthy;
     if (LIKELY(truthiness_inline(acc, truthy))) {
         acc = Value(!truthy);
         pc += 1;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_LogicalNot(f, pc, acc);
+    [[clang::musttail]] return h_gen_LogicalNot(f, pc, acc, regs, code);
 }
 
-Value h_gen_BitNot(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_BitNot(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3669,19 +3666,19 @@ Value h_gen_BitNot(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Await(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Await(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
-    const bool has_argument = f.code[pc + 1] != 0;
+    const bool has_argument = code[pc + 1] != 0;
     pc += 2;
     acc = perform_await(ctx, acc, has_argument);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
 
-Value h_gen_YieldStar(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_YieldStar(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3692,19 +3689,19 @@ Value h_gen_YieldStar(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SettleReturn(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SettleReturn(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
-    const uint8_t bits = f.code[pc + 1];
+    const uint8_t bits = code[pc + 1];
     pc += 2;
     acc = perform_return_completion(ctx, acc, (bits & 1) != 0, (bits & 2) != 0);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
 
-Value h_gen_LdaNewTarget(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaNewTarget(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     pc += 1;
@@ -3712,7 +3709,7 @@ Value h_gen_LdaNewTarget(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LdaImportMeta(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaImportMeta(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3724,7 +3721,7 @@ Value h_gen_LdaImportMeta(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Yield(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Yield(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3739,7 +3736,7 @@ Value h_gen_Yield(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_TypeOf(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_TypeOf(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3753,7 +3750,7 @@ Value h_gen_TypeOf(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ToNumber(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ToNumber(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3777,7 +3774,7 @@ Value h_gen_ToNumber(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ToNumeric(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ToNumeric(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3796,15 +3793,15 @@ Value h_gen_ToNumeric(Frame& f, uint32_t pc, Value acc) {
 // fits an int is two instructions; both used to go through the generated handlers
 // and out-of-line conversions (about seventy instructions for `~str.indexOf(..)`,
 // which minified code uses constantly).
-Value h_ToNumericFast(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_ToNumericFast(HANDLER_PARAMS) {
     if (LIKELY(acc.is_number())) {
         pc += 1;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_ToNumeric(f, pc, acc);
+    [[clang::musttail]] return h_gen_ToNumeric(f, pc, acc, regs, code);
 }
 
-Value h_BitNotFast(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_BitNotFast(HANDLER_PARAMS) {
     if (LIKELY(acc.is_finite_double())) {
         int32_t i;
         if (LIKELY(to_int32_by_cast(acc.as_finite_double(), i))) {
@@ -3813,10 +3810,10 @@ Value h_BitNotFast(Frame& f, uint32_t pc, Value acc) {
             DISPATCH();
         }
     }
-    [[clang::musttail]] return h_gen_BitNot(f, pc, acc);
+    [[clang::musttail]] return h_gen_BitNot(f, pc, acc, regs, code);
 }
 
-Value h_gen_ToTemplateString(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ToTemplateString(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3839,10 +3836,9 @@ Value h_gen_ToTemplateString(Frame& f, uint32_t pc, Value acc) {
 // literal used to compile to -- built and immediately discarded count-1
 // intermediate String cells; this sizes and fills one std::string, then
 // wraps it in exactly one.
-Value h_gen_BuildTemplateString(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_BuildTemplateString(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -3851,7 +3847,6 @@ Value h_gen_BuildTemplateString(Frame& f, uint32_t pc, Value acc) {
                 uint8_t start = code[pc];
                 uint8_t count = code[pc + 1];
                 pc += 2;
-                Value* regs = f.regs;
                 size_t total = 0;
                 for (uint8_t i = 0; i < count; i++) {
                     total += regs[start + i].as_string()->str().size();
@@ -3869,7 +3864,7 @@ Value h_gen_BuildTemplateString(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ToPropertyKey(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ToPropertyKey(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3891,7 +3886,7 @@ Value h_gen_ToPropertyKey(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CheckObjectCoercible(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CheckObjectCoercible(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -3912,19 +3907,18 @@ Value h_gen_CheckObjectCoercible(Frame& f, uint32_t pc, Value acc) {
 // Only the throw needs the generated handler's bookkeeping; the value that is
 // coercible, which is every one that reaches a destructuring pattern in a
 // working program, has nothing to do.
-Value h_CheckObjectCoercibleFast(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_CheckObjectCoercibleFast(HANDLER_PARAMS) {
     if (LIKELY(!acc.is_null() && !acc.is_undefined())) {
         pc += 1;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_CheckObjectCoercible(f, pc, acc);
+    [[clang::musttail]] return h_gen_CheckObjectCoercible(f, pc, acc, regs, code);
 }
 
-Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaLookup(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
-    const uint8_t* code = f.code;
     Environment* entry_env = f.entry_env;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -4037,11 +4031,10 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
 // Never fused (no LdaLookupStarWide exists), so no FUSED_EPILOGUE. Kept
 // as the same do/while(0)+break shape the narrow form uses, for the same
 // musttail/CHECK_EXC reason h_GetKeyedWide's own comment explains.
-Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaLookupWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
-    const uint8_t* code = f.code;
     Environment* entry_env = f.entry_env;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -4128,10 +4121,9 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaLookupTypeof(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -4246,11 +4238,10 @@ inline void cache_store_binding(Frame& f, Environment* env, const std::string& n
     }
 }
 
-Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaLookup(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
-    const uint8_t* code = f.code;
     Environment* entry_env = f.entry_env;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -4337,11 +4328,10 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
 }
 
 // Wide counterpart of h_gen_StaLookup -- see h_LdaLookupWide's own comment.
-Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_StaLookupWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
-    const uint8_t* code = f.code;
     Environment* entry_env = f.entry_env;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -4417,10 +4407,9 @@ Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
 // GetIdentifierReference, kept. The write below belongs to the binding that
 // answered here, not to whatever the right side may have introduced since --
 // a direct eval in there can declare a nearer one.
-Value h_gen_ResolveBindingEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ResolveBindingEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const std::string* key = chunk.names[read_u16(code, pc + 1)];
@@ -4439,10 +4428,9 @@ Value h_gen_ResolveBindingEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LdaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaResolvedEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t slot = code[pc + 1];
@@ -4464,10 +4452,9 @@ Value h_gen_LdaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaResolvedEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t slot = code[pc + 1];
@@ -4510,21 +4497,20 @@ Value h_gen_StaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SetDirectEval(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetDirectEval(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
-    ctx.set_direct_eval_call(f.code[pc + 1] != 0);
+    ctx.set_direct_eval_call(code[pc + 1] != 0);
     pc += 2;
     CHECK_EXC_TAIL();
     DISPATCH();
 }
 
-Value h_gen_EnterParamEval(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_EnterParamEval(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const uint8_t flags = code[pc + 1];
@@ -4542,10 +4528,9 @@ Value h_gen_EnterParamEval(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CheckLookupResolvable(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -4579,8 +4564,8 @@ Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
 // is reached this way on every access, so the warm path gets a handler of its
 // own and everything else tail-calls the generated one unchanged.
 template <bool Fused>
-Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
-    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
+QUANTA_HANDLER Value h_LdaLookupFast(HANDLER_PARAMS) {
+    const auto& entry = f.lookup_cache_data[read_u16(code, pc + 1)];
     if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
         // fall through to the general path, which re-resolves and re-caches
     } else if (entry.dict_desc) {
@@ -4606,11 +4591,11 @@ Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
         acc = *entry.slot;
         FUSED_TAIL(3);
     }
-    [[clang::musttail]] return h_gen_LdaLookup(f, pc, acc);
+    [[clang::musttail]] return h_gen_LdaLookup(f, pc, acc, regs, code);
 }
 
-Value h_StaLookupFast(Frame& f, uint32_t pc, Value acc) {
-    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
+QUANTA_HANDLER Value h_StaLookupFast(HANDLER_PARAMS) {
+    const auto& entry = f.lookup_cache_data[read_u16(code, pc + 1)];
     if (LIKELY(entry.slot && !entry.obj_shape && entry.writable &&
                entry.shadow_epoch == Environment::binding_shadow_epoch())) {
         if (acc.is_object() || acc.is_function() || acc.is_string() ||
@@ -4627,14 +4612,12 @@ Value h_StaLookupFast(Frame& f, uint32_t pc, Value acc) {
         pc += 3;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_StaLookup(f, pc, acc);
+    [[clang::musttail]] return h_gen_StaLookup(f, pc, acc, regs, code);
 }
 
-Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaLookupChecked(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -4709,8 +4692,8 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
 // its address (cache_store_binding), and then neither half has anything left to
 // find: the check is "is there a live cache entry" and the store is one write
 // through it, the same entry StaLookup's own fast path uses.
-Value h_CheckLookupResolvableFast(Frame& f, uint32_t pc, Value acc) {
-    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
+QUANTA_HANDLER Value h_CheckLookupResolvableFast(HANDLER_PARAMS) {
+    const auto& entry = f.lookup_cache_data[read_u16(code, pc + 1)];
     if (LIKELY(entry.slot && !entry.obj_shape &&
                entry.shadow_epoch == Environment::binding_shadow_epoch())) {
         acc = Value(true);
@@ -4727,12 +4710,12 @@ Value h_CheckLookupResolvableFast(Frame& f, uint32_t pc, Value acc) {
             DISPATCH();
         }
     }
-    [[clang::musttail]] return h_gen_CheckLookupResolvable(f, pc, acc);
+    [[clang::musttail]] return h_gen_CheckLookupResolvable(f, pc, acc, regs, code);
 }
 
-Value h_StaLookupCheckedFast(Frame& f, uint32_t pc, Value acc) {
-    const Value& resolved = f.regs[f.code[pc + 1]];
-    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 2)];
+QUANTA_HANDLER Value h_StaLookupCheckedFast(HANDLER_PARAMS) {
+    const Value& resolved = regs[code[pc + 1]];
+    const auto& entry = f.lookup_cache_data[read_u16(code, pc + 2)];
     if (LIKELY(resolved.is_boolean() && resolved.as_boolean() &&
                entry.slot && !entry.obj_shape && entry.writable &&
                entry.shadow_epoch == Environment::binding_shadow_epoch())) {
@@ -4750,7 +4733,7 @@ Value h_StaLookupCheckedFast(Frame& f, uint32_t pc, Value acc) {
         pc += 4;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_StaLookupChecked(f, pc, acc);
+    [[clang::musttail]] return h_gen_StaLookupChecked(f, pc, acc, regs, code);
 }
 
 // The read, write and hop-walking forms of an environment slot, for the case a
@@ -4759,12 +4742,11 @@ Value h_StaLookupCheckedFast(Frame& f, uint32_t pc, Value acc) {
 // go to the generated handler, which redoes the whole thing from the start. The
 // generated ones pay a prologue and the instr_pc store for a path that cannot
 // throw, which was most of what a read of a captured variable cost.
-Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc);
-Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc);
-Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_gen_LdaEnvSlotAt(HANDLER_PARAMS);
+QUANTA_HANDLER Value h_gen_StaEnvSlot(HANDLER_PARAMS);
+QUANTA_HANDLER Value h_gen_StaEnvSlotAt(HANDLER_PARAMS);
 
-Value h_LdaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
+QUANTA_HANDLER Value h_LdaEnvSlotAtFast(HANDLER_PARAMS) {
     Environment* env = frame_lexical_env(f);
     for (uint8_t h = code[pc + 1]; h > 0 && env; h--) env = env->get_outer();
     if (LIKELY(env != nullptr)) {
@@ -4776,11 +4758,10 @@ Value h_LdaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_LdaEnvSlotAt(f, pc, acc);
+    [[clang::musttail]] return h_gen_LdaEnvSlotAt(f, pc, acc, regs, code);
 }
 
-Value h_StaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
+QUANTA_HANDLER Value h_StaEnvSlotFast(HANDLER_PARAMS) {
     if (Environment* env = frame_lexical_env(f)) {
         if (auto* e = env->inline_slot_interned(code[pc + 1], f.chunk->names[read_u16(code, pc + 2)])) {
             if (LIKELY(e->slot.initialized && e->slot.mutable_flag)) {
@@ -4791,11 +4772,10 @@ Value h_StaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_StaEnvSlot(f, pc, acc);
+    [[clang::musttail]] return h_gen_StaEnvSlot(f, pc, acc, regs, code);
 }
 
-Value h_StaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
+QUANTA_HANDLER Value h_StaEnvSlotAtFast(HANDLER_PARAMS) {
     Environment* env = frame_lexical_env(f);
     for (uint8_t h = code[pc + 1]; h > 0 && env; h--) env = env->get_outer();
     if (LIKELY(env != nullptr)) {
@@ -4808,19 +4788,19 @@ Value h_StaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_StaEnvSlotAt(f, pc, acc);
+    [[clang::musttail]] return h_gen_StaEnvSlotAt(f, pc, acc, regs, code);
 }
 
-Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_gen_LdaEnv(HANDLER_PARAMS);
 
 // Only the read that the declarative chain answers outright. `this` is not in
 // any environment, an object environment on the way has to be asked in the
 // order the full handler asks it, and a hole has to be reported -- all three
 // tail-call below.
 template <bool Fused>
-Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaEnvFast(HANDLER_PARAMS) {
     static const std::string* kThis = Shape::intern("this");
-    const std::string* key = f.chunk->names[read_u16(f.code, pc + 1)];
+    const std::string* key = f.chunk->names[read_u16(code, pc + 1)];
     if (LIKELY(key != kThis)) {
         if (Environment* env = frame_lexical_env(f)) {
             Value out;
@@ -4830,13 +4810,12 @@ Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_LdaEnv(f, pc, acc);
+    [[clang::musttail]] return h_gen_LdaEnv(f, pc, acc, regs, code);
 }
 
-Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -4901,10 +4880,9 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -4941,10 +4919,9 @@ Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StaEnvInit(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaEnvInit(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -4966,15 +4943,14 @@ Value h_gen_StaEnvInit(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_gen_LdaEnvSlot(HANDLER_PARAMS);
 
 // Only the read that lands in the frame environment's own slot at the index
 // the compiler assigned. A TDZ hole, a name that is not there and the chain
 // walk behind it all tail-call the generated handler, so the common read
 // stops paying its prologue.
 template <bool Fused>
-Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
+QUANTA_HANDLER Value h_LdaEnvSlotFast(HANDLER_PARAMS) {
     const uint8_t slot = code[pc + 1];
     const std::string* key = f.chunk->names[read_u16(code, pc + 2)];
     if (Environment* env = frame_lexical_env(f)) {
@@ -4985,13 +4961,12 @@ Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_LdaEnvSlot(f, pc, acc);
+    [[clang::musttail]] return h_gen_LdaEnvSlot(f, pc, acc, regs, code);
 }
 
-Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaEnvSlot(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5041,10 +5016,9 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaEnvSlot(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5108,10 +5082,9 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaEnvSlotInit(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5150,10 +5123,9 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
 // not-yet-fully-installed-in-that-slot guard LdaEnvSlot itself relies on
 // (see EnvSlotInfo's doc comment): a wrong hop count only costs the miss
 // path, never a wrong answer.
-Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaEnvSlotAt(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5212,10 +5184,9 @@ Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaEnvSlotAt(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5278,12 +5249,12 @@ Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_BindEnvLocals(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
-    const uint8_t split_scope = f.code[pc + 1];
+    const uint8_t split_scope = code[pc + 1];
     pc += 2;
     do {
                 {
@@ -5365,10 +5336,9 @@ static bool seed_scope_bindings(Environment* env, const std::vector<BytecodeChun
     return true;
 }
 
-Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_EnterLoopEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5396,10 +5366,9 @@ Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_AdvanceLoopEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5439,7 +5408,7 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ExitLoopEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ExitLoopEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -5453,7 +5422,7 @@ Value h_gen_ExitLoopEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SaveEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SaveEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Environment** env_saves = f.env_saves;
@@ -5469,7 +5438,7 @@ Value h_gen_SaveEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_RestoreEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_RestoreEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Environment** env_saves = f.env_saves;
@@ -5485,7 +5454,7 @@ Value h_gen_RestoreEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_PopEnvSave(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_PopEnvSave(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint8_t& env_save_top = f.env_save_top;
@@ -5500,11 +5469,9 @@ Value h_gen_PopEnvSave(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_GetIterator(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_GetIterator(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5526,11 +5493,9 @@ Value h_gen_GetIterator(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_IteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_IteratorNextOrJump(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5558,11 +5523,9 @@ Value h_gen_IteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_IteratorClose(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_IteratorClose(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5587,11 +5550,9 @@ Value h_gen_IteratorClose(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_GetAsyncIterator(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_GetAsyncIterator(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t next_fn_reg = code[pc + 1];
@@ -5612,11 +5573,9 @@ Value h_gen_GetAsyncIterator(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_AsyncIteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_AsyncIteratorNextOrJump(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t iter_reg = code[pc + 1];
@@ -5639,11 +5598,9 @@ Value h_gen_AsyncIteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_AsyncIteratorClose(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_AsyncIteratorClose(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t iter_reg = code[pc + 1];
@@ -5711,11 +5668,9 @@ bool for_in_proto_chain_silent(Object* obj) {
 // that could have removed one -- a delete, an attribute change, a new element
 // -- moves the object off that shape or gives it an extras block, and either
 // makes this test fail and fall through to the real `in`.
-Value h_gen_ForInKeyPresent(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ForInKeyPresent(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5742,11 +5697,9 @@ Value h_gen_ForInKeyPresent(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CreateForInKeys(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5810,11 +5763,9 @@ Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_TryCollectRestArray(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_TryCollectRestArray(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5858,10 +5809,9 @@ Value h_gen_TryCollectRestArray(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_JumpIfNotNullish(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_JumpIfNotNullish(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5877,10 +5827,9 @@ Value h_gen_JumpIfNotNullish(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_JumpIfNullish(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_JumpIfNullish(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5896,10 +5845,9 @@ Value h_gen_JumpIfNullish(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_JumpIfNotUndefined(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_JumpIfNotUndefined(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5920,10 +5868,9 @@ Value h_gen_JumpIfNotUndefined(Frame& f, uint32_t pc, Value acc) {
 // the same primitive type as the switch's (all-number or all-string) case
 // literals, so no ordering comparison ever runs against a mismatched type --
 // see BytecodeCompiler.cpp's SWITCH_STATEMENT case for why that matters.
-Value h_gen_JumpIfNotNumber(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_JumpIfNotNumber(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5939,10 +5886,9 @@ Value h_gen_JumpIfNotNumber(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_JumpIfNotString(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_JumpIfNotString(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -5958,10 +5904,9 @@ Value h_gen_JumpIfNotString(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CreateClosure(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6009,10 +5954,9 @@ Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DeclareFunction(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6048,10 +5992,9 @@ Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
 // Wide counterpart of h_gen_CreateClosure -- see h_GetNamedWide's own
 // comment (same alloc_feedback_slot-style overflow, this time on
 // chunk_->ensure_closures() rather than a feedback pool).
-Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_CreateClosureWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint32_t idx = read_u32(code, pc + 1);
@@ -6076,10 +6019,9 @@ Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
 
 // Wide counterpart of h_gen_DeclareFunction -- see h_CreateClosureWide's
 // own comment.
-Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_DeclareFunctionWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint32_t idx = read_u32(code, pc + 1);
@@ -6103,10 +6045,9 @@ Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
 }
 
 
-Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DefineClass(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6124,11 +6065,9 @@ Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_BuildClass(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_BuildClass(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6162,10 +6101,9 @@ Value h_gen_BuildClass(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_BindClassName(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_BindClassName(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6183,11 +6121,9 @@ Value h_gen_BindClassName(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LinkClassHeritage(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6263,11 +6199,9 @@ Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_AddFieldInitializer(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6290,10 +6224,8 @@ Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_RunStaticElement(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_RunStaticElement(HANDLER_PARAMS) {
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     const BytecodeChunk& chunk = *f.chunk;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -6316,11 +6248,9 @@ Value h_gen_RunStaticElement(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_AddFieldInitializerKeyed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_AddFieldInitializerKeyed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6341,11 +6271,9 @@ Value h_gen_AddFieldInitializerKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DeclarePrivateName(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DeclarePrivateName(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6394,11 +6322,9 @@ Value h_gen_DeclarePrivateName(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DefinePrivateMember(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DefinePrivateMember(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6442,11 +6368,9 @@ Value h_gen_DefinePrivateMember(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LinkPrivateBrands(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LinkPrivateBrands(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6498,11 +6422,9 @@ Value h_gen_LinkPrivateBrands(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DefinePrivateStatic(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DefinePrivateStatic(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6518,10 +6440,9 @@ Value h_gen_DefinePrivateStatic(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LinkExports(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LinkExports(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6535,11 +6456,9 @@ Value h_gen_LinkExports(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CopyRestProperties(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CopyRestProperties(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6562,11 +6481,9 @@ Value h_gen_CopyRestProperties(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Call(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6599,11 +6516,9 @@ Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CallDirectEval(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CallDirectEval(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6640,12 +6555,10 @@ Value h_gen_CallDirectEval(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CallResolved(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     std::span<const Value> args = f.args;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -6686,7 +6599,7 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
 // covers the call instruction, or a return to this frame's caller. Out of line
 // so the call handlers below keep the search -- a loop over the handler table --
 // out of the body that every call, thrown or not, has to run.
-[[gnu::noinline]] Value h_ExceptionAt(Frame& f, uint32_t instr_pc_value, Value acc) {
+[[gnu::noinline]] QUANTA_HANDLER Value h_ExceptionAt(Frame& f, uint32_t instr_pc_value, Value acc, Value* regs, const uint8_t* code) {
     const BytecodeChunk& chunk = *f.chunk;
     uint32_t pc = instr_pc_value;
     uint32_t instr_pc = instr_pc_value;
@@ -6700,7 +6613,7 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
 // operand decode, two exception tests -- when all that has to survive it is the
 // frame and the pc. A callee that is not a function (a Proxy, a non-callable)
 // tail-calls the generated handler untouched.
-Value h_CallInline(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_CallInline(HANDLER_PARAMS);
 
 // A callee whose whole body is `return <constant | this | this.name>` (try_leaf_call) is answered
 // here, ahead of call_fast_gate, which would otherwise be entered for no more than the same test:
@@ -6715,14 +6628,13 @@ inline bool answer_leaf(Function& fn, Context& ctx, const Value& receiver, Value
 
 // The stackless attempt (h_CallInline) is its own function: folded in here it costs this one a
 // longer prologue on every call, including the ones that never qualify.
-Value h_CallPlain(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& callee = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_CallPlain(HANDLER_PARAMS) {
+    const Value& callee = regs[code[pc + 1]];
     if (LIKELY(callee.is_function())) {
         Function* fn = callee.as_function();
         f.instr_pc = pc;
         Context& ctx = *f.ctx;
-        const std::span<const Value> call_args(f.regs + code[pc + 2], code[pc + 3]);
+        const std::span<const Value> call_args(regs + code[pc + 2], code[pc + 3]);
         if (LIKELY(fn->fast_callable())) {
             if (answer_leaf(*fn, ctx, Value(), acc)) {
                 pc += 6;
@@ -6732,25 +6644,24 @@ Value h_CallPlain(Frame& f, uint32_t pc, Value acc) {
         } else {
             acc = fn->call_register_args(ctx, call_args, Value());
         }
-        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
+        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc, regs, code);
         Collector::safepoint();
         pc += 6;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_Call(f, pc, acc);
+    [[clang::musttail]] return h_gen_Call(f, pc, acc, regs, code);
 }
 
-Value h_CallResolvedInline(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_CallResolvedInline(HANDLER_PARAMS);
 
-Value h_CallResolvedPlain(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& callee = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_CallResolvedPlain(HANDLER_PARAMS) {
+    const Value& callee = regs[code[pc + 1]];
     if (LIKELY(callee.is_function())) {
         Function* fn = callee.as_function();
         f.instr_pc = pc;
         Context& ctx = *f.ctx;
-        const std::span<const Value> call_args(f.regs + code[pc + 3], code[pc + 4]);
-        const Value& receiver = f.regs[code[pc + 2]];
+        const std::span<const Value> call_args(regs + code[pc + 3], code[pc + 4]);
+        const Value& receiver = regs[code[pc + 2]];
         if (LIKELY(fn->fast_callable())) {
             if (answer_leaf(*fn, ctx, receiver, acc)) {
                 pc += 7;
@@ -6760,118 +6671,114 @@ Value h_CallResolvedPlain(Frame& f, uint32_t pc, Value acc) {
         } else {
             acc = fn->call_register_args(ctx, call_args, receiver);
         }
-        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
+        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc, regs, code);
         Collector::safepoint();
         pc += 7;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_CallResolved(f, pc, acc);
+    [[clang::musttail]] return h_gen_CallResolved(f, pc, acc, regs, code);
 }
 
-Value h_CallLean(Frame& f, uint32_t pc, Value acc) {
-    if (f.inline_ok) [[clang::musttail]] return h_CallInline(f, pc, acc);
-    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+QUANTA_HANDLER Value h_CallLean(HANDLER_PARAMS) {
+    if (f.inline_ok) [[clang::musttail]] return h_CallInline(f, pc, acc, regs, code);
+    [[clang::musttail]] return h_CallPlain(f, pc, acc, regs, code);
 }
 
-Value h_CallResolvedLean(Frame& f, uint32_t pc, Value acc) {
-    if (f.inline_ok) [[clang::musttail]] return h_CallResolvedInline(f, pc, acc);
-    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+QUANTA_HANDLER Value h_CallResolvedLean(HANDLER_PARAMS) {
+    if (f.inline_ok) [[clang::musttail]] return h_CallResolvedInline(f, pc, acc, regs, code);
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc, regs, code);
 }
 
 // The two stackless entries are a cheap screen and the heavy part behind it: the heavy part saves
 // six registers on the way in, and a call the chunk's verdict has already refused (a third of
 // them in a closure-heavy program) should not pay that to be sent on to the ordinary path.
-Value h_CallInlineGo(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    Function* fn = f.regs[code[pc + 1]].as_function();
+QUANTA_HANDLER Value h_CallInlineGo(HANDLER_PARAMS) {
+    Function* fn = regs[code[pc + 1]].as_function();
     f.instr_pc = pc;
     Frame* callee_frame;
-    if (inline_call_enter(f, fn, f.regs + code[pc + 2], code[pc + 3], Value(), pc + 6, callee_frame))
-        [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value());
-    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+    if (inline_call_enter(f, fn, regs + code[pc + 2], code[pc + 3], Value(), pc + 6, callee_frame))
+        [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
+    [[clang::musttail]] return h_CallPlain(f, pc, acc, regs, code);
 }
 
 // A call to a leaf (kInlineLeaf): answered from the body's own bytes. What the entry tests besides
 // the verdict is the one thing it cannot know, a construct call in flight, which the callee's own
 // entry would have consumed; and the receiver may not suit the body (a primitive `this` in a sloppy
 // function), in which case the ordinary call decides.
-Value h_CallLeaf(Frame& f, uint32_t pc, Value acc) {
-    Function* fn = f.regs[f.code[pc + 1]].as_function();
+QUANTA_HANDLER Value h_CallLeaf(HANDLER_PARAMS) {
+    Function* fn = regs[code[pc + 1]].as_function();
     if (LIKELY(!f.ctx->has_pending_construct_call() &&
                try_leaf_call(*fn->get_executable()->bytecode_chunk, Value(), acc))) {
         pc += 6;
         DISPATCH();
     }
-    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+    [[clang::musttail]] return h_CallPlain(f, pc, acc, regs, code);
 }
 
-Value h_CallResolvedLeaf(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    Function* fn = f.regs[code[pc + 1]].as_function();
+QUANTA_HANDLER Value h_CallResolvedLeaf(HANDLER_PARAMS) {
+    Function* fn = regs[code[pc + 1]].as_function();
     if (LIKELY(!f.ctx->has_pending_construct_call() &&
-               try_leaf_call(*fn->get_executable()->bytecode_chunk, f.regs[code[pc + 2]], acc))) {
+               try_leaf_call(*fn->get_executable()->bytecode_chunk, regs[code[pc + 2]], acc))) {
         pc += 7;
         DISPATCH();
     }
-    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc, regs, code);
 }
 
-[[gnu::noinline]] Value h_CallInline(Frame& f, uint32_t pc, Value acc) {
-    const Value& callee = f.regs[f.code[pc + 1]];
+[[gnu::noinline]] QUANTA_HANDLER Value h_CallInline(HANDLER_PARAMS) {
+    const Value& callee = regs[code[pc + 1]];
     if (LIKELY(callee.is_function())) {
         Function* fn = callee.as_function();
         if (LIKELY(fn->fast_callable())) {
             const uint8_t verdict = fn->get_executable()->bytecode_chunk->inline_state;
-            if (verdict == kInlineLeaf) [[clang::musttail]] return h_CallLeaf(f, pc, acc);
+            if (verdict == kInlineLeaf) [[clang::musttail]] return h_CallLeaf(f, pc, acc, regs, code);
             if (verdict != kInlineNever)
-                [[clang::musttail]] return h_CallInlineGo(f, pc, acc);
+                [[clang::musttail]] return h_CallInlineGo(f, pc, acc, regs, code);
         } else if (fn->maybe_env_callable() && fn->get_executable()->bytecode_chunk->inline_state != kInlineNever) {
-            [[clang::musttail]] return h_CallInlineGo(f, pc, acc);
+            [[clang::musttail]] return h_CallInlineGo(f, pc, acc, regs, code);
         }
     }
-    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+    [[clang::musttail]] return h_CallPlain(f, pc, acc, regs, code);
 }
 
-Value h_CallResolvedInlineGo(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    Function* fn = f.regs[code[pc + 1]].as_function();
+QUANTA_HANDLER Value h_CallResolvedInlineGo(HANDLER_PARAMS) {
+    Function* fn = regs[code[pc + 1]].as_function();
     f.instr_pc = pc;
     Frame* callee_frame;
-    if (inline_call_enter(f, fn, f.regs + code[pc + 3], code[pc + 4], f.regs[code[pc + 2]], pc + 7, callee_frame))
-        [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value());
-    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+    if (inline_call_enter(f, fn, regs + code[pc + 3], code[pc + 4], regs[code[pc + 2]], pc + 7, callee_frame))
+        [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc, regs, code);
 }
 
-[[gnu::noinline]] Value h_CallResolvedInline(Frame& f, uint32_t pc, Value acc) {
-    const Value& callee = f.regs[f.code[pc + 1]];
+[[gnu::noinline]] QUANTA_HANDLER Value h_CallResolvedInline(HANDLER_PARAMS) {
+    const Value& callee = regs[code[pc + 1]];
     if (LIKELY(callee.is_function())) {
         Function* fn = callee.as_function();
         if (LIKELY(fn->fast_callable())) {
             const uint8_t verdict = fn->get_executable()->bytecode_chunk->inline_state;
-            if (verdict == kInlineLeaf) [[clang::musttail]] return h_CallResolvedLeaf(f, pc, acc);
+            if (verdict == kInlineLeaf) [[clang::musttail]] return h_CallResolvedLeaf(f, pc, acc, regs, code);
             if (verdict != kInlineNever)
-                [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc);
+                [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc, regs, code);
         } else if (fn->maybe_env_callable() && fn->get_executable()->bytecode_chunk->inline_state != kInlineNever) {
-            [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc);
+            [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc, regs, code);
         }
     }
-    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc, regs, code);
 }
 
-Value h_gen_Construct(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_gen_Construct(HANDLER_PARAMS);
 
 // `new F(...)` with F a function, keeping only the frame and pc across the call (see
 // h_CallLean). Anything else -- a Proxy, a non-constructor -- is the generated handler's.
-Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_ConstructPlain(HANDLER_PARAMS);
 
 // `new F(...)` as a stackless call, for the commonest F (construct_plain's: a base constructor that
 // is not a default one). The object is made as construct_plain makes it and handed to the callee as
 // `this`; what the call changes on the context is kept in the frame's slot and put back when it ends,
 // and its Return (h_ReturnInlineRare) chooses between the value and `this`. Anything the stackless
 // entry declines is the ordinary road's, before it has done anything the road would repeat.
-[[gnu::noinline]] Value h_ConstructInlineGo(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    Function* fn = f.regs[code[pc + 1]].as_function();
+[[gnu::noinline]] QUANTA_HANDLER Value h_ConstructInlineGo(HANDLER_PARAMS) {
+    Function* fn = regs[code[pc + 1]].as_function();
     Context& ctx = *f.ctx;
     f.instr_pc = pc;
     const Value proto_value = fn->constructor_prototype();
@@ -6880,13 +6787,13 @@ Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc);
     Frame* callee;
     if (proto) {
         Object* self = fn->new_construct_object(proto);
-        if (inline_call_enter(f, fn, f.regs + code[pc + 2], code[pc + 3], Value(self), pc + 6, callee)) {
+        if (inline_call_enter(f, fn, regs + code[pc + 2], code[pc + 3], Value(self), pc + 6, callee)) {
             // The brand and fields of a class come on before its body (InitializeInstanceElements); it
             // can run script, with the callee's frame already holding `this` for the collector.
             fn->initialize_base_instance(ctx, self);
             if (UNLIKELY(ctx.has_exception())) {
                 inline_frame_pop(*callee);
-                [[clang::musttail]] return h_ExceptionAt(f, pc, Value());
+                [[clang::musttail]] return h_ExceptionAt(f, pc, Value(), regs, code);
             }
             InlineConstructState& st = reinterpret_cast<InlineSlot*>(callee)->construct;
             st.saved_new_target = ctx.get_new_target();
@@ -6903,23 +6810,21 @@ Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc);
             ctx.set_last_super_override_needs_reparent(false);
             callee->construct_call = true;
             callee->rare_pop = true;
-            [[clang::musttail]] return kHandlers[callee->code[0]](*callee, 0, Value());
+            [[clang::musttail]] return kHandlers[callee->code[0]](*callee, 0, Value(), callee->regs, callee->code);
         }
     }
-    [[clang::musttail]] return h_ConstructPlain(f, pc, acc);
+    [[clang::musttail]] return h_ConstructPlain(f, pc, acc, regs, code);
 }
 
-Value h_ConstructLean(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& callee = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_ConstructLean(HANDLER_PARAMS) {
+    const Value& callee = regs[code[pc + 1]];
     if (LIKELY(callee.is_function() && f.inline_ok && callee.as_function()->stackless_constructible()))
-        [[clang::musttail]] return h_ConstructInlineGo(f, pc, acc);
-    [[clang::musttail]] return h_ConstructPlain(f, pc, acc);
+        [[clang::musttail]] return h_ConstructInlineGo(f, pc, acc, regs, code);
+    [[clang::musttail]] return h_ConstructPlain(f, pc, acc, regs, code);
 }
 
-Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& callee = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_ConstructPlain(HANDLER_PARAMS) {
+    const Value& callee = regs[code[pc + 1]];
     if (LIKELY(callee.is_function())) {
         f.instr_pc = pc;
         Context& ctx = *f.ctx;
@@ -6927,14 +6832,14 @@ Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc) {
         // enclosing constructor call.
         const Value old_new_target = ctx.get_new_target();
         ctx.set_new_target(callee);
-        acc = callee.as_function()->construct(ctx, std::span<const Value>(f.regs + code[pc + 2], code[pc + 3]));
+        acc = callee.as_function()->construct(ctx, std::span<const Value>(regs + code[pc + 2], code[pc + 3]));
         ctx.set_new_target(old_new_target);
-        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
+        if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc, regs, code);
         Collector::safepoint();
         pc += 6;
         DISPATCH();
     }
-    [[clang::musttail]] return h_gen_Construct(f, pc, acc);
+    [[clang::musttail]] return h_gen_Construct(f, pc, acc, regs, code);
 }
 
 // `X.call(thisArg, ...rest)`, compiled as if "call" were an ordinary method
@@ -6950,12 +6855,10 @@ Value h_ConstructPlain(Frame& f, uint32_t pc, Value acc) {
 // get_named (which, on the way, is what actually populates the cache the
 // next call at this site checks) and invokes whatever that yields exactly
 // like CallResolved would.
-Value h_gen_CallViaFunctionCall(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CallViaFunctionCall(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7019,12 +6922,10 @@ Value h_gen_CallViaFunctionCall(Frame& f, uint32_t pc, Value acc) {
 // Wide counterpart of h_gen_CallViaFunctionCall -- see h_GetNamedWide's
 // own comment. Identical body past the operand-read prologue; only fb_idx
 // widens.
-Value h_CallViaFunctionCallWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_CallViaFunctionCallWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -7085,12 +6986,10 @@ Value h_CallViaFunctionCallWide(Frame& f, uint32_t pc, Value acc) {
 // prototype.apply's own native body) instead of the iterator-protocol
 // spread CallSpread uses, since apply's argsArray only has to be
 // array-like, never iterable.
-Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CallViaFunctionApply(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7211,12 +7110,10 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
 // Wide counterpart of h_gen_CallViaFunctionApply -- see h_GetNamedWide's
 // own comment. Identical body past the operand-read prologue; only fb_idx
 // widens.
-Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_CallViaFunctionApplyWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -7319,11 +7216,9 @@ Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Construct(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7358,11 +7253,9 @@ Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CallSpread(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CallSpread(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7418,11 +7311,9 @@ Value h_gen_CallSpread(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ConstructSpread(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7477,10 +7368,9 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CreateRegExp(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CreateRegExp(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7498,9 +7388,8 @@ Value h_gen_CreateRegExp(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LdaEngineHelper(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaEngineHelper(HANDLER_PARAMS) {
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7518,10 +7407,9 @@ Value h_gen_LdaEngineHelper(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_HasPrivate(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_HasPrivate(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7538,10 +7426,9 @@ Value h_gen_HasPrivate(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_GetSuper(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_GetSuper(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7558,11 +7445,9 @@ Value h_gen_GetSuper(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SetSuper(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetSuper(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7580,11 +7465,9 @@ Value h_gen_SetSuper(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ResolveSuperBase(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ResolveSuperBase(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7610,11 +7493,9 @@ Value h_gen_ResolveSuperBase(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_GetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_GetSuperKeyed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7633,11 +7514,9 @@ Value h_gen_GetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetSuperKeyed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7657,10 +7536,9 @@ Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ThrowSuperDelete(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ThrowSuperDelete(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7671,11 +7549,9 @@ Value h_gen_ThrowSuperDelete(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SuperCallSpread(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SuperCallSpread(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7699,11 +7575,9 @@ Value h_gen_SuperCallSpread(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SuperCall(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SuperCall(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7725,11 +7599,9 @@ Value h_gen_SuperCall(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ObjectSpreadInto(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ObjectSpreadInto(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7747,11 +7619,9 @@ Value h_gen_ObjectSpreadInto(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SpreadInto(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SpreadInto(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7777,12 +7647,10 @@ Value h_gen_SpreadInto(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_GetNamed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -7814,12 +7682,10 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
 // (fused_store_form has no case for it), so no FUSED_EPILOGUE: the fast
 // path's own optimizations don't apply either, since this opcode only
 // exists on a path already vanishingly rare.
-Value h_GetNamedWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_GetNamedWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -7891,7 +7757,7 @@ inline int call_cached_getter(Frame& f, uint32_t& pc, Value& acc, Function* gett
     return 1;
 }
 
-template <bool Fused> Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc);
+template <bool Fused> QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS);
 
 // Only the read that answers from the receiver's own shape slot, which is
 // seven in ten of them. Everything else -- an Array's length, an inherited
@@ -7899,9 +7765,8 @@ template <bool Fused> Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc);
 // the common read stops paying that handler's prologue: it saves five
 // callee-saved registers and a frame, for paths it does not take.
 template <bool Fused>
-Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& receiver = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_GetNamedFast(HANDLER_PARAMS) {
+    const Value& receiver = regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
@@ -7945,13 +7810,12 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_GetNamedRest<Fused>(f, pc, acc);
+    [[clang::musttail]] return h_GetNamedRest<Fused>(f, pc, acc, regs, code);
 }
 
 template <bool Fused>
-Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& receiver = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
+    const Value& receiver = regs[code[pc + 1]];
     // An own property that lives in the receiver's descriptor map -- every
     // namespace builtin, where the shape-slot entry above can never hit
     // because a non-enumerable property has no slot to be in. The receiver's
@@ -8238,15 +8102,13 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             FUSED_TAIL(6);
         }
     }
-    [[clang::musttail]] return h_gen_GetNamed(f, pc, acc);
+    [[clang::musttail]] return h_gen_GetNamed(f, pc, acc, regs, code);
 }
 
-Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetNamed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -8266,12 +8128,10 @@ Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
 }
 
 // Wide counterpart of h_gen_SetNamed -- see h_GetNamedWide's own comment.
-Value h_SetNamedWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_SetNamedWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     Function* owner = f.owner;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -8287,7 +8147,7 @@ Value h_SetNamedWide(Frame& f, uint32_t pc, Value acc) {
 // monomorphic own-property store is a shape compare and a slot write, and it
 // cannot throw. The barrier still runs, since the store is what the remembered
 // set needs to hear about.
-Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_SetNamedRest(HANDLER_PARAMS);
 
 // Whether storing `value` into an object can create an old-to-young edge the
 // collector has to be told about (see write_barrier_for). A number, boolean,
@@ -8301,25 +8161,24 @@ inline bool store_needs_barrier(const Value& value) {
 // is told which object changed and cannot run between the two -- so that h_SetNamedFast,
 // which stores numbers and booleans most of the time, keeps the call out of its own body
 // and with it the seven pushes and pops a call used to cost every store.
-[[gnu::noinline]] Value h_SetNamedBarrier(Frame& f, uint32_t pc, Value acc) {
-    Collector::write_barrier(f.regs[f.code[pc + 1]].as_object());
+[[gnu::noinline]] QUANTA_HANDLER Value h_SetNamedBarrier(HANDLER_PARAMS) {
+    Collector::write_barrier(regs[code[pc + 1]].as_object());
     pc += 6;
     DISPATCH();
 }
 
 // A store that adds a property the site has seen added before: the shape changes and the
 // object gets one more slot, which is a call.
-[[gnu::noinline]] Value h_SetNamedTransitionSlow(Frame& f, uint32_t pc, Value acc);
+[[gnu::noinline]] QUANTA_HANDLER Value h_SetNamedTransitionSlow(HANDLER_PARAMS);
 
 // The common add: a number or boolean (no barrier), a slot the object already has room for.
 // Nothing here calls, so the handler has no frame to build around the six checks and two
 // stores; a store that needs the collector's barrier or a bigger butterfly is the slow form's.
-Value h_SetNamedTransition(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
+QUANTA_HANDLER Value h_SetNamedTransition(HANDLER_PARAMS) {
     const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
     if (LIKELY(!fb.transition_mega && fb.transition_count != 0 && !store_needs_barrier(acc))) {
         const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
-        Object* obj = f.regs[code[pc + 1]].as_object();
+        Object* obj = regs[code[pc + 1]].as_object();
         if (te.from_shape && te.from_shape == obj->get_shape() &&
             te.prototype == obj->get_prototype_raw() &&
             te.proto_epoch == Object::proto_epoch() &&
@@ -8329,12 +8188,11 @@ Value h_SetNamedTransition(Frame& f, uint32_t pc, Value acc) {
             DISPATCH();
         }
     }
-    [[clang::musttail]] return h_SetNamedTransitionSlow(f, pc, acc);
+    [[clang::musttail]] return h_SetNamedTransitionSlow(f, pc, acc, regs, code);
 }
 
-[[gnu::noinline]] Value h_SetNamedTransitionSlow(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& receiver = f.regs[code[pc + 1]];
+[[gnu::noinline]] QUANTA_HANDLER Value h_SetNamedTransitionSlow(HANDLER_PARAMS) {
+    const Value& receiver = regs[code[pc + 1]];
     Object* obj = receiver.as_object();
     const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
     // transitions[0] only -- the entry the sole-shape monomorphic case always hits;
@@ -8359,12 +8217,11 @@ Value h_SetNamedTransition(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_SetNamedRest(f, pc, acc);
+    [[clang::musttail]] return h_SetNamedRest(f, pc, acc, regs, code);
 }
 
-Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& receiver = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_SetNamedFast(HANDLER_PARAMS) {
+    const Value& receiver = regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
@@ -8373,18 +8230,18 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
         // receiver's own map answers for itself.
         if (LIKELY(e.word == obj->raw_shape_word() && !obj->has_any_descriptor_override())) {
             *obj->shape_slot_for_cached_index(e.slot_index) = acc;
-            if (store_needs_barrier(acc)) [[clang::musttail]] return h_SetNamedBarrier(f, pc, acc);
+            if (store_needs_barrier(acc)) [[clang::musttail]] return h_SetNamedBarrier(f, pc, acc, regs, code);
             pc += 6;
             DISPATCH();
         }
         if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
             // New-property transition cache: see h_SetNamedTransition.
             if (LIKELY(!fb.transition_mega && fb.transition_count != 0)) {
-                [[clang::musttail]] return h_SetNamedTransition(f, pc, acc);
+                [[clang::musttail]] return h_SetNamedTransition(f, pc, acc, regs, code);
             }
         }
     }
-    [[clang::musttail]] return h_SetNamedRest(f, pc, acc);
+    [[clang::musttail]] return h_SetNamedRest(f, pc, acc, regs, code);
 }
 
 // The entries the handler above did not try. Split for the reason the read
@@ -8392,9 +8249,8 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
 // walk a loop to find the one entry it always hits, while a site that has
 // seen more than one shape should not reach the general handler and rescan
 // from scratch for an entry that is sitting right here.
-Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& receiver = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_SetNamedRest(HANDLER_PARAMS) {
+    const Value& receiver = regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
@@ -8439,22 +8295,22 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_SetNamed(f, pc, acc);
+    [[clang::musttail]] return h_gen_SetNamed(f, pc, acc, regs, code);
 }
 
-Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc);
-Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_gen_GetKeyed(HANDLER_PARAMS);
+QUANTA_HANDLER Value h_gen_SetKeyed(HANDLER_PARAMS);
 
-Value h_GetKeyedElement(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_GetKeyedElement(HANDLER_PARAMS);
 
 // Indexing an array whose density is already known, or a plain typed array, is
 // a bounds check and a load, and this handler is kept to exactly that: it calls
 // nothing, so the compiler gives it no frame to build and tear down around the
 // load.
-Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_GetKeyedFast(HANDLER_PARAMS) {
     uint32_t index;
     if (LIKELY(array_index_key(acc, index))) {
-        const Value& recv = f.regs[f.code[pc + 1]];
+        const Value& recv = regs[code[pc + 1]];
         if (LIKELY(recv.is_object())) {
             Object* obj = recv.as_object();
             if (LIKELY(obj->is_verified_dense_array() && index < obj->element_count())) {
@@ -8467,19 +8323,19 @@ Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
     // A typed array's read is a call (read_plain_number), and a call anywhere in this
     // function would have it open with five pushes for the dense-array load that is
     // nearly every execution of it. h_GetKeyedElement handles the typed array just as well.
-    [[clang::musttail]] return h_GetKeyedElement(f, pc, acc);
+    [[clang::musttail]] return h_GetKeyedElement(f, pc, acc, regs, code);
 }
 
 // What the leaf handler above declined: an array whose density is not cached
 // yet, a typed array that is not a plain view, anything else with an index. Everything past that, the
 // null receiver included, goes to the generated handler, which does the whole
 // spec-ordered sequence from the start.
-Value h_GetKeyedElement(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_GetKeyedElement(HANDLER_PARAMS) {
     uint32_t index;
     Object* dense;
     TypedArrayBase* typed;
     if (LIKELY(array_index_key(acc, index))) {
-        const Value& recv = f.regs[f.code[pc + 1]];
+        const Value& recv = regs[code[pc + 1]];
         if (LIKELY(dense_element_slot(recv, index, dense))) {
             acc = dense->get_element_unchecked(index);
             pc += 4;
@@ -8499,19 +8355,18 @@ Value h_GetKeyedElement(Frame& f, uint32_t pc, Value acc) {
             DISPATCH();
         }
     }
-    [[clang::musttail]] return h_gen_GetKeyed(f, pc, acc);
+    [[clang::musttail]] return h_gen_GetKeyed(f, pc, acc, regs, code);
 }
 
-Value h_SetKeyedElement(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_SetKeyedElement(HANDLER_PARAMS);
 
 // Overwriting an element of an array whose density is known with a number is a
 // bounds check and a store, and like its read counterpart this handler calls
 // nothing. An append or a value that is a cell: the next handler.
-Value h_SetKeyedFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
+QUANTA_HANDLER Value h_SetKeyedFast(HANDLER_PARAMS) {
     uint32_t index;
-    if (LIKELY(acc.is_finite_double() && array_index_key(f.regs[code[pc + 2]], index))) {
-        const Value& recv = f.regs[code[pc + 1]];
+    if (LIKELY(acc.is_finite_double() && array_index_key(regs[code[pc + 2]], index))) {
+        const Value& recv = regs[code[pc + 1]];
         if (LIKELY(recv.is_object())) {
             Object* obj = recv.as_object();
             if (LIKELY(acc.is_finite_double() && obj->is_verified_dense_array() &&
@@ -8527,17 +8382,16 @@ Value h_SetKeyedFast(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_SetKeyedElement(f, pc, acc);
+    [[clang::musttail]] return h_SetKeyedElement(f, pc, acc, regs, code);
 }
 
 // The rest of SetKeyed's element cases: appends and non-number stores to a dense
 // array, and typed arrays. Anything that has to think goes to the generated
 // handler untouched.
-Value h_SetKeyedElement(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
+QUANTA_HANDLER Value h_SetKeyedElement(HANDLER_PARAMS) {
     uint32_t index;
-    if (LIKELY(array_index_key(f.regs[code[pc + 2]], index))) {
-        const Value& recv = f.regs[code[pc + 1]];
+    if (LIKELY(array_index_key(regs[code[pc + 2]], index))) {
+        const Value& recv = regs[code[pc + 1]];
         Object* dense;
         if (LIKELY(dense_element_store_slot(recv, index, dense)) &&
             dense->store_dense_element(index, acc)) {
@@ -8552,43 +8406,43 @@ Value h_SetKeyedElement(Frame& f, uint32_t pc, Value acc) {
             }
         }
     }
-    [[clang::musttail]] return h_gen_SetKeyed(f, pc, acc);
+    [[clang::musttail]] return h_gen_SetKeyed(f, pc, acc, regs, code);
 }
 
 // `arguments.length` and `arguments[i]` in a function the compiler found to use
 // `arguments` for nothing else: the argument list the frame already holds
 // answers them, and no object is built. Nothing can have changed the object
 // the spec would have made -- there is no way to write to it or to see it.
-Value h_LdaArgLength(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaArgLength(HANDLER_PARAMS) {
     acc = Value(static_cast<double>(f.args.size()));
     pc += 1;
     DISPATCH();
 }
 
 // See Op::LdaFrameArgsMarker: consumed by the very next CallViaFunctionApply.
-Value h_LdaFrameArgsMarker(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaFrameArgsMarker(HANDLER_PARAMS) {
     acc = Value::vm_tdz_sentinel();
     pc += 1;
     DISPATCH();
 }
 
-Value h_LdaArgAtSlow(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_LdaArgAtSlow(HANDLER_PARAMS);
 
-Value h_LdaArgAt(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaArgAt(HANDLER_PARAMS) {
     uint32_t index;
     if (LIKELY(array_index_key(acc, index) && index < f.args.size())) {
         acc = f.args[index];
         pc += 1;
         DISPATCH();
     }
-    [[clang::musttail]] return h_LdaArgAtSlow(f, pc, acc);
+    [[clang::musttail]] return h_LdaArgAtSlow(f, pc, acc, regs, code);
 }
 
 // A key the direct read cannot answer: it is put to the object the call would
 // have made, once, so a name, a symbol, `callee`, an index past the end that
 // the prototype chain answers, or a key whose conversion runs script all come
 // out exactly as they would have.
-Value h_LdaArgAtSlow(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_LdaArgAtSlow(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -8608,12 +8462,10 @@ Value h_LdaArgAtSlow(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_GetPrivate(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -8635,12 +8487,10 @@ Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
 // Wide counterpart of h_gen_GetPrivate -- see h_GetNamedWide's own comment.
 // private_feedback_data is its own pool (alloc_private_feedback), separate
 // from chunk.feedback -- indexed here the same way, just with a u32 index.
-Value h_GetPrivateWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_GetPrivateWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -8652,12 +8502,10 @@ Value h_GetPrivateWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetPrivate(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -8677,12 +8525,10 @@ Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
 }
 
 // Wide counterpart of h_gen_SetPrivate -- see h_GetPrivateWide's own comment.
-Value h_SetPrivateWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_SetPrivateWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
     PrivateFeedback* private_feedback_data = f.private_feedback_data;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -8694,11 +8540,9 @@ Value h_SetPrivateWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_GetKeyed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -8763,11 +8607,9 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
 // live std::string (the to_property_key() branch) crossing a musttail
 // DISPATCH() would refuse the tail call outright, which is exactly why
 // the narrow form scopes it inside the block too.
-Value h_GetKeyedWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_GetKeyedWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     do {
@@ -8815,11 +8657,9 @@ Value h_GetKeyedWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetKeyed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -8875,11 +8715,9 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
 // Wide counterpart of h_gen_SetKeyed -- see h_GetKeyedWide's own comment
 // for why this keeps the do/while(0)+break shape rather than early
 // DISPATCH()s per branch.
-Value h_SetKeyedWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_SetKeyedWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     do {
@@ -8929,11 +8767,9 @@ Value h_SetKeyedWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DeleteNamed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DeleteNamed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     const Op op = Op::DeleteNamed;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -8991,11 +8827,9 @@ Value h_gen_DeleteNamed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DeleteKeyed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DeleteKeyed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     const Op op = Op::DeleteKeyed;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -9053,11 +8887,9 @@ Value h_gen_DeleteKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DefineOwn(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -9078,9 +8910,8 @@ Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
 }
 
 // An object literal's add that needs the collector's barrier or a bigger butterfly.
-[[gnu::noinline]] Value h_DefineOwnAdd(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    Object* obj = f.regs[code[pc + 1]].as_object();
+[[gnu::noinline]] QUANTA_HANDLER Value h_DefineOwnAdd(HANDLER_PARAMS) {
+    Object* obj = regs[code[pc + 1]].as_object();
     const FeedbackBody* fb = f.chunk->feedback[read_u16(code, pc + 4)].peek();
     write_barrier_for(obj, acc);
     obj->add_shape_property_cached(f.chunk->name_at(read_u16(code, pc + 2)), acc,
@@ -9100,9 +8931,8 @@ Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
 // calls nothing, and is what this handler is. One that needs the barrier or a
 // bigger butterfly is h_DefineOwnAdd's, for the same reason h_SetNamedTransition
 // keeps its slow form out of line: the call would otherwise cost every add a frame.
-Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& target = f.regs[code[pc + 1]];
+QUANTA_HANDLER Value h_DefineOwnFast(HANDLER_PARAMS) {
+    const Value& target = regs[code[pc + 1]];
     if (LIKELY(target.is_object())) {
         Object* obj = target.as_object();
         if (LIKELY(shape_fast_path_ok(obj->get_type()) && obj->is_extensible() &&
@@ -9112,7 +8942,7 @@ Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
             // this property is in its slot, and the value goes there.
             if (fb && fb->lit_shape && fb->lit_shape == obj->get_shape()) {
                 *obj->shape_slot_for_cached_index(fb->lit_slot) = acc;
-                if (UNLIKELY(store_needs_barrier(acc))) [[clang::musttail]] return h_SetNamedBarrier(f, pc, acc);
+                if (UNLIKELY(store_needs_barrier(acc))) [[clang::musttail]] return h_SetNamedBarrier(f, pc, acc, regs, code);
                 pc += 6;
                 DISPATCH();
             }
@@ -9124,20 +8954,18 @@ Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
                         pc += 6;
                         DISPATCH();
                     }
-                    [[clang::musttail]] return h_DefineOwnAdd(f, pc, acc);
+                    [[clang::musttail]] return h_DefineOwnAdd(f, pc, acc, regs, code);
                 }
             }
         }
     }
-    [[clang::musttail]] return h_gen_DefineOwn(f, pc, acc);
+    [[clang::musttail]] return h_gen_DefineOwn(f, pc, acc, regs, code);
 }
 
 // Wide counterpart of h_gen_DefineOwn -- see h_GetNamedWide's own comment.
-Value h_DefineOwnWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_DefineOwnWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -9150,11 +8978,9 @@ Value h_DefineOwnWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DefineElement(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DefineElement(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -9177,10 +9003,9 @@ Value h_gen_DefineElement(Frame& f, uint32_t pc, Value acc) {
 // a plain array, which is every one of them. The generated handler sends it
 // through set_element, which re-asks a dozen questions a fresh array has
 // already answered and stores the element by way of a resize.
-Value h_DefineElementFast(Frame& f, uint32_t pc, Value acc) {
-    const uint8_t* code = f.code;
-    const Value& target = f.regs[code[pc + 1]];
-    const Value& key = f.regs[code[pc + 2]];
+QUANTA_HANDLER Value h_DefineElementFast(HANDLER_PARAMS) {
+    const Value& target = regs[code[pc + 1]];
+    const Value& key = regs[code[pc + 2]];
     if (LIKELY(target.is_object() && key.is_finite_double())) {
         Object* obj = target.as_object();
         const double d = key.as_finite_double();
@@ -9192,10 +9017,10 @@ Value h_DefineElementFast(Frame& f, uint32_t pc, Value acc) {
             DISPATCH();
         }
     }
-    [[clang::musttail]] return h_gen_DefineElement(f, pc, acc);
+    [[clang::musttail]] return h_gen_DefineElement(f, pc, acc, regs, code);
 }
 
-Value h_gen_ToPropertyKeyStrict(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ToPropertyKeyStrict(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -9212,11 +9037,9 @@ Value h_gen_ToPropertyKeyStrict(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DefineOwnKeyed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DefineOwnKeyed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -9255,11 +9078,9 @@ Value h_gen_DefineOwnKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_FinalizeStaticProperty(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     const Op op = Op::FinalizeStaticProperty;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -9362,11 +9183,9 @@ Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
 // Wide counterpart of h_gen_FinalizeStaticProperty -- see h_GetNamedWide's
 // own comment. Identical body past the operand-read prologue; only fb_idx
 // widens (raw_kind stays put, it sits before fb in both forms).
-Value h_FinalizeStaticPropertyWide(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_FinalizeStaticPropertyWide(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -9428,11 +9247,9 @@ Value h_FinalizeStaticPropertyWide(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_FinalizeComputedProperty(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -9514,7 +9331,7 @@ Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_PushDisposeScope(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_PushDisposeScope(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     pc += 1;
@@ -9522,10 +9339,9 @@ Value h_gen_PushDisposeScope(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_RegisterDisposable(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_RegisterDisposable(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const bool is_await = code[pc + 1] != 0;
@@ -9535,10 +9351,9 @@ Value h_gen_RegisterDisposable(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_LdaWith(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaWith(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const std::string* key = chunk.names[read_u16(code, pc + 1)];
@@ -9574,10 +9389,9 @@ Value h_gen_LdaWith(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ResolveWithTarget(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ResolveWithTarget(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const std::string& name = chunk.name_at(read_u16(code, pc + 1));
@@ -9606,11 +9420,9 @@ Value h_gen_ResolveWithTarget(Frame& f, uint32_t pc, Value acc) {
 
 // The read half, for a compound assignment or an update: the same verdict
 // decides where the old value comes from.
-Value h_gen_LdaWithResolved(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_LdaWithResolved(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t target_reg = code[pc + 1];
@@ -9646,11 +9458,9 @@ Value h_gen_LdaWithResolved(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_StaWithResolved(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_StaWithResolved(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t target_reg = code[pc + 1];
@@ -9702,7 +9512,7 @@ Value h_gen_StaWithResolved(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_PushWithEnv(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_PushWithEnv(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -9713,10 +9523,9 @@ Value h_gen_PushWithEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DisposeScope(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DisposeScope(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const uint8_t mode = code[pc + 1];
@@ -9730,10 +9539,9 @@ Value h_gen_DisposeScope(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_DeleteLookup(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const std::string* name = chunk.names[read_u16(code, pc + 1)];
@@ -9764,10 +9572,8 @@ Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SetLiteralProto(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetLiteralProto(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint8_t obj_reg = code[pc + 1];
     pc += 2;
     if (Object* obj = as_object_like(regs[obj_reg])) {
@@ -9781,11 +9587,9 @@ Value h_gen_SetLiteralProto(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_FinalizeComputedAccessor(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_FinalizeComputedAccessor(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     uint8_t obj_reg = code[pc + 1];
@@ -9842,10 +9646,9 @@ Value h_gen_FinalizeComputedAccessor(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_SetFunctionNameIfUnnamed(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_SetFunctionNameIfUnnamed(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -9866,10 +9669,9 @@ Value h_gen_SetFunctionNameIfUnnamed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CreateObject(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CreateObject(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -9927,13 +9729,13 @@ bool learn_literal_template(const BytecodeChunk& chunk, BytecodeChunk::IcFeedbac
     return true;
 }
 
-Value h_CreateObjectT(Frame& f, uint32_t pc, Value acc);
+QUANTA_HANDLER Value h_CreateObjectT(HANDLER_PARAMS);
 
-[[gnu::noinline]] Value h_CreateObjectTSlow(Frame& f, uint32_t pc, Value acc) {
+[[gnu::noinline]] QUANTA_HANDLER Value h_CreateObjectTSlow(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
-    BytecodeChunk::IcFeedback::LiteralTemplate& t = chunk.ic_feedback->literal_templates[read_u16(f.code, pc + 1)];
+    BytecodeChunk::IcFeedback::LiteralTemplate& t = chunk.ic_feedback->literal_templates[read_u16(code, pc + 1)];
     if (!t.refused && ++t.runs >= 2 && !learn_literal_template(chunk, t)) t.refused = true;
-    if (t.shape) [[clang::musttail]] return h_CreateObjectT(f, pc, acc);
+    if (t.shape) [[clang::musttail]] return h_CreateObjectT(f, pc, acc, regs, code);
     // The ordinary object, the way Op::CreateObject makes it; the properties arrive one by one.
     Object* obj;
     if (t.count <= 4) {
@@ -9948,9 +9750,9 @@ Value h_CreateObjectT(Frame& f, uint32_t pc, Value acc);
     DISPATCH();
 }
 
-Value h_CreateObjectT(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk::IcFeedback::LiteralTemplate& t = f.chunk->ic_feedback->literal_templates[read_u16(f.code, pc + 1)];
-    if (UNLIKELY(!t.shape)) [[clang::musttail]] return h_CreateObjectTSlow(f, pc, acc);
+QUANTA_HANDLER Value h_CreateObjectT(HANDLER_PARAMS) {
+    const BytecodeChunk::IcFeedback::LiteralTemplate& t = f.chunk->ic_feedback->literal_templates[read_u16(code, pc + 1)];
+    if (UNLIKELY(!t.shape)) [[clang::musttail]] return h_CreateObjectTSlow(f, pc, acc, regs, code);
     Object* obj;
     if (t.count <= 4) {
         obj = ObjectFactory::create_object_with_slots((t.count + 1u) & ~1u).release();
@@ -9965,10 +9767,9 @@ Value h_CreateObjectT(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CreateArray(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -9990,11 +9791,10 @@ Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_CreateRestArray(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_CreateRestArray(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     std::span<const Value> args = f.args;
-    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
@@ -10024,7 +9824,7 @@ Value h_gen_CreateRestArray(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_Throw(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_Throw(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -10039,7 +9839,7 @@ Value h_gen_Throw(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
-Value h_gen_ReraiseGeneratorReturn(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_gen_ReraiseGeneratorReturn(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
     uint32_t& instr_pc = f.instr_pc;
@@ -10059,7 +9859,7 @@ Value h_gen_ReraiseGeneratorReturn(Frame& f, uint32_t pc, Value acc) {
 
 // The table is 256 wide and the opcode enum is not, so a byte that is not an
 // opcode at all needs somewhere to land.
-Value h_invalid(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_invalid(HANDLER_PARAMS) {
     (void)pc;
     (void)acc;
     f.ctx->throw_exception(Value(std::string("VM: invalid opcode")));
@@ -10069,7 +9869,7 @@ Value h_invalid(Frame& f, uint32_t pc, Value acc) {
 // The stop byte of a baseline-JIT step (Jit.inc): not an instruction, only a
 // place for the handler chain to end so the generated code can take the frame
 // back. Registered under an opcode value no Op uses.
-Value h_JitHalt(Frame& f, uint32_t pc, Value acc) {
+QUANTA_HANDLER Value h_JitHalt(HANDLER_PARAMS) {
     f.jit_halted = true;
     f.pc = pc;
     f.acc = acc;
@@ -10279,7 +10079,7 @@ const std::array<Handler, 256> kHandlers = make_handler_table();
 
 // Entry point: run() hands the frame over, the table takes it from there.
 Value run_dispatch(Frame& f) {
-    return kHandlers[f.code[f.pc]](f, f.pc, f.acc);
+    return kHandlers[f.code[f.pc]](f, f.pc, f.acc, f.regs, f.code);
 }
 
 #include "Jit.inc"

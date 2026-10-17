@@ -434,7 +434,7 @@ int32_t step_impl(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noe
         stub[len] = kHaltOp;
         f->code = reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(stub) - pc);
         try {
-            result = kHandlers[op](*f, pc, f->acc);
+            result = kHandlers[op](*f, pc, f->acc, f->regs, f->code);
         } catch (...) {
             jc->pending = std::current_exception();
             threw = true;
@@ -463,7 +463,7 @@ int32_t step_impl(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noe
         code[pc] = op;
         f->code = code;
         try {
-            result = kHandlers[op](*f, pc, f->acc);
+            result = kHandlers[op](*f, pc, f->acc, f->regs, f->code);
         } catch (...) {
             jc->pending = std::current_exception();
             threw = true;
@@ -524,7 +524,7 @@ int32_t step_k(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noexce
     f->code = reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(stub) - pc);
     Value result;
     try {
-        result = kHandlers[op](*f, pc, f->acc);
+        result = kHandlers[op](*f, pc, f->acc, f->regs, f->code);
     } catch (...) {
         jc->pending = std::current_exception();
         f->code = saved_code;
