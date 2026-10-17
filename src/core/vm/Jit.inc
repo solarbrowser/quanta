@@ -739,6 +739,47 @@ QUANTA_JIT_ABI int fast_env_slot(Frame* f, uint32_t pc, uint32_t kind) noexcept 
     return 1;
 }
 
+// DefineOwn (h_DefineOwnFast): an object literal's property on a plain object, whether the site's object
+// already has the literal's final shape (Op::CreateObjectT) or the add is the transition the site has seen.
+// Not handled -- 0 -- is anything h_DefineOwnFast sends on: the step does it.
+QUANTA_JIT_ABI int fast_define_own(Frame* f, uint32_t pc, uint32_t) noexcept {
+    const uint8_t* code = f->chunk->code.data();
+    const Value& target = f->regs[code[pc + 1]];
+    if (!target.is_object()) return 0;
+    Object* obj = target.as_object();
+    if (!(shape_fast_path_ok(obj->get_type()) && obj->is_extensible() && !obj->has_any_descriptor_override())) return 0;
+    const FeedbackBody* fb = f->chunk->feedback[read_u16(code, pc + 4)].peek();
+    if (!fb) return 0;
+    const Value& acc = f->acc;
+    if (fb->lit_shape && fb->lit_shape == obj->get_shape()) {
+        *obj->shape_slot_for_cached_index(fb->lit_slot) = acc;
+        if (store_needs_barrier(acc)) Collector::write_barrier(obj);
+        return 1;
+    }
+    if (fb->transition_mega || fb->transition_count == 0) return 0;
+    const FeedbackSlot::TransitionEntry& te = fb->transitions[0];
+    if (te.from_shape != obj->get_shape()) return 0;
+    if (store_needs_barrier(acc)) Collector::write_barrier(obj);
+    return obj->add_shape_property_in_place(acc, te.to_shape) ? 1 : 0;
+}
+
+// CreateObjectT once the literal has learned its shape (h_CreateObjectT); before that the step learns it.
+QUANTA_JIT_ABI int fast_create_object_t(Frame* f, uint32_t pc, uint32_t) noexcept {
+    const auto& t = f->chunk->ic_feedback->literal_templates[read_u16(f->chunk->code.data(), pc + 1)];
+    if (!t.shape) return 0;
+    Object* obj;
+    if (t.count <= 4) {
+        obj = ObjectFactory::create_object_with_slots((t.count + 1u) & ~1u).release();
+    } else {
+        obj = ObjectFactory::create_object().release();
+        obj->reserve_property_slots(t.count);
+    }
+    obj->adopt_literal_shape(t.shape, t.count);
+    Engine::fixup_new_object_realm(obj, f->ctx);
+    f->acc = Value(obj);
+    return 1;
+}
+
 // SetKeyed's element stores (h_SetKeyedFast / h_SetKeyedElement): an in-range or
 // appending store to a dense array, and a typed-array number store.
 QUANTA_JIT_ABI int fast_set_keyed(Frame* f, uint32_t pc) noexcept {
@@ -2136,6 +2177,53 @@ void Compiler::emit_insn(size_t idx) {
     }
     case Op::JumpIfTrue: emit_cond_jump(in, idx, true, bool_known); break;
     case Op::JumpIfFalse: emit_cond_jump(in, idx, false, bool_known); break;
+    case Op::LdaTdz: a_.mov_imm64(R13, bits_of(Value::vm_tdz_sentinel())); break;
+    case Op::LdaTdzStar:
+        if (!reg_ok(code[in.pc + 1])) { fail("register"); return; }
+        a_.mov_imm64(R13, bits_of(Value::vm_tdz_sentinel()));
+        a_.mov_store(reg_mem(code[in.pc + 1]), R13);
+        break;
+    case Op::JumpIfNullish: case Op::JumpIfNotNullish: {
+        // undefined and null are adjacent tags, so one range test covers both.
+        const uint32_t target = in.pc + in.len + i16(in.pc + 1);
+        a_.mov(RAX, R13);
+        a_.shr_imm(RAX, 48);
+        a_.sub32_imm(RAX, kTopUndefined);
+        a_.cmp32_imm(RAX, 2);
+        branch(op == Op::JumpIfNullish ? CC_B : CC_AE, in.pc, target);
+        break;
+    }
+    case Op::JumpIfNotUndefined: {
+        const uint32_t target = in.pc + in.len + i16(in.pc + 1);
+        a_.mov(RAX, R13);
+        a_.shr_imm(RAX, 48);
+        a_.cmp32_imm(RAX, kTopUndefined);
+        branch(CC_NE, in.pc, target);
+        break;
+    }
+    case Op::JumpIfNotNumber: {
+        // The same test ToNumber leaves a number alone by: a finite double, or the NaN and infinity tags.
+        const uint32_t target = in.pc + in.len + i16(in.pc + 1);
+        Label& is_number = new_label();
+        a_.mov(RAX, R13);
+        a_.shr_imm(RAX, 52);
+        a_.and32_imm(RAX, 0x7FF);
+        a_.cmp32_imm(RAX, 0x7FF);
+        a_.jcc(CC_NE, is_number);
+        a_.mov(RAX, R13);
+        a_.shr_imm(RAX, 48);
+        a_.cmp32_imm(RAX, kTopNaN);  a_.jcc(CC_E, is_number);
+        a_.cmp32_imm(RAX, 0x7FFA);   a_.jcc(CC_E, is_number);
+        a_.cmp32_imm(RAX, 0x7FFB);   a_.jcc(CC_E, is_number);
+        branch(-1, in.pc, target);
+        a_.bind(is_number);
+        break;
+    }
+    case Op::DefineOwn:
+        if (!reg_ok(code[in.pc + 1]) || u16(in.pc + 4) >= chunk_.feedback.size()) { fail("operand"); return; }
+        emit_fast_inline(in, reinterpret_cast<const void*>(&fast_define_own), 0, false, -1); break;
+    case Op::CreateObjectT:
+        emit_fast_inline(in, reinterpret_cast<const void*>(&fast_create_object_t), 0, true, -1); break;
     case Op::Return: a_.jmp(exit_finished_); break;
     case Op::GetNamed:
         if (!reg_ok(code[in.pc + 1]) || u16(in.pc + 4) >= chunk_.feedback.size()) { fail("operand"); return; }
