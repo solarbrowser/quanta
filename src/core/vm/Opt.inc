@@ -78,6 +78,7 @@ enum class K : uint8_t {
     CheckEpoch,           // deopt unless the global prototype epoch (aux 0) or descriptor epoch (aux 1) is imm
     LoadHolder,           // Tagged, shape slot aux of the object at imm (a prototype that holds a method)
     LoadPoly,             // Tagged, a Ptr: the slot of the entry in polys[aux] whose shape word the object has (deopt if none)
+    CheckNotNullish,      // Tagged a -> a, deopt when it is undefined or null
     Trap,                 // always deoptimizes: the code after it has never run
     NewObject,            // Tagged a (the constructor): a fresh object of the shape described by imm (NewDesc*), or deopt
     IsNullish,            // Tagged a -> Bool: undefined or null
@@ -193,7 +194,7 @@ inline const char* kname(K k) {
         "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
         "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
         "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "Trap", "NewObject", "IsNullish"};
+        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "CheckNotNullish", "Trap", "NewObject", "IsNullish"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -205,7 +206,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreReg: case K::StoreAcc: case K::Step: case K::StepExit: case K::Poll:
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
-    case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap:
+    case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
         return false;
     default: return true;
     }
@@ -503,7 +504,8 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::Neg: case Op::LogicalNot: case Op::BitNot: case Op::ToNumber: case Op::ToNumeric: case Op::Inc: case Op::Dec:
         e.rd(acc); e.wr(acc); break;
     case Op::Jump: break;
-    case Op::JumpIfTrue: case Op::JumpIfFalse: case Op::Return: e.rd(acc); break;
+    case Op::JumpIfTrue: case Op::JumpIfFalse: case Op::Return: case Op::JumpIfNullish: case Op::JumpIfNotNullish:
+    case Op::JumpIfNotUndefined: e.rd(acc); break;
     case Op::GetNamed: R(pc + 1); e.wr(acc); break;
     case Op::GetNamedStar: R(pc + 1); e.wr(acc); W(pc + 6); break;
     case Op::SetNamed: R(pc + 1); e.rd(acc); break;
@@ -1177,6 +1179,39 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         Block& B = g_.b[cb_];
         B.term.kind = T::Jump;
         B.term.t = B.succs[0];
+        ended = true;
+        return true;
+    }
+    case Op::LdaTdz: case Op::LdaTdzStar: {
+        const bool fused = op == Op::LdaTdzStar;
+        const uint32_t dst = fused ? reg(pc + 1) : 0;
+        if (fused && !ok_reg(dst)) return false;
+        uint64_t tdz = kTdzBits;
+        const int32_t v = emit(K::ConstTagged, Rep::Tagged, -1, -1, 0, tdz);
+        set(acc(), v);
+        if (fused) set(dst, v);
+        return true;
+    }
+    case Op::CheckObjectCoercible: {
+        const int32_t v = tagged(value(acc()));
+        set(acc(), guarded(K::CheckNotNullish, Rep::Tagged, v));
+        return true;
+    }
+    case Op::JumpIfNullish: case Op::JumpIfNotNullish: case Op::JumpIfNotUndefined: {
+        const int32_t v = tagged(value(acc()));
+        int32_t c;
+        if (op == Op::JumpIfNotUndefined) {
+            const int32_t undef = const_of(Value());
+            c = emit(K::NotBool, Rep::Bool, emit(K::EqTag, Rep::Bool, v, undef));
+        } else {
+            c = emit(K::IsNullish, Rep::Bool, v);
+            if (op == Op::JumpIfNotNullish) c = emit(K::NotBool, Rep::Bool, c);
+        }
+        Block& B = g_.b[cb_];
+        B.term.kind = T::Branch;
+        B.term.cond = c;
+        B.term.t = B.succs[0];       // the branch target; the fall-through is succs[1]
+        B.term.f = B.succs[1];
         ended = true;
         return true;
     }
@@ -2286,7 +2321,7 @@ inline void Builder::cse() {
         case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::ModF:
         case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
         case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag:
-        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish:
+        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish:
             return 1;
         case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen: case K::LoadEnv:
         case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly:
@@ -3206,6 +3241,18 @@ inline void Emitter::emit_node(int32_t id) {
     case K::Trap:
         a_.jmp(deopt_label(n.state));
         return;
+    case K::CheckNotNullish: {
+        const Reg s = use_g(n.a, RAX);
+        const Reg d = def_g(id, RAX);
+        a_.mov(RCX, s);
+        a_.shr_imm(RCX, 48);
+        a_.sub32_imm(RCX, 0x7FF0);
+        a_.cmp32_imm(RCX, 1);
+        a_.jcc(CC_BE, deopt_label(n.state));
+        if (d != s) a_.mov(d, s);
+        commit_g(id, d);
+        return;
+    }
     case K::NewObject: {
         Label& dl = deopt_label(n.state);
         const Reg fr = use_g(n.a, RAX);
