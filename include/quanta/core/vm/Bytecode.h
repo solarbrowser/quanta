@@ -941,6 +941,20 @@ struct BytecodeChunk {
             std::vector<uint32_t> sites;        // each property's DefineOwn feedback slot, in order
         };
         std::vector<LiteralTemplate> literal_templates;
+        // What each call site has called, recorded while the optimizing tier is on and the chunk is warming up.
+        // `fn` is a strong edge (BytecodeChunk::trace visits it) so the optimizing tier can read the callee's
+        // bytecode when it compiles; `id` is the identity a site is monomorphic on (the executable, or the
+        // function itself for a native); `mega` once it has seen two.
+        struct CallSite {
+            uint32_t pc = 0;
+            bool mega = false;
+            class Function* fn = nullptr;
+            const void* id = nullptr;
+        };
+        std::vector<CallSite> call_sites;
+        // The optimizing tier's function-entry hook: the chunk's bytes with the entry stop at the front, for the
+        // frames that start through it.
+        std::unique_ptr<uint8_t[]> entry_code;
         KeyedFeedback* keyed(uint32_t index) {
             std::unique_ptr<KeyedFeedback>& slot = keyed_feedback[index];
             if (!slot) slot = std::make_unique<KeyedFeedback>();
@@ -1012,6 +1026,10 @@ struct BytecodeChunk {
     // otherwise flag bits that say yes and what the per-call test still has to look at. Decided
     // once jit_state is, from properties of the declaration site that do not change.
     mutable uint8_t inline_state = 0;
+    // The optimizing tier's function-entry unit (Interpreter.cpp, Jit.inc): 0 counting calls, 1 armed (frames
+    // start at a stop that offers them to the tier), 2 the tier has declined for good.
+    mutable uint8_t opt_entry = 0;
+    mutable uint16_t opt_calls = 0;
 
     // A function whose whole body is `return <constant>`, `return this` or
     // `return this.name` is answered without a frame (VM::try_leaf_call). What the

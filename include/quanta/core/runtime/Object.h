@@ -1563,6 +1563,8 @@ public:
     FunctionKind get_function_kind() const { return function_kind_; }
 
 private:
+    // The optimizing tier (Opt.inc) compares a callee's executable pointer in generated code.
+    friend struct JitObjectLayout;
     // Shared, decl-site-scoped data (AST body/params, compiled bytecode,
     // decl-site-invariant caches) -- see FunctionExecutable's own doc
     // comment. Null only for native functions (no AST/decl site at all).

@@ -73,6 +73,12 @@ enum class K : uint8_t {
     LoadEnv,              // Tagged, slot aux of the current lexical environment (key imm); deopt on a miss or a hole
     StoreEnv,             // Tagged a -> that slot, deopt on a miss, a hole or a constant; barrier
     NonNegI32,            // I32 a -> a, deopt when negative
+    CheckFn,              // Tagged a: deopt unless it is a function whose executable is imm (aux 1: unless it is the function imm)
+    CheckProto,           // Ptr a: deopt unless its prototype is imm
+    CheckEpoch,           // deopt unless the global prototype epoch (aux 0) or descriptor epoch (aux 1) is imm
+    LoadHolder,           // Tagged, shape slot aux of the object at imm (a prototype that holds a method)
+    IsNullish,            // Tagged a -> Bool: undefined or null
+    LoadLookup,           // Tagged, a name's cached binding (cache entry: imm; aux bits 0-1 the form, bit 8 set when imm is an offset from the frame's cache)
 };
 
 struct Node {
@@ -97,6 +103,7 @@ struct Term {
 };
 
 struct State {
+    int32_t func = 0;           // the function the pc belongs to (the innermost one, when inlined)
     uint32_t pc = 0;
     int32_t edge_var = -1;      // set when the guard is a phi's check on an incoming edge: the variable
     std::vector<std::pair<uint32_t, int32_t>> defs;   // (variable, node) for every dirty variable
@@ -113,28 +120,60 @@ struct Block {
     int32_t filled_preds = 0;
     int32_t osr_pc = -1;                 // synthetic entry block: the bytecode pc it enters at
     int32_t exit_pc = -1;                // synthetic exit block: leaves the region, resuming at this pc
-    int32_t first_insn = -1, last_insn = -1;   // [first, last] indices into Graph::insns
+    int32_t first_insn = -1, last_insn = -1;   // [first, last] indices into the function's instructions
+    int32_t func = 0;                    // which function's bytecode the block is made of
+    int32_t ret_to = -1;                 // a block of an inlined function that returns: where it goes
 };
 
 struct Insn { uint32_t pc; uint8_t op; uint8_t len; };
 
-struct Graph {
+// One function whose bytecode is part of the graph: the root, or a callee inlined into it. Variables are
+// numbered across all of them, each function's registers followed by its accumulator.
+struct Func {
     const BytecodeChunk* chunk = nullptr;
-    const Frame* frame = nullptr;         // the activation the compile was triggered from, for peeking at register contents
-    uint32_t entry_pc = 0;                // the requested entry (the one the frame is positioned at)
-    uint32_t nvars = 0, acc_var = 0;
+    int32_t parent = -1;                 // the function it was inlined into
+    uint32_t var_base = 0, nregs = 0, acc_var = 0;
     std::vector<Insn> insns;
     std::vector<int32_t> insn_at;
+    std::vector<int32_t> block_at;       // pc -> block id (leaders only)
+    std::vector<uint64_t> live_before;   // per instruction: the variables the interpreter may still read (local numbering)
+    uint32_t live_words = 0;
+    // Inlined instance only.
+    uint32_t call_pc = 0, call_len = 0;  // the call instruction in the parent
+    int32_t cont_block = -1;             // the parent's block that starts at the return pc
+    int32_t entry_block = -1;
+    const void* exe = nullptr;           // the executable the call site was seen to reach (guarded on entry)
+    bool sloppy_this = false;            // reads a sloppy `this`: only an object may reach it as it is
+    Function* fnp = nullptr;             // the function itself
+    bool by_identity = false;            // the callee is recognized by the function, not its executable (its caches belong to it)
+    BytecodeChunk::LookupCacheEntry* lookup = nullptr;   // the name cache its instructions use (the root's is the frame's)
+    int32_t this_var = -1, fn_var = -1;  // variables holding the callee and its `this` (deoptimization rebuilds the frame from them)
+    bool leaf = false;                   // a body whose guards can deoptimize to the call itself: it has done nothing yet
+    int32_t entry_state = -1;            // that state
+    uint32_t params = 0;
+    std::vector<std::pair<uint32_t, Function*>> cand;   // call pc -> what the feedback says it calls (and the tier may inline)
+    std::vector<std::pair<uint32_t, int32_t>> sites;          // call pc -> the inlined instance
+};
+
+struct Graph {
+    const BytecodeChunk* chunk = nullptr;     // the root's
+    const Frame* frame = nullptr;         // the activation the compile was triggered from, for peeking at register contents
+    uint32_t entry_pc = 0;                // the requested entry (the one the frame is positioned at)
+    uint32_t nvars = 0, acc_var = 0;          // all variables; the root's accumulator
+    std::vector<Func> funcs;
     std::vector<Node> n;
     std::vector<Block> b;
     std::vector<State> states;
-    std::vector<int32_t> block_at;       // pc -> block id (leaders only)
     std::vector<int32_t> entries;        // synthetic entry blocks
     std::vector<int32_t> rpo;
     std::vector<int32_t> repl;           // node replacement (forward pointers; may point at kMem)
-    std::vector<uint64_t> live_before;   // per instruction: the variables the interpreter may still read
-    uint32_t live_words = 0;
     const char* why = nullptr;
+    // Inlining: the arena words and frames the deepest chain of inlined callees needs once a deoptimization
+    // rebuilds them, the strictness they were checked against, and the call site whose callee needed a step.
+    bool fn_entry = false;                // the unit is for the whole function, entered at its first instruction
+    uint32_t inl_words = 0, inl_depth = 0, inl_count = 0;
+    bool inl_strict = false;
+    std::pair<const BytecodeChunk*, uint32_t> failed_site{nullptr, 0};
 };
 
 inline const char* kname(K k) {
@@ -143,7 +182,7 @@ inline const char* kname(K k) {
         "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
         "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
         "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32"};
+        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "IsNullish"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -155,7 +194,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreReg: case K::StoreAcc: case K::Step: case K::StepExit: case K::Poll:
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
-    case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32:
+    case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch:
         return false;
     default: return true;
     }
@@ -170,6 +209,7 @@ struct Avoid {
     std::set<uint32_t> pcs;
     std::set<std::pair<uint32_t, uint32_t>> phis;     // (loop header pc, variable)
     std::map<uint64_t, uint32_t> fails;               // site -> failures so far
+    std::set<std::pair<const BytecodeChunk*, uint32_t>> no_inline;   // call sites (chunk, pc) that are not worth inlining
     uint32_t recompiles = 0;
 };
 inline std::map<const BytecodeChunk*, Avoid>& avoid_table() { static std::map<const BytecodeChunk*, Avoid> t; return t; }
@@ -186,6 +226,13 @@ struct Config {
     uint32_t stress = 0;              // QUANTA_OPT_DEOPT_STRESS=N: every Nth guard evaluation deoptimizes (testing)
     uint32_t skip = 0, limit = 0xFFFFFFFFu, seen = 0;   // QUANTA_OPT_SKIP / QUANTA_OPT_LIMIT: bisect which compiles are allowed
     uint32_t max_deopts = 40;         // guard failures before a loop is given up on
+    bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
+    bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
+    uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
+    uint32_t inline_insns = 120;      // largest callee (decoded instructions)
+    uint32_t inline_total = 500;      // all the callees of one unit together
+    uint32_t inline_depth = 3;
+    uint32_t inline_vars = 56;        // variables the inlined callees add (the deopt scratch buffer is 64 words)
     uint32_t max_step_percent = 12;   // refuse a region in which more than this share of the instructions are plain steps
 };
 inline Config& config() {
@@ -200,6 +247,9 @@ inline Config& config() {
         if (const char* e = std::getenv("QUANTA_OPT_SKIP")) c.skip = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_LIMIT")) c.limit = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_MAXDEOPTS")) c.max_deopts = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_ENTRY")) c.entry = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_ENTRY_MIN")) c.entry_min_insns = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
     }
     return c;
@@ -208,7 +258,9 @@ inline Config& config() {
 
 class Builder {
 public:
-    explicit Builder(Graph& g) : g_(g) {
+    using Site = std::pair<const BytecodeChunk*, uint32_t>;
+    // `no_inline`: call sites the caller has found not to be worth (or able to be) inlined, besides what the Avoid table says.
+    explicit Builder(Graph& g, const std::set<Site>* no_inline = nullptr) : g_(g), no_inline_(no_inline) {
         auto it = avoid_table().find(g.chunk);
         if (it != avoid_table().end()) avoid_ = &it->second;
     }
@@ -219,13 +271,17 @@ public:
 
 private:
     Graph& g_;
+    const std::set<Site>* no_inline_ = nullptr;
     int32_t cb_ = -1;              // block being built
+    int32_t cf_ = 0;               // the function it belongs to
+    Func& F() { return g_.funcs[cf_]; }
+    const Func& F() const { return g_.funcs[cf_]; }
     int32_t cur_state_ = -1;
     uint32_t cur_pc_ = 0;
     bool state_valid_ = false;
 
-    uint32_t u16(uint32_t at) const { return read_u16(g_.chunk->code.data(), at); }
-    int16_t i16(uint32_t at) const { return read_i16(g_.chunk->code.data(), at); }
+    uint32_t u16(uint32_t at) const { return read_u16(F().chunk->code.data(), at); }
+    int16_t i16(uint32_t at) const { return read_i16(F().chunk->code.data(), at); }
 
     bool fail(const char* why) { if (!g_.why) g_.why = why; return false; }
 
@@ -278,6 +334,7 @@ private:
     // The definition of `v` as an operand: loads it if it is the memory state.
     int32_t value(uint32_t v) {
         int32_t d = resolve(read_var(v, cb_));
+        if (d == kMem && v > g_.acc_var) { fail("an inlined variable read before it was set"); return emit(K::ConstTagged, Rep::Tagged, -1, -1, 0, 0); }
         if (d == kMem) {
             d = (v == g_.acc_var) ? emit(K::LoadAcc, Rep::Tagged) : emit(K::LoadReg, Rep::Tagged, -1, -1, v);
             write_var(v, cb_, d);
@@ -287,15 +344,53 @@ private:
     void set(uint32_t v, int32_t d) { write_var(v, cb_, d); state_valid_ = false; }
 
     // ---- deopt state ----
-    int32_t snapshot_at(int32_t blk, uint32_t pc, int32_t edge_var = -1);
+    int32_t snapshot_at(int32_t blk, int32_t fi, uint32_t pc, int32_t edge_var = -1);
     void compute_liveness();
-    bool live_at(uint32_t pc, uint32_t v) const {
-        const int32_t i = g_.insn_at[pc];
-        return i < 0 || (g_.live_before[static_cast<size_t>(i) * g_.live_words + (v >> 6)] >> (v & 63)) & 1;
+    // Whether the variable (a global number) may still be read by the interpreter at `pc` of function `fi`.
+    bool live_at_f(int32_t fi, uint32_t pc, uint32_t v) const {
+        const Func& fn = g_.funcs[fi];
+        const uint32_t lv = v - fn.var_base;
+        const int32_t i = fn.insn_at[pc];
+        return i < 0 || (fn.live_before[static_cast<size_t>(i) * fn.live_words + (lv >> 6)] >> (lv & 63)) & 1;
+    }
+    bool live_at(uint32_t pc, uint32_t v) const { return live_at_f(cf_, pc, v); }
+    // The variables a deoptimization at `pc` of function `fi` must write back: that function's live ones, and
+    // at each enclosing function the ones live where it resumes after the call.
+    void state_vars(int32_t fi, uint32_t pc, std::vector<uint32_t>& out) const {
+        for (;;) {
+            const Func& fn = g_.funcs[fi];
+            for (uint32_t l = 0; l <= fn.nregs; l++)
+                if (live_at_f(fi, pc, fn.var_base + l)) out.push_back(fn.var_base + l);
+            if (fn.parent < 0) break;
+            out.push_back(static_cast<uint32_t>(fn.this_var));
+            out.push_back(static_cast<uint32_t>(fn.fn_var));
+            pc = fn.call_pc + fn.call_len;
+            fi = fn.parent;
+        }
     }
     int32_t snapshot() {
-        if (!state_valid_) { cur_state_ = snapshot_at(cb_, cur_pc_); state_valid_ = true; }
+        if (!state_valid_) { cur_state_ = snapshot_at(cb_, cf_, cur_pc_); state_valid_ = true; }
         return cur_state_;
+    }
+    // ---- inlining ----
+    Function* inline_target(int32_t fi, const Insn& in);
+    bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
+    bool expand_inline(int32_t blk, std::vector<int32_t>& added);
+    bool inline_enter(const Insn& in, int32_t callee, bool& ended);
+    int32_t site_of(int32_t fi, uint32_t pc) const {
+        for (auto& [p, c] : g_.funcs[fi].sites) if (p == pc) return c;
+        return -1;
+    }
+    uint32_t inline_insns_ = 0, inline_vars_ = 0;
+    // Whether the register `rcv` is to be taken for a dense array at an indexed access. A loop's entry frame shows what
+    // the registers hold; a function entry (and an inlined callee) has no such frame, so it assumes an array and lets a
+    // site that proves otherwise deoptimize into the interpreter, which then keeps that site.
+    bool dense_array_receiver(uint32_t rcv) const {
+        if (cf_ == 0 && g_.frame && !g_.fn_entry) {
+            const Value& pv = g_.frame->regs[rcv];
+            return pv.is_object() && pv.as_object()->is_verified_dense_array();
+        }
+        return true;
     }
     void begin_op(uint32_t pc) { cur_pc_ = pc; state_valid_ = false; }
 
@@ -312,6 +407,8 @@ private:
     }
 
     void flush_all(int32_t live_pc = -1);
+    bool setup_func(int32_t fi, size_t max_insns);
+    size_t total_insns_ = 0;
     bool translate_block(int32_t blk);
     // True when handled natively; false means the caller steps the instruction.
     bool translate(const Insn& in, bool& ended);
@@ -333,7 +430,7 @@ private:
     std::vector<int32_t> compute_rpo();
 
     // Bytecode registers 0..nregs-1 plus the accumulator.
-    uint32_t acc() const { return g_.acc_var; }
+    uint32_t acc() const { return F().acc_var; }
 };
 
 
@@ -421,23 +518,24 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
 }
 
 inline void Builder::compute_liveness() {
-    const BytecodeChunk& c = *g_.chunk;
+    const BytecodeChunk& c = *F().chunk;
     const uint8_t* code = c.code.data();
-    const size_t n = g_.insns.size();
-    const uint32_t words = (g_.nvars + 63) / 64;
-    g_.live_words = words;
-    g_.live_before.assign(n * words, 0);
+    const size_t n = F().insns.size();
+    const uint32_t fvars = F().nregs + 1;
+    const uint32_t words = (fvars + 63) / 64;
+    F().live_words = words;
+    F().live_before.assign(n * words, 0);
     std::vector<Effects> eff(n);
-    for (size_t i = 0; i < n; i++) eff[i] = op_effects(static_cast<Op>(g_.insns[i].op), code, g_.insns[i].pc, g_.acc_var, g_.acc_var);
+    for (size_t i = 0; i < n; i++) eff[i] = op_effects(static_cast<Op>(F().insns[i].op), code, F().insns[i].pc, F().nregs, F().nregs);
     // Successors of an instruction: fall-through unless it ends a path, plus a branch target.
     auto succs = [&](size_t i, int32_t out[2]) {
-        const Insn& in = g_.insns[i];
+        const Insn& in = F().insns[i];
         const Op op = static_cast<Op>(in.op);
         int k = 0;
         const int pos = branch_offset_pos(op);
         if (pos >= 0) {
             const int64_t t = static_cast<int64_t>(in.pc) + in.len + i16(in.pc + pos);
-            if (t >= 0 && t < static_cast<int64_t>(c.code.size()) && g_.insn_at[t] >= 0) out[k++] = g_.insn_at[t];
+            if (t >= 0 && t < static_cast<int64_t>(c.code.size()) && F().insn_at[t] >= 0) out[k++] = F().insn_at[t];
         }
         if (op != Op::Jump && op != Op::Return && op != Op::Throw && i + 1 < n) out[k++] = static_cast<int32_t>(i + 1);
         return k;
@@ -450,15 +548,15 @@ inline void Builder::compute_liveness() {
             int32_t sc[2];
             const int ns = succs(ri, sc);
             for (int k = 0; k < ns; k++)
-                for (uint32_t w = 0; w < words; w++) tmp[w] |= g_.live_before[static_cast<size_t>(sc[k]) * words + w];
+                for (uint32_t w = 0; w < words; w++) tmp[w] |= F().live_before[static_cast<size_t>(sc[k]) * words + w];
             const Effects& e = eff[ri];
             if (!e.read_all) {
                 for (uint8_t k = 0; k < e.nw; k++) tmp[e.w[k] >> 6] &= ~(1ull << (e.w[k] & 63));
-                for (uint8_t k = 0; k < e.nr; k++) if (e.r[k] < g_.nvars) tmp[e.r[k] >> 6] |= 1ull << (e.r[k] & 63);
+                for (uint8_t k = 0; k < e.nr; k++) if (e.r[k] < fvars) tmp[e.r[k] >> 6] |= 1ull << (e.r[k] & 63);
             } else {
-                for (uint32_t v = 0; v < g_.nvars; v++) tmp[v >> 6] |= 1ull << (v & 63);
+                for (uint32_t v = 0; v < fvars; v++) tmp[v >> 6] |= 1ull << (v & 63);
             }
-            uint64_t* dst = &g_.live_before[ri * words];
+            uint64_t* dst = &F().live_before[ri * words];
             for (uint32_t w = 0; w < words; w++)
                 if (dst[w] != tmp[w]) { dst[w] = tmp[w]; changed = true; }
         }
@@ -552,17 +650,21 @@ inline void Builder::seal(int32_t blk) {
     }
 }
 
-inline int32_t Builder::snapshot_at(int32_t blk, uint32_t pc, int32_t edge_var) {
+inline int32_t Builder::snapshot_at(int32_t blk, int32_t fi, uint32_t pc, int32_t edge_var) {
+    // A callee whose every guard can leave through the call itself (it has done nothing observable yet).
+    if (g_.funcs[fi].leaf && g_.funcs[fi].entry_state >= 0) return g_.funcs[fi].entry_state;
     State s;
+    s.func = fi;
     s.pc = pc;
     s.edge_var = edge_var;
-    for (uint32_t v = 0; v < g_.nvars; v++) {
-        if (!live_at(pc, v)) continue;      // the interpreter will not read it: nothing to write back
+    std::vector<uint32_t> vars;
+    state_vars(fi, pc, vars);        // the variables the interpreter may read: the rest need no write-back
+    for (uint32_t v : vars) {
         const int32_t d = resolve(read_var(v, blk));
         if (d == kMem || is_own_load(v, d)) continue;
         s.defs.push_back({v, d});
     }
-    if (!g_.states.empty() && g_.states.back().pc == s.pc && g_.states.back().edge_var == s.edge_var && g_.states.back().defs == s.defs)
+    if (!g_.states.empty() && g_.states.back().func == s.func && g_.states.back().pc == s.pc && g_.states.back().edge_var == s.edge_var && g_.states.back().defs == s.defs)
         return static_cast<int32_t>(g_.states.size() - 1);
     g_.states.push_back(std::move(s));
     return static_cast<int32_t>(g_.states.size() - 1);
@@ -611,7 +713,7 @@ inline int32_t Builder::boolean(int32_t x) {
 // ===========================================================================
 
 inline void Builder::flush_all(int32_t live_pc) {
-    for (uint32_t v = 0; v < g_.nvars; v++) {
+    for (uint32_t v = 0; v <= g_.acc_var; v++) {         // only the root has a register bank to write back to
         const int32_t d = resolve(read_var(v, cb_));
         if (d == kMem) continue;
         if (!is_own_load(v, d) && (live_pc < 0 || live_at(static_cast<uint32_t>(live_pc), v))) {
@@ -657,12 +759,12 @@ inline void Builder::step(const Insn& in, bool& ended) {
 // ===========================================================================
 
 inline bool Builder::translate(const Insn& in, bool& ended) {
-    const uint8_t* code = g_.chunk->code.data();
+    const uint8_t* code = F().chunk->code.data();
     const Op op = static_cast<Op>(in.op);
     const uint32_t pc = in.pc;
-    if (avoided(pc)) return false;
-    auto reg = [&](uint32_t at) -> uint32_t { return code[at]; };
-    auto ok_reg = [&](uint32_t r) { return r < g_.acc_var; };
+    if (cf_ == 0 && avoided(pc)) return false;
+    auto reg = [&](uint32_t at) -> uint32_t { return F().var_base + code[at]; };
+    auto ok_reg = [&](uint32_t r) { return r < F().acc_var; };
     // Looks at a node and lets go of it before anything is emitted (emitting can move g_.n).
     auto numeric_value = [&](int32_t x) { const Node& nd = g_.n[resolve(x)]; return nd.rep != Rep::Bool && nd.rep != Rep::I32 && nd.op != K::ConstTagged; };
     auto object_value = [&](int32_t x) { const Node& nd = g_.n[resolve(x)]; return nd.rep == Rep::Tagged && nd.op != K::ConstTagged; };
@@ -678,8 +780,8 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     switch (op) {
     case Op::LdaConst: {
         const uint32_t k = u16(pc + 1);
-        if (k >= g_.chunk->constants.size()) return false;
-        set(acc(), const_of(g_.chunk->constants[k]));
+        if (k >= F().chunk->constants.size()) return false;
+        set(acc(), const_of(F().chunk->constants[k]));
         return true;
     }
     case Op::LdaZero: set(acc(), const_of(Value(0.0))); return true;
@@ -732,8 +834,8 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     }
     case Op::LdaConstStar: {
         const uint32_t k = u16(pc + 1), dst = reg(pc + 3);
-        if (k >= g_.chunk->constants.size() || !ok_reg(dst)) return false;
-        const int32_t v = const_of(g_.chunk->constants[k]);
+        if (k >= F().chunk->constants.size() || !ok_reg(dst)) return false;
+        const int32_t v = const_of(F().chunk->constants[k]);
         set(acc(), v);
         set(dst, v);
         return true;
@@ -792,6 +894,30 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         set(acc(), emit(k, Rep::Bool, a, b));
         return true;
     }
+    case Op::TestEq: case Op::TestNe: {
+        // Two numbers compare the same loose as strict; anything else is the interpreter's.
+        const uint32_t r = reg(pc + 1);
+        if (!ok_reg(r)) return false;
+        const int32_t l = value(r), rr = value(acc());
+        auto nullish_const = [&](int32_t x) {
+            const Node& nd = g_.n[resolve(x)];
+            if (nd.op != K::ConstTagged) return false;
+            Value v;
+            std::memcpy(&v, &nd.imm, 8);
+            return v.is_undefined() || v.is_null();
+        };
+        // `x == null` and `x == undefined` hold for exactly those two.
+        if (nullish_const(rr) || nullish_const(l)) {
+            const int32_t other = nullish_const(rr) ? l : rr;
+            const int32_t is = emit(K::IsNullish, Rep::Bool, tagged(other));
+            set(acc(), op == Op::TestEq ? is : emit(K::NotBool, Rep::Bool, is));
+            return true;
+        }
+        int32_t a, b;
+        if (!number_operands(l, rr, a, b)) return false;
+        set(acc(), emit(op == Op::TestEq ? K::EqF : K::NeF, Rep::Bool, a, b));
+        return true;
+    }
     case Op::TestStrictEq: case Op::TestStrictNe: {
         const uint32_t r = reg(pc + 1);
         if (!ok_reg(r)) return false;
@@ -845,60 +971,100 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     }
 
     case Op::LdaThis: case Op::LdaThisStar: {
-        if (!g_cfg.this_needs_super_inline) return false;
+        if (cf_ == 0 && !g_cfg.this_needs_super_inline) return false;
         const bool fused = op == Op::LdaThisStar;
         const uint32_t dst = fused ? reg(pc + 1) : 0;
         if (fused && !ok_reg(dst)) return false;
-        const int32_t v = guarded(K::LoadThis, Rep::Tagged, -1);
+        const int32_t v = cf_ != 0 ? value(static_cast<uint32_t>(F().this_var)) : guarded(K::LoadThis, Rep::Tagged, -1);
         set(acc(), v);
         if (fused) set(dst, v);
         return true;
     }
     case Op::LdaEnvSlot: case Op::LdaEnvSlotStar: {
+        if (cf_ != 0) return false;      // the environments belong to the root's frame
         const bool fused = op == Op::LdaEnvSlotStar;
         const uint32_t slot = reg(pc + 1), nidx = u16(pc + 2);
         const uint32_t dst = fused ? reg(pc + 4) : 0;
-        if ((fused && !ok_reg(dst)) || nidx >= g_.chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
-        const int32_t v = guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot, reinterpret_cast<uint64_t>(g_.chunk->names[nidx]));
+        if ((fused && !ok_reg(dst)) || nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
+        const int32_t v = guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         set(acc(), v);
         if (fused) set(dst, v);
         return true;
     }
     case Op::LdaEnvSlotAt: {
+        if (cf_ != 0) return false;
         const uint32_t hops = reg(pc + 1), slot = reg(pc + 2), nidx = u16(pc + 3);
-        if (nidx >= g_.chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
-        set(acc(), guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(g_.chunk->names[nidx])));
+        if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
+        set(acc(), guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx])));
         return true;
     }
     case Op::StaEnvSlotAt: {
+        if (cf_ != 0) return false;
         const uint32_t hops = reg(pc + 1), slot = reg(pc + 2), nidx = u16(pc + 3);
-        if (nidx >= g_.chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
+        if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
         const int32_t val = tagged(value(acc()));
-        guarded(K::StoreEnv, Rep::None, val, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(g_.chunk->names[nidx]));
+        guarded(K::StoreEnv, Rep::None, val, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         return true;
     }
     case Op::StaEnvSlot: {
+        if (cf_ != 0) return false;
         const uint32_t slot = reg(pc + 1), nidx = u16(pc + 2);
-        if (nidx >= g_.chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
+        if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
         const int32_t val = tagged(value(acc()));
-        guarded(K::StoreEnv, Rep::None, val, -1, slot, reinterpret_cast<uint64_t>(g_.chunk->names[nidx]));
+        guarded(K::StoreEnv, Rep::None, val, -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         return true;
     }
 
+    case Op::LdaLookup: case Op::LdaLookupStar: {
+        const bool fused = op == Op::LdaLookupStar;
+        const uint32_t nidx = u16(pc + 1), dst = fused ? reg(pc + 3) : 0;
+        if ((fused && !ok_reg(dst)) || nidx >= F().chunk->names.size() || nidx >= F().chunk->lookup_cache.size()) return false;
+        const BytecodeChunk::LookupCacheEntry* base = cf_ == 0 ? (g_.frame ? g_.frame->lookup_cache_data : nullptr) : F().lookup;
+        if (!base) return false;
+        const BytecodeChunk::LookupCacheEntry& e = base[nidx];
+        if (e.shadow_epoch != Environment::binding_shadow_epoch() || e.dict_desc) return false;
+        uint32_t form;
+        if (e.obj_shape) form = 1; else if (e.slot) form = 0; else return false;
+        const bool root = cf_ == 0;
+        const int32_t v = guarded(K::LoadLookup, Rep::Tagged, -1, -1, form | (root ? 0x100u : 0u),
+                                  root ? static_cast<uint64_t>(nidx) * JitLookupLayout::kSize : reinterpret_cast<uint64_t>(&e));
+        set(acc(), v);
+        if (fused) set(dst, v);
+        return true;
+    }
     case Op::GetNamed: case Op::GetNamedStar: {
         const bool fused = op == Op::GetNamedStar;
         const uint32_t rcv = reg(pc + 1), fbi = u16(pc + 4);
         const uint32_t dst = fused ? reg(pc + 6) : 0;
-        if (!ok_reg(rcv) || (fused && !ok_reg(dst)) || fbi >= g_.chunk->feedback.size()) return false;
-        const FeedbackBody& fb = g_.chunk->feedback[fbi].read();
+        if (!ok_reg(rcv) || (fused && !ok_reg(dst)) || fbi >= F().chunk->feedback.size()) return false;
+        const FeedbackBody& fb = F().chunk->feedback[fbi].read();
         const bool own = fb.count >= 1 && !fb.mega && !fb.entries[0].is_accessor;
         const bool array_len = !own && fb.array_length && fb.count == 0;
+        // A method (or other data property) found on a prototype: the receiver's shape and prototype and the global
+        // epochs are what the interpreter's entry is valid under.
+        const FeedbackBody::ProtoEntry* inh = nullptr;
+        if (!own && !array_len && fb.count == 0 && !fb.mega && !fb.proto_mega && fb.proto_count == 1) {
+            const FeedbackBody::ProtoEntry& pe = fb.proto_entries[0];
+            if (!pe.is_getter && !pe.absent && !pe.is_setter && pe.receiver_word && pe.prototype && pe.proto_epoch == Object::proto_epoch() &&
+                (pe.from_descriptor ? pe.desc_epoch == Object::descriptor_epoch() : pe.holder != nullptr))
+                inh = &pe;
+        }
         if (config().log) std::fprintf(stderr, "[opt] GetNamed pc=%u fb: count=%u mega=%d accessor=%d array_length=%d proto_count=%u\n", pc, fb.count, fb.mega, fb.count ? fb.entries[0].is_accessor : -1, fb.array_length, fb.proto_count);
-        if (!own && !array_len) return false;
+        if (!own && !array_len && !inh) return false;
         if (!object_value(value(rcv))) return false;
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
         int32_t v;
-        if (own) {
+        if (inh) {
+            guarded(K::CheckShape, Rep::None, obj, -1, 0, inh->receiver_word);
+            guarded(K::CheckProto, Rep::None, obj, -1, 0, reinterpret_cast<uint64_t>(inh->prototype));
+            guarded(K::CheckEpoch, Rep::None, -1, -1, 0, inh->proto_epoch);
+            if (inh->from_descriptor) {
+                guarded(K::CheckEpoch, Rep::None, -1, -1, 1, inh->desc_epoch);
+                v = const_of(inh->cached_value);
+            } else {
+                v = emit(K::LoadHolder, Rep::Tagged, -1, -1, inh->slot_index, reinterpret_cast<uint64_t>(inh->holder));
+            }
+        } else if (own) {
             guarded(K::CheckShape, Rep::None, obj, -1, 0, fb.entries[0].word);
             v = emit(K::LoadSlot, Rep::Tagged, obj, -1, fb.entries[0].slot_index);
         } else {
@@ -911,8 +1077,8 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     }
     case Op::SetNamed: {
         const uint32_t rcv = reg(pc + 1), fbi = u16(pc + 4);
-        if (!ok_reg(rcv) || fbi >= g_.chunk->feedback.size()) return false;
-        const FeedbackBody& fb = g_.chunk->feedback[fbi].read();
+        if (!ok_reg(rcv) || fbi >= F().chunk->feedback.size()) return false;
+        const FeedbackBody& fb = F().chunk->feedback[fbi].read();
         if (fb.count < 1 || fb.mega || fb.entries[0].is_accessor) return false;
         if (!object_value(value(rcv))) return false;
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
@@ -923,9 +1089,8 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     }
     case Op::GetKeyed: {
         const uint32_t rcv = reg(pc + 1);
-        if (!ok_reg(rcv) || !g_.frame) return false;
-        const Value& pv = g_.frame->regs[rcv];
-        if (!pv.is_object() || !pv.as_object()->is_verified_dense_array()) return false;
+        if (!ok_reg(rcv)) return false;
+        if (!dense_array_receiver(rcv)) return false;
         if (!object_value(value(rcv)) || !numeric_value(value(acc()))) return false;
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(acc())));
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
@@ -935,9 +1100,8 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     }
     case Op::SetKeyed: {
         const uint32_t rcv = reg(pc + 1), kreg = reg(pc + 2);
-        if (!ok_reg(rcv) || !ok_reg(kreg) || !g_.frame) return false;
-        const Value& pv = g_.frame->regs[rcv];
-        if (!pv.is_object() || !pv.as_object()->is_verified_dense_array()) return false;
+        if (!ok_reg(rcv) || !ok_reg(kreg)) return false;
+        if (!dense_array_receiver(rcv)) return false;
         if (!object_value(value(rcv)) || !numeric_value(value(kreg))) return false;
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(kreg)));
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
@@ -966,12 +1130,26 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         return true;
     }
     case Op::Return: {
-        Block& B = g_.b[cb_];
         const int32_t v = tagged(value(acc()));
+        Block& B = g_.b[cb_];
+        if (cf_ != 0) {
+            // An inlined callee: the result is the caller's accumulator and control goes on after the call.
+            if (B.succs.size() != 1) return fail("inlined return without its continuation");
+            B.term.kind = T::Jump;
+            B.term.t = B.succs[0];
+            set(g_.funcs[F().parent].acc_var, v);
+            ended = true;
+            return true;
+        }
         B.term.kind = T::Return;
         B.term.cond = v;
         ended = true;
         return true;
+    }
+    case Op::Call: case Op::CallResolved: {
+        const int32_t callee = site_of(cf_, pc);
+        if (callee < 0) return false;
+        return inline_enter(in, callee, ended);
     }
     default:
         return false;
@@ -981,6 +1159,7 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
 inline bool Builder::translate_block(int32_t blk) {
     cb_ = blk;
     Block& B0 = g_.b[blk];
+    cf_ = B0.func;
     if (B0.exit_pc >= 0) {
         flush_all(B0.exit_pc);
         g_.b[blk].term.kind = T::Bail;
@@ -996,9 +1175,16 @@ inline bool Builder::translate_block(int32_t blk) {
     if (B0.loop_header) emit(K::Poll, Rep::None);
     bool ended = false;
     for (int32_t i = B0.first_insn; i <= B0.last_insn && !ended; i++) {
-        const Insn in = g_.insns[i];
+        const Insn in = F().insns[i];
         begin_op(in.pc);
-        if (!translate(in, ended)) step(in, ended);
+        if (!translate(in, ended)) {
+            if (cf_ != 0) {
+                // A callee is only worth inlining when all of it is ours: there is no register bank to step it in.
+                if (!g_.failed_site.first) g_.failed_site = {g_.funcs[F().parent].chunk, F().call_pc};
+                return fail("an inlined callee needs a step");
+            }
+            step(in, ended);
+        }
     }
     if (!ended) {
         Block& B = g_.b[blk];
@@ -1036,16 +1222,179 @@ inline std::vector<int32_t> Builder::compute_rpo() {
     return post;
 }
 
-inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_insns) {
-    const BytecodeChunk& c = *g_.chunk;
+// ---- inlining ----
+
+// What the feedback says the call at `in` reaches, when the tier can take that body in: a function with plain
+// bytecode (no try regions, no loops), small, in this realm, that the interpreter could run stackless (so
+// a deoptimization can rebuild its frame) or that is a leaf (so a deoptimization can leave through the call).
+inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
+    const Func& P = g_.funcs[fi];
+    uint32_t depth = 0;
+    for (int32_t k = fi; g_.funcs[k].parent >= 0; k = g_.funcs[k].parent) depth++;
+    if (depth >= config().inline_depth || in.pc + in.len >= P.chunk->code.size()) return nullptr;
+    const Site key{P.chunk, in.pc};
+    if ((no_inline_ && no_inline_->count(key)) || (avoid_ && avoid_->no_inline.count(key))) return nullptr;
+    const auto* fb = P.chunk->ic_feedback.get();
+    if (!fb) return nullptr;
+    for (const auto& cs : fb->call_sites) {
+        if (cs.pc != in.pc) continue;
+        Function* fn = cs.fn;
+        if (cs.mega || !fn || fn->get_function_kind() != Function::FunctionKind::Plain || fn->is_arrow()) return nullptr;
+        const FunctionExecutable* exe = fn->get_executable().get();
+        if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm) return nullptr;
+        const BytecodeChunk& c = *exe->bytecode_chunk;
+        uint8_t v = c.inline_state;
+        if (v & kInlineNever) return nullptr;
+        if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
+        if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf)) || (v & kInlineEnv)) return nullptr;
+        const bool strict = (v & kInlineLeaf) ? (fn->is_strict() || exe->fast_strict) : (v & kInlineStrict) != 0;
+        if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return nullptr;
+        // A sloppy body that reads `this` boxes a primitive receiver: only a method call can promise an object.
+        if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved) return nullptr;
+        uint32_t n = 0;
+        if (!inline_scan(fn, c, n) || n > config().inline_insns) return nullptr;
+        return fn;
+    }
+    return nullptr;
+}
+
+inline bool Builder::inline_scan(const Function*, const BytecodeChunk& c, uint32_t& insns) {
+    if ((c.handlers && !c.handlers->empty()) || c.register_count > kInlineMaxRegs) return false;
     const uint8_t* code = c.code.data();
     const uint32_t size = static_cast<uint32_t>(c.code.size());
-    g_.nvars = static_cast<uint32_t>(c.register_count) + 1;
-    g_.acc_var = c.register_count;
+    insns = 0;
+    for (uint32_t pc = 0; pc < size;) {
+        if (code[pc] >= static_cast<uint8_t>(Op::kCount)) return false;
+        const Op op = static_cast<Op>(code[pc]);
+        if (op_unsupported(op) || op == Op::Throw) return false;
+        const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(op));
+        const int pos = branch_offset_pos(op);
+        if (pos >= 0 && read_i16(code, pc + pos) < 0) return false;      // no loops
+        pc += len;
+        insns++;
+    }
+    return true;
+}
+
+// Replaces the call that ends `blk` by the callee's blocks: the call block jumps to the callee's first block, its
+// returns go on to the block that follows the call. Nothing is done when the callee does not fit the budgets.
+inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
+    const int32_t fi = g_.b[blk].func;
+    const Insn call = g_.funcs[fi].insns[g_.b[blk].last_insn];
+    Function* target = nullptr;
+    for (auto& cd : g_.funcs[fi].cand) if (cd.first == call.pc) target = cd.second;
+    if (!target) return false;
+    const FunctionExecutable* exe = target->get_executable().get();
+    const BytecodeChunk& c = *exe->bytecode_chunk;
+    uint32_t n = 0;
+    inline_scan(target, c, n);
+    const uint32_t nregs = std::max<uint32_t>(c.register_count, c.parameter_count);
+    if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + 3 > config().inline_vars) return false;
+    inline_insns_ += n;
+    inline_vars_ += nregs + 3;
+    const bool leaf = (c.inline_state & kInlineLeaf) != 0;
+    const bool strict = leaf ? (target->is_strict() || exe->fast_strict) : (c.inline_state & kInlineStrict) != 0;
+
+    Func f;
+    f.chunk = &c;
+    f.parent = fi;
+    f.var_base = g_.nvars;
+    f.nregs = nregs;
+    f.acc_var = f.var_base + nregs;
+    f.this_var = static_cast<int32_t>(f.acc_var + 1);
+    f.fn_var = static_cast<int32_t>(f.acc_var + 2);
+    f.call_pc = call.pc;
+    f.call_len = call.len;
+    f.cont_block = g_.funcs[fi].block_at[call.pc + call.len];
+    f.leaf = leaf;
+    f.exe = exe;
+    f.fnp = target;
+    f.by_identity = c.uses_lookup_cache;
+    f.lookup = c.lookup_cache.data();
+    if (c.uses_lookup_cache) {
+        PrivateFeedback* unused = nullptr;
+        inline_instance_caches(c, target, f.lookup, unused);
+    }
+    f.sloppy_this = !strict && c.uses_this;
+    g_.nvars += nregs + 3;
+    g_.funcs.push_back(std::move(f));
+    const int32_t ci = static_cast<int32_t>(g_.funcs.size() - 1);
+    const size_t first = g_.b.size();
+    if (!setup_func(ci, config().max_insns)) return false;
+    if (g_.funcs[ci].cont_block < 0) return fail("a call with nothing after it");
+    g_.funcs[ci].entry_block = g_.funcs[ci].block_at[0];
+    g_.funcs[fi].sites.push_back({call.pc, ci});
+    // Returns continue after the call.
+    for (size_t bi = first; bi < g_.b.size(); bi++) {
+        Block& B = g_.b[bi];
+        if (B.first_insn >= 0 && static_cast<Op>(g_.funcs[ci].insns[B.last_insn].op) == Op::Return) B.succs.push_back(g_.funcs[ci].cont_block);
+    }
+    g_.b[blk].succs.assign(1, g_.funcs[ci].entry_block);
+    // The blocks the callee's first block reaches.
+    std::vector<uint8_t> seen(g_.b.size(), 0);
+    std::vector<int32_t> work{g_.funcs[ci].entry_block};
+    while (!work.empty()) {
+        const int32_t x = work.back();
+        work.pop_back();
+        if (x < static_cast<int32_t>(first) || seen[x]) continue;
+        seen[x] = 1;
+        added.push_back(x);
+        for (int32_t s2 : g_.b[x].succs) work.push_back(s2);
+    }
+    if (!leaf) {
+        uint32_t words = 0, depth = 0;
+        for (int32_t k = ci; k > 0; k = g_.funcs[k].parent) { words += inline_frame_words(g_.funcs[k].nregs); depth++; }
+        g_.inl_words = std::max(g_.inl_words, words);
+        g_.inl_depth = std::max(g_.inl_depth, depth);
+        g_.inl_strict = strict;
+    }
+    g_.inl_count++;
+    return true;
+}
+
+// The call itself: the callee's identity is checked, the callee's variables are given their first values (its
+// parameters from the arguments, the rest undefined) and control goes to its first block.
+inline bool Builder::inline_enter(const Insn& in, int32_t ci, bool& ended) {
+    const uint8_t* code = F().chunk->code.data();
+    const Op op = static_cast<Op>(in.op);
+    const bool resolved = op == Op::CallResolved;
+    const uint32_t callee_r = F().var_base + code[in.pc + 1];
+    const uint32_t this_r = resolved ? F().var_base + code[in.pc + 2] : 0;
+    const uint32_t start = F().var_base + code[in.pc + (resolved ? 3 : 2)];
+    const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
+    if (callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
+    const Func C = g_.funcs[ci];
+    const int32_t fv = tagged(value(callee_r));
+    const int32_t chk = guarded(K::CheckFn, Rep::None, fv, -1, C.by_identity ? 1 : 0, reinterpret_cast<uint64_t>(C.by_identity ? static_cast<const void*>(C.fnp) : C.exe));
+    const int32_t entry_state = g_.n[chk].state;
+    const int32_t thisv = resolved ? tagged(value(this_r)) : const_of(Value());
+    if (C.sloppy_this) guarded(K::CheckObj, Rep::Ptr, thisv);
+    const int32_t undef = const_of(Value());
+    const uint32_t copy = std::min<uint32_t>(C.params, argc);
+    for (uint32_t i = 0; i < C.nregs; i++) set(C.var_base + i, i < copy ? value(start + i) : undef);
+    set(C.acc_var, undef);
+    set(static_cast<uint32_t>(C.this_var), thisv);
+    set(static_cast<uint32_t>(C.fn_var), fv);
+    if (C.leaf) g_.funcs[ci].entry_state = entry_state;
+    Block& B = g_.b[cb_];
+    B.term.kind = T::Jump;
+    B.term.t = B.succs[0];
+    ended = true;
+    return true;
+}
+
+// Decodes one function, finds its basic blocks and links them inside it. The blocks are appended to the graph.
+inline bool Builder::setup_func(int32_t fi, size_t max_insns) {
+    const int32_t saved = cf_;
+    cf_ = fi;
+    struct Restore { Builder* b; int32_t f; ~Restore() { b->cf_ = f; } } restore{this, saved};
+    const BytecodeChunk& c = *F().chunk;
+    const uint8_t* code = c.code.data();
+    const uint32_t size = static_cast<uint32_t>(c.code.size());
     if (c.handlers && !c.handlers->empty()) return fail("has try regions");
 
     // ---- decode ----
-    g_.insn_at.assign(size + 1, -1);
+    F().insn_at.assign(size + 1, -1);
     for (uint32_t pc = 0; pc < size;) {
         const uint8_t raw = code[pc];
         if (raw >= static_cast<uint8_t>(Op::kCount)) return fail("invalid opcode");
@@ -1053,24 +1402,33 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
         if (op_unsupported(op)) return fail("suspending opcode");
         const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(op));
         if (pc + len > size) return fail("truncated instruction");
-        g_.insn_at[pc] = static_cast<int32_t>(g_.insns.size());
-        g_.insns.push_back({pc, raw, static_cast<uint8_t>(len)});
+        F().insn_at[pc] = static_cast<int32_t>(F().insns.size());
+        F().insns.push_back({pc, raw, static_cast<uint8_t>(len)});
         pc += len;
-        if (g_.insns.size() > max_insns) return fail("too many instructions");
+        total_insns_++;
+        if (total_insns_ > max_insns) return fail("too many instructions");
     }
-    if (g_.insns.empty()) return fail("empty");
+    if (F().insns.empty()) return fail("empty");
     compute_liveness();
+    F().params = c.parameter_count;
+    if (config().inl && g_.frame) {
+        for (const Insn& in : F().insns) {
+            const Op op = static_cast<Op>(in.op);
+            if (op != Op::Call && op != Op::CallResolved) continue;
+            if (Function* t = inline_target(fi, in)) F().cand.push_back({in.pc, t});
+        }
+    }
 
     // ---- leaders and loop headers ----
     std::vector<uint8_t> leader(size + 1, 0), header(size + 1, 0);
     leader[0] = 1;
-    for (const Insn& in : g_.insns) {
+    for (const Insn& in : F().insns) {
         const Op op = static_cast<Op>(in.op);
         const int pos = branch_offset_pos(op);
         const uint32_t next = in.pc + in.len;
         if (pos >= 0) {
             const int64_t t = static_cast<int64_t>(next) + i16(in.pc + pos);
-            if (t < 0 || t >= size || g_.insn_at[t] < 0) return fail("bad branch target");
+            if (t < 0 || t >= size || F().insn_at[t] < 0) return fail("bad branch target");
             leader[t] = 1;
             if (t <= static_cast<int64_t>(in.pc)) header[t] = 1;
             if (next < size) leader[next] = 1;
@@ -1078,31 +1436,35 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
             if (next < size) leader[next] = 1;
         }
     }
-    g_.block_at.assign(size + 1, -1);
+    for (auto& cd : F().cand) leader[F().insns[F().insn_at[cd.first]].pc + F().insns[F().insn_at[cd.first]].len] = 1;
+    F().block_at.assign(size + 1, -1);
+    const size_t first_block = g_.b.size();
     {
         uint32_t start = 0;
         for (uint32_t pc = 1; pc <= size; pc++) {
             if (pc == size || leader[pc]) {
-                if (g_.insn_at[start] < 0) return fail("leader inside an instruction");
+                if (F().insn_at[start] < 0) return fail("leader inside an instruction");
                 const int32_t id = new_block(start, pc);
-                g_.block_at[start] = id;
+                g_.b[id].func = fi;
+                F().block_at[start] = id;
                 g_.b[id].loop_header = header[start] != 0;
-                g_.b[id].first_insn = g_.insn_at[start];
+                g_.b[id].first_insn = F().insn_at[start];
                 // Last instruction of the range: the one before `pc`.
-                int32_t li = g_.insn_at[start];
-                while (li + 1 < static_cast<int32_t>(g_.insns.size()) && g_.insns[li + 1].pc < pc) li++;
+                int32_t li = F().insn_at[start];
+                while (li + 1 < static_cast<int32_t>(F().insns.size()) && F().insns[li + 1].pc < pc) li++;
                 g_.b[id].last_insn = li;
                 start = pc;
             }
         }
     }
     // ---- successors ----
-    for (Block& B : g_.b) {
-        const Insn& last = g_.insns[B.last_insn];
+    for (size_t bi = first_block; bi < g_.b.size(); bi++) {
+        Block& B = g_.b[bi];
+        const Insn& last = F().insns[B.last_insn];
         const Op op = static_cast<Op>(last.op);
         const int pos = branch_offset_pos(op);
         const uint32_t next = last.pc + last.len;
-        auto blk_at = [&](int64_t pc) -> int32_t { return (pc >= 0 && pc < size) ? g_.block_at[pc] : -1; };
+        auto blk_at = [&](int64_t pc) -> int32_t { return (pc >= 0 && pc < size) ? F().block_at[pc] : -1; };
         if (pos >= 0) {
             const int64_t t = static_cast<int64_t>(next) + i16(last.pc + pos);
             const int32_t tb = blk_at(t);
@@ -1121,6 +1483,24 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
             B.succs.push_back(fb);
         }
     }
+    return true;
+}
+
+inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_insns) {
+    const BytecodeChunk& c = *g_.chunk;
+    const uint32_t size = static_cast<uint32_t>(c.code.size());
+    {
+        Func root;
+        root.chunk = &c;
+        root.var_base = 0;
+        root.nregs = c.register_count;
+        root.acc_var = c.register_count;
+        g_.funcs.push_back(std::move(root));
+        g_.nvars = static_cast<uint32_t>(c.register_count) + 1;
+        g_.acc_var = c.register_count;
+        cf_ = 0;
+    }
+    if (!setup_func(0, max_insns)) return false;
 
     // ---- the region: the loops around each requested entry ----
     // Code outside the loop nest has not run (or is not what is hot), so it is not compiled: an edge
@@ -1132,9 +1512,20 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
     for (int32_t i = 0; i < static_cast<int32_t>(nb0); i++)
         for (int32_t s2 : g_.b[i].succs) bpreds[s2].push_back(i);
     std::vector<uint32_t> pcs = entry_pcs;
-    for (uint32_t pc : pcs) {
-        if (pc >= size || g_.block_at[pc] < 0) return fail("entry is not a block start");
-        const int32_t H = g_.block_at[pc];
+    if (g_.fn_entry) {
+        // The whole function: everything the first block reaches.
+        std::vector<int32_t> work{F().block_at[0]};
+        while (!work.empty()) {
+            const int32_t x = work.back();
+            work.pop_back();
+            if (reach[x]) continue;
+            reach[x] = 1;
+            for (int32_t s2 : g_.b[x].succs) work.push_back(s2);
+        }
+    }
+    for (uint32_t pc : (g_.fn_entry ? std::vector<uint32_t>() : pcs)) {
+        if (pc >= size || F().block_at[pc] < 0) return fail("entry is not a block start");
+        const int32_t H = F().block_at[pc];
         std::vector<uint8_t> fwd(nb0, 0);
         {
             std::vector<int32_t> work{H};
@@ -1169,13 +1560,38 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
             pcs.push_back(g_.b[i].start_pc);
     }
     for (uint32_t pc : pcs) {
-        if (!reach[g_.block_at[pc]]) return fail("entry is not in a loop");
+        if (!reach[F().block_at[pc]]) return fail("entry is not in a loop");
         const int32_t e = new_block(0, 0);
         g_.b[e].synthetic = true;
         g_.b[e].osr_pc = static_cast<int32_t>(pc);
-        g_.b[e].succs.push_back(g_.block_at[pc]);
+        g_.b[e].succs.push_back(F().block_at[pc]);
         g_.b[e].sealed = true;
         g_.entries.push_back(e);
+    }
+    reach.resize(g_.b.size(), 0);
+    // ---- inlining ----
+    if (config().inl && g_.frame) {
+        auto is_site = [&](int32_t b) {
+            const Block& B = g_.b[b];
+            if (B.last_insn < 0 || B.synthetic) return false;
+            const Func& fn = g_.funcs[B.func];
+            const uint32_t pc = fn.insns[B.last_insn].pc;
+            for (auto& cd : fn.cand) if (cd.first == pc) return true;
+            return false;
+        };
+        std::vector<int32_t> work;
+        for (int32_t i = 0; i < static_cast<int32_t>(nb0); i++) if (reach[i] && is_site(i)) work.push_back(i);
+        while (!work.empty()) {
+            const int32_t blk = work.back();
+            work.pop_back();
+            std::vector<int32_t> added;
+            const bool ok = expand_inline(blk, added);
+            if (g_.why) return false;
+            if (!ok) continue;
+            reach.resize(g_.b.size(), 0);
+            for (int32_t x : added) { reach[x] = 1; if (is_site(x)) work.push_back(x); }
+        }
+        for (Block& B : g_.b) B.def.resize(g_.nvars, kUnset);
     }
     reach.resize(g_.b.size(), 0);
     // Exit blocks.
@@ -1261,9 +1677,9 @@ inline void Builder::complete_defs() {
     for (int32_t blk : g_.rpo) {
         const std::vector<int32_t> succs = g_.b[blk].succs;
         for (int32_t s : succs) {
-            const uint32_t pc = g_.b[s].start_pc;
-            for (uint32_t v = 0; v < g_.nvars; v++)
-                if (live_at(pc, v)) read_var(v, blk);
+            std::vector<uint32_t> vars;
+            state_vars(g_.b[s].func, g_.b[s].start_pc, vars);
+            for (uint32_t v : vars) read_var(v, blk);
         }
     }
     frozen_ = true;
@@ -1288,9 +1704,27 @@ inline void Builder::finalize() {
     if (config().log) {
         for (int32_t blk : g_.rpo)
             for (int32_t id : g_.b[blk].nodes)
-                if (g_.n[id].op == K::Step) std::fprintf(stderr, "[opt] step %s\n", op_name(static_cast<Op>(g_.chunk->code[g_.n[id].aux])));
+                if (g_.n[id].op == K::Step) std::fprintf(stderr, "[opt] step %s\n", op_name(static_cast<Op>(F().chunk->code[g_.n[id].aux])));
     }
     if (insns && steps * 100 > static_cast<size_t>(config().max_step_percent) * insns) fail("too many steps");
+    // Entering and leaving a unit costs a few dozen instructions; a body that is not much longer than that, with
+    // nothing inlined into it, is cheaper to interpret.
+    if (g_.fn_entry && !g_.why && g_.inl_count == 0 && insns < config().entry_min_insns) {
+        bool loops = false;
+        for (int32_t blk : g_.rpo) if (g_.b[blk].loop_header) loops = true;
+        if (!loops) fail("too small to enter");
+    }
+    // A call the unit has to leave to a step runs on the native stack and through the slow call path, which costs
+    // more than the interpreter's own stackless call. A loop pays for that with the iterations around it; a whole
+    // function that is called often does not.
+    if (g_.fn_entry && !g_.why) {
+        for (int32_t blk : g_.rpo)
+            for (int32_t id : g_.b[blk].nodes) {
+                if (g_.n[id].op != K::Step) continue;
+                const Op op = static_cast<Op>(F().chunk->code[g_.n[id].aux]);
+                if (op == Op::Call || op == Op::CallResolved || op == Op::Construct || op == Op::CallViaFunctionCall || op == Op::CallViaFunctionApply) { fail("calls remain"); return; }
+            }
+    }
 }
 
 inline void Builder::remove_trivial_phis() {
@@ -1420,7 +1854,7 @@ inline void Builder::lower() {
                     const uint32_t pc = g_.b[blk].start_pc;
                     if (want == Rep::F64) {
                         // The incoming value is a Tagged one: it has to be a number.
-                        const int32_t st = snapshot_at(p, pc, static_cast<int32_t>(g_.n[id].aux));
+                        const int32_t st = snapshot_at(p, g_.b[blk].func, pc, static_cast<int32_t>(g_.n[id].aux));
                         o = emit_in(p, K::CheckNum, Rep::F64, o);
                         g_.n[o].state = st;
                     } else {
@@ -1645,10 +2079,10 @@ inline void Builder::cse() {
         case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::ModF:
         case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
         case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag:
-        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32:
+        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish:
             return 1;
         case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen: case K::LoadEnv:
-        case K::LoadThis: case K::CheckShape: case K::CheckDense:
+        case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder:
             return 2;
         default: return 0;
         }
@@ -2201,6 +2635,11 @@ inline void Emitter::emit_deopt_stub(int32_t state) {
         default: val = use_g(d, RAX); break;
         }
         if (v == g_.acc_var) a_.mov_store(mem(RBX, static_cast<int32_t>(kOffAcc)), val);
+        else if (v > g_.acc_var) {
+            // A variable of an inlined callee: the interpreter frame it belongs to does not exist yet.
+            a_.mov_load(RCX, mem(R14, static_cast<int32_t>(offsetof(JitRt, inl_scratch))));
+            a_.mov_store(mem(RCX, static_cast<int32_t>((v - g_.acc_var - 1) * sizeof(Value))), val);
+        }
         else a_.mov_store(mem(R12, static_cast<int32_t>(v * sizeof(Value))), val);
     }
     a_.mov_store32_imm(mem(R14, static_cast<int32_t>(offsetof(JitRt, last_deopt))), static_cast<uint32_t>(state));
@@ -2539,6 +2978,19 @@ inline void Emitter::emit_node(int32_t id) {
         commit_g(id, d);
         return;
     }
+    case K::IsNullish: {
+        const Reg a = use_g(n.a, RAX);
+        const Reg d = def_g(id, RDX);
+        a_.mov(RCX, a);
+        a_.shr_imm(RCX, 48);
+        a_.sub32_imm(RCX, 0x7FF0);            // undefined is 0x7FF0, null 0x7FF1
+        a_.cmp32_imm(RCX, 1);
+        a_.mov_imm32(RAX, 0);
+        a_.setcc(CC_BE, RAX);
+        if (d != RAX) a_.mov32(d, RAX);
+        commit_g(id, d);
+        return;
+    }
     case K::NotBool: {
         const Reg a = use_g(n.a, RAX);
         const Reg d = def_g(id, RAX);
@@ -2765,6 +3217,94 @@ inline void Emitter::emit_node(int32_t id) {
                 a_.jmp(*dl_);
             });
         }
+        return;
+    }
+    case K::CheckFn: {
+        const Reg s = use_g(n.a, RAX);
+        Label& dl = deopt_label(n.state);
+        a_.mov(RCX, s);
+        a_.shr_imm(RCX, 48);
+        a_.cmp32_imm(RCX, 0x7FF9);                 // QUIET_NAN | TAG_FUNCTION
+        a_.jcc(CC_NE, dl);
+        a_.mov(RCX, s);
+        a_.shl_imm(RCX, 16);
+        a_.shr_imm(RCX, 16);
+        if (n.aux == 0) a_.mov_load(RCX, mem(RCX, static_cast<int32_t>(JitObjectLayout::function_executable())));
+        a_.mov_imm64(RDX, n.imm);
+        a_.cmp(RCX, RDX);
+        a_.jcc(CC_NE, dl);
+        return;
+    }
+    case K::LoadLookup: {
+        const Reg d = def_g(id, RAX);
+        Label& dl = deopt_label(n.state);
+        if (n.aux & 0x100) {
+            a_.mov_load(RCX, mem(RBX, static_cast<int32_t>(kOffLookup)));
+            if (n.imm) a_.add_imm(RCX, static_cast<int32_t>(n.imm));
+        } else {
+            a_.mov_imm64(RCX, n.imm);
+        }
+        a_.mov_imm64(RDX, reinterpret_cast<uint64_t>(JitEnvLayout::shadow_epoch_addr()));
+        a_.mov_load32(RDX, mem(RDX));
+        a_.cmp32_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::shadow_epoch())));
+        a_.jcc(CC_NE, dl);
+        if ((n.aux & 3) == 0) {
+            a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::slot())));
+            a_.test(RDX, RDX);
+            a_.jcc(CC_E, dl);
+            a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())), 0);
+            a_.jcc(CC_NE, dl);
+            a_.mov_load(d, mem(RDX));
+        } else {
+            a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())));
+            a_.test(RDX, RDX);
+            a_.jcc(CC_E, dl);
+            a_.mov_load(R11, mem(RCX, static_cast<int32_t>(JitLookupLayout::env())));
+            a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitEnvLayout::binding_object())));
+            a_.test(R11, R11);
+            a_.jcc(CC_E, dl);
+            a_.mov_load(RAX, mem(R11, static_cast<int32_t>(JitObjectLayout::shape())));
+            a_.shr_imm(RAX, 5);
+            a_.shl_imm(RAX, 5);
+            a_.cmp(RAX, RDX);
+            a_.jcc(CC_NE, dl);
+            a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(JitObjectLayout::descriptor_epoch_addr()));
+            a_.mov_load(RAX, mem(RAX));
+            a_.cmp_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::descriptor_epoch())));
+            a_.jcc(CC_NE, dl);
+            a_.mov_load32(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_slot_index())));
+            a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitObjectLayout::butterfly())));
+            a_.mov_load(d, mem_idx(R11, RDX, 8, 0));
+        }
+        commit_g(id, d);
+        return;
+    }
+    case K::CheckProto: {
+        const Reg o = use_g(n.a, RAX);
+        Label& dl = deopt_label(n.state);
+        a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::proto())));
+        a_.shr_imm(RCX, 4);
+        a_.shl_imm(RCX, 4);
+        a_.mov_imm64(RDX, n.imm);
+        a_.cmp(RCX, RDX);
+        a_.jcc(CC_NE, dl);
+        return;
+    }
+    case K::CheckEpoch: {
+        Label& dl = deopt_label(n.state);
+        a_.mov_imm64(RCX, reinterpret_cast<uint64_t>(n.aux ? JitObjectLayout::descriptor_epoch_addr() : JitObjectLayout::proto_epoch_addr()));
+        a_.mov_load(RCX, mem(RCX));
+        a_.mov_imm64(RDX, n.imm);
+        a_.cmp(RCX, RDX);
+        a_.jcc(CC_NE, dl);
+        return;
+    }
+    case K::LoadHolder: {
+        const Reg d = def_g(id, RAX);
+        a_.mov_imm64(RCX, n.imm);
+        a_.mov_load(RCX, mem(RCX, static_cast<int32_t>(JitObjectLayout::butterfly())));
+        a_.mov_load(d, mem(RCX, static_cast<int32_t>(n.aux * sizeof(Value))));
+        commit_g(id, d);
         return;
     }
     case K::CheckObj: {
@@ -3094,6 +3634,16 @@ inline void dump_chunk(const BytecodeChunk& chunk, uint32_t pc) {
 }
 
 
+inline bool has_calls(const BytecodeChunk& chunk) {
+    for (uint32_t pc = 0; pc < chunk.code.size();) {
+        if (chunk.code[pc] >= static_cast<uint8_t>(Op::kCount)) return false;
+        const Op op = static_cast<Op>(chunk.code[pc]);
+        if (op == Op::Call || op == Op::CallResolved) return true;
+        pc += 1 + static_cast<uint32_t>(op_operand_bytes(op));
+    }
+    return false;
+}
+
 inline std::vector<JitRt*>& all_rts() { static std::vector<JitRt*> v; return v; }
 
 inline void print_unit_stats() {
@@ -3131,15 +3681,26 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     }
     const auto t0 = std::chrono::steady_clock::now();
     struct Timer { std::chrono::steady_clock::time_point t0; ~Timer() { if (config().log) std::fprintf(stderr, "[opt] compile took %.3f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); } } timer{t0};
-    Graph g;
-    g.chunk = &chunk;
-    g.frame = peek;
-    g.entry_pc = pc;
-    Builder b(g);
-    if (!b.build({pc}, config().max_insns)) {
-        if (config().log) std::fprintf(stderr, "[opt] refused (%s): %u bytes of bytecode\n", g.why ? g.why : "?", static_cast<unsigned>(chunk.code.size()));
+    // A callee that turns out to need a step makes its call site not worth inlining, and the build starts over.
+    std::set<Builder::Site> no_inline;
+    auto gp = std::make_unique<Graph>();
+    for (int attempt = 0;; attempt++) {
+        gp = std::make_unique<Graph>();
+        gp->chunk = &chunk;
+        gp->frame = peek;
+        gp->entry_pc = pc;
+        gp->fn_entry = pc == 0;
+        Builder b(*gp, &no_inline);
+        if (b.build({pc}, config().max_insns)) break;
+        if (gp->failed_site.first && attempt < 8) {
+            if (config().log) std::fprintf(stderr, "[opt] not inlining the call at pc %u of chunk %p: %s\n", gp->failed_site.second, static_cast<const void*>(gp->failed_site.first), gp->why ? gp->why : "?");
+            no_inline.insert(gp->failed_site);
+            continue;
+        }
+        if (config().log) std::fprintf(stderr, "[opt] refused (%s): %u bytes of bytecode\n", gp->why ? gp->why : "?", static_cast<unsigned>(chunk.code.size()));
         return false;
     }
+    Graph& g = *gp;
     if (config().dump) dump(g, stderr);
     Emitter em(g);
     std::vector<uint8_t> bytes;
@@ -3163,8 +3724,29 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     all_rts().push_back(unit.rt.get());
     unit.entries = std::move(entries);
     unit.guards = em.guard_kinds;
-    if (config().log) std::fprintf(stderr, "[opt] compiled loop at pc %u of %u bytes of bytecode -> %zu bytes of code, %zu entries\n",
-                                   pc, static_cast<unsigned>(chunk.code.size()), bytes.size(), unit.entries.size());
+    if (g.funcs.size() > 1) {
+        // What a deoptimization inside an inlined callee needs to rebuild the interpreter frames it stands for.
+        unit.root_vars = g.acc_var + 1;
+        unit.inl.resize(g.funcs.size());
+        for (size_t k = 1; k < g.funcs.size(); k++) {
+            const Func& fn = g.funcs[k];
+            unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len};
+        }
+        unit.inl_states.resize(g.states.size());
+        for (size_t k = 0; k < g.states.size(); k++) {
+            unit.inl_states[k].func = g.states[k].func;
+            unit.inl_states[k].pc = g.states[k].pc;
+            if (g.states[k].func == 0) continue;
+            for (auto& [v, d] : g.states[k].defs) if (v > g.acc_var) unit.inl_states[k].vars.push_back(v);
+        }
+        unit.inl_words = g.inl_words;
+        unit.inl_depth = g.inl_depth;
+        unit.inl_strict = g.inl_strict;
+        unit.inl_scratch_mem.reset(new uint64_t[g.nvars - unit.root_vars]());
+        unit.rt->inl_scratch = unit.inl_scratch_mem.get();
+    }
+    if (config().log) std::fprintf(stderr, "[opt] compiled loop at pc %u of %u bytes of bytecode -> %zu bytes of code, %zu entries, %u calls inlined\n",
+                                   pc, static_cast<unsigned>(chunk.code.size()), bytes.size(), unit.entries.size(), g.inl_count);
     return true;
 }
 #endif

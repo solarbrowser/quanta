@@ -100,6 +100,9 @@ struct JitRt {
     int32_t stress = 0;                // QUANTA_OPT_DEOPT_STRESS: guards left before the next forced deoptimization
     uint64_t opt_runs = 0, opt_exits = 0, opt_cycles = 0, opt_iters = 0;
     uint32_t opt_pc = 0;           // optimizing tier: the frame state a deoptimization came from
+    // Optimizing tier: where a deoptimization inside an inlined callee leaves the variables that have no
+    // register bank of their own (the interpreter frames are built from them right after).
+    uint64_t* inl_scratch = nullptr;
     double one = 1.0;                  // Inc/Dec add +-one from memory instead of building it in a register
     double minus_one = -1.0;
 };
@@ -147,6 +150,19 @@ struct JitCode {
         // address survives the unit being moved between JitCodes when the baseline JIT replaces one.
         std::unique_ptr<JitRt> rt = std::make_unique<JitRt>();
         uint32_t deopts = 0;
+        // Inlined callees (index 0 is the root and unused): what rebuilding their interpreter frames needs.
+        struct InlFrame {
+            const BytecodeChunk* chunk = nullptr;
+            int32_t parent = -1;
+            uint32_t var_base = 0, nregs = 0, call_pc = 0, call_len = 0;
+        };
+        std::vector<InlFrame> inl;
+        struct InlState { int32_t func = 0; uint32_t pc = 0; std::vector<uint32_t> vars; };   // vars: global variable numbers
+        std::vector<InlState> inl_states;       // by deopt state id; func 0 for a state of the root
+        uint32_t root_vars = 0;                 // variables [0, root_vars) live in the root's register bank
+        uint32_t inl_words = 0, inl_depth = 0;  // arena words and frames the deepest inlined chain needs
+        std::unique_ptr<uint64_t[]> inl_scratch_mem;   // the buffer JitRt::inl_scratch points at
+        bool inl_strict = false;                // the strictness the inlined callees were checked against
         uint64_t runs = 0, exits = 0;
         uint32_t first_pc = 0;
         std::vector<std::tuple<uint32_t, const char*, int32_t>> guards;   // deopt state id -> (pc, kind of the guard, phi variable or -1)
@@ -169,6 +185,7 @@ struct JitObjectLayout {
     static size_t proto() { return offsetof(Object, proto_); }         // TaggedProto word
     static size_t shape() { return offsetof(Object, shape_); }         // TaggedShapePtr word
     static size_t butterfly() { return offsetof(Object, butterfly_); } // Value* to shape slot 0
+    static size_t function_executable() { return offsetof(Function, executable_); }   // FunctionExecutable* (the ref holds only it)
     static constexpr uint64_t kHasDescriptors = Object::kHasDescriptors;
     static constexpr uint64_t kProtoFlagMask = 0x7;                    // flag bits below kHasDescriptors
     static constexpr uint64_t kShapeTypeMask = 0x1F;                   // ObjectType lives in the shape word's low bits
@@ -189,6 +206,18 @@ struct JitObjectLayout {
     // the thread that compiled it (checked at entry), so the address is stable.
     static const uint64_t* proto_epoch_addr() { return &Object::proto_epoch_; }
     static const uint64_t* descriptor_epoch_addr() { return &Object::descriptor_epoch_; }
+};
+
+// Fields of a chunk's name-lookup cache entry (BytecodeChunk::LookupCacheEntry) the generated code reads.
+struct JitLookupLayout {
+    using E = BytecodeChunk::LookupCacheEntry;
+    static constexpr size_t kSize = sizeof(E);
+    static size_t env() { return offsetof(E, env); }
+    static size_t slot() { return offsetof(E, slot); }
+    static size_t obj_shape() { return offsetof(E, obj_shape); }
+    static size_t descriptor_epoch() { return offsetof(E, descriptor_epoch); }
+    static size_t obj_slot_index() { return offsetof(E, obj_slot_index); }
+    static size_t shadow_epoch() { return offsetof(E, shadow_epoch); }
 };
 
 struct JitEnvLayout {

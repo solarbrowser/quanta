@@ -2247,6 +2247,13 @@ using Handler = HandlerFn*;
 // frame back (Frame::pc and Frame::acc say where the interpreter picks up). 0: declined, the
 // interpreter carries on at the back edge's target.
 int osr_try(Frame& f, uint32_t target_pc, const Value& acc);
+// The optimizing tier's function-entry hook (Jit.inc). opt_note_call counts a call of a chunk and, once it is hot, arms
+// it: frames then start from the chunk's entry code, whose first instruction is kOptEntryOp. opt_fn_enter answers like osr_try.
+void opt_note_call(const BytecodeChunk& chunk, Frame& callee);
+int opt_fn_enter(Frame& f);
+constexpr uint8_t kOptEntryOp = 0xFE;
+// osr_try answered 3: the frame the interpreter goes on in (the optimizing tier rebuilt the frames of the callees it had inlined).
+inline thread_local Frame* g_osr_target = nullptr;
 
 extern const std::array<Handler, 256> kHandlers;
 
@@ -2508,12 +2515,15 @@ constexpr uint8_t kInlineLeaf = 32;
 // The optimizing tier has code for a loop of this chunk: a call starts with a budget of one back edge, so
 // the first loop it reaches is offered at once instead of after another few hundred iterations.
 constexpr uint8_t kInlineHasOpt = 64;
+// The chunk's call sites record what they call (the optimizing tier's profile phase).
+constexpr uint8_t kInlineRecordCalls = 128;
+constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
 
 [[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn) {
     // Decided by the body alone, so it does not wait for the JIT: a leaf is answered without ever
     // running, which means nothing ever moves its jit_state off "not seen yet".
     if (exe.fast_leaf && !fn->is_arrow()) {
-        chunk.inline_state = kInlineLeaf | (chunk.inline_state & kInlineHasOpt);
+        chunk.inline_state = kInlineLeaf | (chunk.inline_state & kInlineKeepBits);
         return chunk.inline_state;
     }
     // Only a state the JIT will not leave is a verdict to keep: 1 (compiled) and 2 (refused or off).
@@ -2538,7 +2548,9 @@ constexpr uint8_t kInlineHasOpt = 64;
         if (!chunk.env->env_keys_ready) return 0;
         if (chunk.env->env_seed_ok) v = kInlineOk | kInlineEnv | (strict ? kInlineStrict : 0);
     }
-    v |= chunk.inline_state & kInlineHasOpt;
+    v |= chunk.inline_state & kInlineKeepBits;
+    // With the optimizing tier on every function that runs stackless is watched for becoming hot.
+    if (g_stackless_osr_budget != INT32_MAX && (v & kInlineOk)) v |= kInlineHasOpt;
     chunk.inline_state = v;
     return v;
 }
@@ -2773,7 +2785,10 @@ constexpr uint8_t kInlineHasOpt = 64;
     callee->base = base;
     callee->return_pc = return_pc;
     callee->value_words = words;
-    if (UNLIKELY(offer_loops)) callee->osr_budget = 1;
+    if (UNLIKELY(offer_loops)) {
+        callee->osr_budget = 1;
+        opt_note_call(chunk, *callee);
+    }
     base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
     out = callee;
@@ -2929,6 +2944,7 @@ QUANTA_HANDLER Value h_Return(HANDLER_PARAMS) {
         const int r = osr_try(f, pc, acc);
         if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, pc, acc, regs, code); }
         if (r == 2) { pc = f.pc; acc = f.acc; }
+        if (r == 3) { Frame* t = g_osr_target; [[clang::musttail]] return kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code); }
     }
     DISPATCH();
 }
@@ -2972,6 +2988,7 @@ QUANTA_HANDLER Value h_JumpIfSlow(HANDLER_PARAMS) {
                 const int r = osr_try(f, pc, acc);
                 if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, pc, acc, regs, code); }
                 if (r == 2) { pc = f.pc; acc = f.acc; }
+                if (r == 3) { Frame* t = g_osr_target; [[clang::musttail]] return kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code); }
             }
         }
     }
@@ -6725,6 +6742,32 @@ QUANTA_HANDLER Value h_CallResolvedLean(HANDLER_PARAMS) {
     [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc, regs, code);
 }
 
+// What the optimizing tier's profile phase adds in front of the call handlers: a chunk marked to record notes who each
+// of its call sites calls. Installed in the handler table only when the tier is on, so nothing else pays for it.
+[[gnu::noinline]] void note_call(const BytecodeChunk& caller, uint32_t pc, Function* fn) {
+    auto& sites = const_cast<BytecodeChunk&>(caller).ensure_ic_feedback().call_sites;
+    const FunctionExecutable* exe = fn->get_executable().get();
+    const void* id = exe ? static_cast<const void*>(exe) : static_cast<const void*>(fn);
+    for (auto& s : sites) {
+        if (s.pc != pc) continue;
+        if (s.id != id) s.mega = true;
+        return;
+    }
+    sites.push_back({pc, false, fn, id});
+}
+
+QUANTA_HANDLER Value h_CallLeanRec(HANDLER_PARAMS) {
+    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && regs[code[pc + 1]].is_function())
+        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function());
+    [[clang::musttail]] return h_CallLean(f, pc, acc, regs, code);
+}
+
+QUANTA_HANDLER Value h_CallResolvedLeanRec(HANDLER_PARAMS) {
+    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && regs[code[pc + 1]].is_function())
+        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function());
+    [[clang::musttail]] return h_CallResolvedLean(f, pc, acc, regs, code);
+}
+
 // The two stackless entries are a cheap screen and the heavy part behind it: the heavy part saves
 // six registers on the way in, and a call the chunk's verdict has already refused (a third of
 // them in a closure-heavy program) should not pay that to be sent on to the ordinary path.
@@ -9912,10 +9955,24 @@ QUANTA_HANDLER Value h_JitHalt(HANDLER_PARAMS) {
     return acc;
 }
 
+// The first instruction of a chunk's entry code (see opt_note_call): the frame is offered to the optimizing
+// tier's function-entry unit. The frame goes back to the chunk's own bytes first, so whatever follows is the
+// ordinary interpreter; a unit that runs the call to its end leaves the result in Frame::acc.
+QUANTA_HANDLER Value h_OptEntry(HANDLER_PARAMS) {
+    code = f.chunk->code.data();
+    f.code = code;
+    const int r = opt_fn_enter(f);
+    if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, 0, acc, regs, code); }
+    if (r == 3) { Frame* t = g_osr_target; [[clang::musttail]] return kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code); }
+    if (r == 2) { pc = f.pc; acc = f.acc; }
+    [[clang::musttail]] return kHandlers[code[pc]](f, pc, acc, regs, code);
+}
+
 constexpr std::array<Handler, 256> make_handler_table() {
     std::array<Handler, 256> t{};
     for (auto& e : t) e = &h_invalid;
     t[static_cast<uint8_t>(Op::Ldar)]          = &h_Ldar;
+    t[kOptEntryOp] = &h_OptEntry;
     t[static_cast<uint8_t>(Op::Star)]          = &h_Star;
     t[static_cast<uint8_t>(Op::Mov)]           = &h_Mov;
     t[static_cast<uint8_t>(Op::LdarStar)]      = &h_LdarStar;
@@ -10071,6 +10128,10 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
     t[static_cast<uint8_t>(Op::Call)] = &h_CallLean;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_CallResolvedLean;
+    if (g_stackless_osr_budget != INT32_MAX) {      // the optimizing tier is on: its profile phase listens to the call sites
+        t[static_cast<uint8_t>(Op::Call)] = &h_CallLeanRec;
+        t[static_cast<uint8_t>(Op::CallResolved)] = &h_CallResolvedLeanRec;
+    }
     t[static_cast<uint8_t>(Op::CallViaFunctionCall)] = &h_gen_CallViaFunctionCall;
     t[static_cast<uint8_t>(Op::CallViaFunctionApply)] = &h_gen_CallViaFunctionApply;
     t[static_cast<uint8_t>(Op::Construct)] = &h_ConstructLean;
@@ -10129,6 +10190,8 @@ inline void free_code(JitCode*) noexcept {}
 inline void print_stats() {}
 }
 int osr_try(Frame& f, uint32_t, const Value&) { f.osr_budget = INT32_MAX; return 0; }
+void opt_note_call(const BytecodeChunk& chunk, Frame&) { chunk.opt_entry = 2; }
+int opt_fn_enter(Frame&) { return 0; }
 #endif
 
 // Where a frame starts or resumes: in generated code when the chunk has any.
@@ -10350,7 +10413,10 @@ template <bool Fast>
                 this_value, (!Fast && initial_acc) ? *initial_acc : Value(), 0, 0, 0, this_resolved};
     FrameLinkScope frame_link(&chunk, &frame.instr_pc, owner);
     frame.call_info = call_info;
-    if (UNLIKELY(chunk.inline_state & kInlineHasOpt)) frame.osr_budget = 1;
+    if (UNLIKELY(chunk.inline_state & kInlineHasOpt)) {
+        frame.osr_budget = 1;
+        opt_note_call(chunk, frame);
+    }
     // Seeded even when call_info is null (frame_lexical_env/frame_variable_env
     // never read them in that case) -- keeping them accurate regardless costs
     // nothing here and avoids a stale pointer sitting on the frame.

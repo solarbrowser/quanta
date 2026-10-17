@@ -61,6 +61,7 @@ namespace {
 constexpr size_t kOffRegs = offsetof(Frame, regs);
 constexpr size_t kOffAcc = offsetof(Frame, acc);
 constexpr size_t kOffPc = offsetof(Frame, pc);
+constexpr size_t kOffLookup = offsetof(Frame, lookup_cache_data);
 constexpr size_t kOffThisValue = offsetof(Frame, this_value);
 constexpr size_t kOffThisResolved = offsetof(Frame, this_resolved);
 constexpr size_t kOffCtx = offsetof(Frame, ctx);
@@ -2635,7 +2636,7 @@ void compile_chunk(const BytecodeChunk& chunk) noexcept {
         }
         chunk.jit = std::move(compiled);
         chunk.jit_state = 1;
-        chunk.inline_state = kInlineNever | (chunk.inline_state & kInlineHasOpt);   // generated code runs it now: no stackless entry
+        chunk.inline_state = kInlineNever | (chunk.inline_state & kInlineKeepBits);   // generated code runs it now: no stackless entry
         g_cfg.compiled++;
         if (g_cfg.log) std::fprintf(stderr, "[jit] #%u compiled %u bytes of bytecode -> %zu bytes of code (%zu mapped)\n", ordinal,
                                     static_cast<unsigned>(chunk.code.size()), chunk.jit->code_bytes, chunk.jit->mem_size);
@@ -2749,13 +2750,61 @@ bool tally(JitCode* jc) noexcept {
 }
 
 #ifdef QUANTA_OPT_BACKEND
+// Whether the interpreter can rebuild the frames of the callees a unit has inlined, should a guard inside
+// one of them fail: the arena and the call stack have room for the deepest chain, and the context is in the
+// state those callees were checked against.
+bool opt_can_materialize(const Frame& f, const JitCode::OptUnit& u) {
+    if (u.inl.empty()) return true;
+    Context& ctx = *f.ctx;
+    if (ctx.is_strict_mode() != u.inl_strict || ctx.this_needs_super()) return false;
+    if (!g_arena.values && !inline_arena_init()) return false;
+    return g_arena.top + u.inl_words <= g_arena.limit &&
+           CallStack::established().depth() + u.inl_depth + 1 < CallStack::MAX_STACK_DEPTH;
+}
+
+// A guard failed inside inlined code: builds the interpreter frames of the callees that were running (the
+// root's registers have been written back already; the others' variables are in the unit's scratch buffer) and
+// returns the innermost, positioned at the instruction the guard belongs to.
+Frame* opt_materialize(Frame& root, const JitCode::OptUnit& u, const JitRt* rt, uint32_t state) {
+    const JitCode::OptUnit::InlState& s = u.inl_states[state];
+    int32_t chain[16];
+    int n = 0;
+    for (int32_t k = s.func; k > 0 && n < 16; k = u.inl[k].parent) chain[n++] = k;
+    auto at = [&](uint32_t v) { Value r; std::memcpy(&r, &rt->inl_scratch[v - u.root_vars], sizeof r); return r; };
+    Frame* parent = &root;
+    for (int i = n - 1; i >= 0; i--) {
+        const JitCode::OptUnit::InlFrame& fr = u.inl[chain[i]];
+        const Value fnv = at(fr.var_base + fr.nregs + 2);
+        Frame* cf = nullptr;
+        parent->instr_pc = fr.call_pc;
+        if (!fnv.is_function() || !inline_call_enter(*parent, fnv.as_function(), nullptr, 0, at(fr.var_base + fr.nregs + 1),
+                                                     fr.call_pc + fr.call_len, cf)) {
+            std::fprintf(stderr, "quanta: the optimizing tier could not rebuild an inlined frame\n");
+            std::abort();
+        }
+        for (uint32_t v : s.vars)
+            if (v >= fr.var_base && v < fr.var_base + fr.nregs) cf->regs[v - fr.var_base] = at(v);
+        if (i == 0) {
+            cf->pc = s.pc;
+            for (uint32_t v : s.vars) if (v == fr.var_base + fr.nregs) cf->acc = at(v);
+        }
+        parent = cf;
+    }
+    return parent;
+}
+
 // The optimizing tier's offer: runs the loop at `target` in optimized code if there is some (compiling
 // it on the first offer). False means "not taken"; the caller carries on as before. True means the
 // activation has run to its end (or been handed back to the interpreter and finished there) and
 // Frame::acc is the result.
+std::set<std::pair<const BytecodeChunk*, uint32_t>>& opt_refused() {
+    static thread_local std::set<std::pair<const BytecodeChunk*, uint32_t>> refused;
+    return refused;
+}
+
 int opt_osr(Frame& f, uint32_t target, const Value& acc) {
     const BytecodeChunk& chunk = *f.chunk;
-    static thread_local std::set<std::pair<const BytecodeChunk*, uint32_t>> refused;
+    auto& refused = opt_refused();
     JitCode* jc = chunk.jit.get();
     if (jc && (jc->opt_state == 2 || jc->owner_thread != &g_thread_marker)) return 0;
     long ui = -1;
@@ -2769,11 +2818,17 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
     if (ui < 0) {
         if (refused.count({&chunk, target})) return 0;
         init_once();
+        // The first offer only starts the profile phase: call sites note what they call, and the loop gets another
+        // budget to run with them noting it.
+        if (!(chunk.inline_state & kInlineRecordCalls) && opt::has_calls(chunk)) {
+            chunk.inline_state |= kInlineRecordCalls;
+            return 2;
+        }
         JitCode::OptUnit made;
         if (!opt::compile(chunk, target, &f, made)) {
             refused.insert({&chunk, target});
             // Nothing for this chunk's loops: stop offering them at the first back edge of every call.
-            if (!jc || jc->opt_units.empty()) { chunk.inline_state &= ~kInlineHasOpt; chunk.jit_hotness = 0x80000000u; }
+            if ((!jc || jc->opt_units.empty()) && chunk.opt_entry == 2) { chunk.inline_state &= ~kInlineHasOpt; chunk.jit_hotness = 0x80000000u; }
             return 0;
         }
         // A chunk the baseline JIT has not compiled: stepping still needs its tables. If the baseline
@@ -2786,6 +2841,7 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         ui = static_cast<long>(jc->opt_units.size() - 1);
         for (auto& [pc, off] : jc->opt_units[ui].entries) if (pc == target) { offset = off; break; }
     }
+    if (!opt_can_materialize(f, jc->opt_units[ui])) return 0;
     // Steps inside the optimized code must not start stackless calls; the frame gets its permission back
     // when control returns to the interpreter.
     const bool was_inline_ok = f.inline_ok;
@@ -2812,18 +2868,30 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         ++jc->opt_deopts;
         auto& gs = jc->opt_units[ui].guards;
         const uint32_t st = rt->last_deopt;
+        const JitCode::OptUnit& cu = jc->opt_units[ui];
+        const bool inlined = st < cu.inl_states.size() && cu.inl_states[st].func != 0;
         const bool known = st < gs.size() && std::get<1>(gs[st]);
-        const uint32_t gpc = known ? std::get<0>(gs[st]) : f.pc;
-        const int32_t evar = known ? std::get<2>(gs[st]) : -1;
+        uint32_t gpc = known ? std::get<0>(gs[st]) : f.pc;
+        int32_t evar = known ? std::get<2>(gs[st]) : -1;
+        uint32_t site_pc = 0;
+        if (inlined) {
+            // Names the call in the root that the failing callee is (part of): the site to stop inlining.
+            int32_t k = cu.inl_states[st].func;
+            while (cu.inl[k].parent > 0) k = cu.inl[k].parent;
+            site_pc = cu.inl[k].call_pc;
+            gpc = site_pc;
+            evar = -1;
+        }
         if (opt::config().log)
             std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u): %s%s\n", gpc, target,
                          known ? std::get<1>(gs[st]) : "?", evar >= 0 ? " (loop-carried value)" : "");
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
         const uint64_t site = (static_cast<uint64_t>(gpc) << 16) | static_cast<uint16_t>(evar + 1);
-        if (!opt::config().stress && ++av.fails[site] == 2 && av.recompiles < 6) {
+        if (!opt::config().stress && ++av.fails[site] == 2 && av.recompiles < 12) {
             av.recompiles++;
-            if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);
+            if (inlined) av.no_inline.insert({&chunk, site_pc});
+            else if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);
             jc->opt_units[ui].entries.clear();         // the unit is dead; the next offer compiles it again
             refused.erase({&chunk, target});
         } else if (++jc->opt_units[ui].deopts > opt::config().max_deopts) {
@@ -2833,8 +2901,64 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
             refused.insert({&chunk, target});
         }
     }
+    if (status == opt::kStatusDeopt && jc->opt_units.size() > static_cast<size_t>(ui) && ui >= 0 &&
+        rt->last_deopt < jc->opt_units[ui].inl_states.size() && jc->opt_units[ui].inl_states[rt->last_deopt].func != 0) {
+        g_osr_target = opt_materialize(f, jc->opt_units[ui], rt, rt->last_deopt);
+        return 3;   // the callees' frames are built: the interpreter carries on in the innermost
+    }
     return 2;   // the frame is consistent at f.pc: the interpreter carries on from there
 }
+#endif
+
+// ---- function-entry units ----
+// A function that has run hot -- not only its loops -- gets a unit of its own, entered at its first instruction.
+// Calls count themselves (opt_note_call, from the stackless call path and the base-frame path); at kEntryArmAt
+// the chunk is armed: its call sites start recording what they call, and frames start from a copy of the bytes
+// whose first instruction is the entry stop (h_OptEntry). The stop counts kEntryCompileAt more calls -- the
+// profile -- and then offers the frame to the tier like a loop's back edge does.
+constexpr uint16_t kEntryArmAt = 64, kEntryCompileAt = 64;
+// The calls a unit does not inline run through a step, on the native stack; a deep chain of them stays with the interpreter.
+constexpr uint32_t kEntryMaxDepth = 96;
+
+#ifdef QUANTA_OPT_BACKEND
+void opt_note_call(const BytecodeChunk& chunk, Frame& callee) {
+    if (chunk.opt_entry == 2) return;
+    if (chunk.opt_entry == 0) {
+        if (++chunk.opt_calls < kEntryArmAt) return;
+        init_once();
+        if (!g_cfg.opt || !opt::config().enabled || !opt::config().entry || (chunk.handlers && !chunk.handlers->empty()) || chunk.code.size() == 0 ||
+            chunk.code.size() > opt::config().max_insns * 8u) {
+            chunk.opt_entry = 2;
+            if (!chunk_has_loop(chunk)) chunk.inline_state &= ~kInlineHasOpt;
+            return;
+        }
+        const size_t n = chunk.code.size();
+        auto& entry_code = const_cast<BytecodeChunk&>(chunk).ensure_ic_feedback().entry_code;
+        entry_code.reset(new uint8_t[n]);
+        std::memcpy(entry_code.get(), chunk.code.data(), n);
+        entry_code[0] = kOptEntryOp;
+        chunk.opt_entry = 1;
+        chunk.opt_calls = 0;
+        if (opt::has_calls(chunk)) chunk.inline_state |= kInlineRecordCalls;
+    }
+    callee.code = chunk.ic_feedback->entry_code.get();
+}
+
+int opt_fn_enter(Frame& f) {
+    const BytecodeChunk& chunk = *f.chunk;
+    if (chunk.opt_entry != 1) return 0;
+    if (chunk.opt_calls < kEntryCompileAt) { chunk.opt_calls++; return 0; }
+    if (opt_refused().count({&chunk, 0})) {
+        chunk.opt_entry = 2;
+        if (!chunk_has_loop(chunk)) chunk.inline_state &= ~kInlineHasOpt;
+        return 0;
+    }
+    if (CallStack::established().depth() > kEntryMaxDepth) return 0;
+    return opt_osr(f, 0, f.acc);
+}
+#else
+void opt_note_call(const BytecodeChunk& chunk, Frame&) { chunk.opt_entry = 2; }
+int opt_fn_enter(Frame&) { return 0; }
 #endif
 
 bool osr(Frame& f, uint32_t target, const Value& acc) {
@@ -2862,6 +2986,8 @@ bool osr(Frame& f, uint32_t target, const Value& acc) {
 
 }  // namespace jit
 
+void opt_note_call(const BytecodeChunk& chunk, Frame& callee) { jit::opt_note_call(chunk, callee); }
+int opt_fn_enter(Frame& f) { return jit::opt_fn_enter(f); }
 
 int osr_try(Frame& f, uint32_t target_pc, const Value& acc) {
 #ifdef QUANTA_OPT_BACKEND
@@ -2869,6 +2995,7 @@ int osr_try(Frame& f, uint32_t target_pc, const Value& acc) {
         const int r = jit::opt_osr(f, target_pc, acc);
         if (r == 1) return 1;
         if (r == 2) { f.osr_budget = g_osr_budget_init; return 2; }
+        if (r == 3) { f.osr_budget = g_osr_budget_init; return 3; }
     }
 #endif
     if (jit::osr(f, target_pc, acc)) return 1;
