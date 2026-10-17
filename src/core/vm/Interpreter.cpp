@@ -2024,8 +2024,14 @@ inline const int32_t g_osr_budget_init = [] {
 // A stackless frame never offers its loops to the baseline JIT (the callee is one the JIT declined), so
 // its budget is out of reach -- unless the optimizing tier is on, which runs loops in stackless frames too.
 inline const int32_t g_stackless_osr_budget = [] {
+    // On unless QUANTA_OPT=0 (and only where the tier has a code generator).
     const char* e = std::getenv("QUANTA_OPT");
-    return e && *e && *e != '0' ? g_osr_budget_init : INT32_MAX;
+#if defined(QUANTA_JIT_ARCH_X64) || defined(QUANTA_JIT_ARCH_A64)
+    const bool on = !(e && *e == '0');
+#else
+    const bool on = false; (void)e;
+#endif
+    return on ? g_osr_budget_init : INT32_MAX;
 }();
 
 struct Frame {

@@ -272,7 +272,8 @@ void init_once() {
     done = true;
     const char* e = std::getenv("QUANTA_JIT");
     g_cfg.enabled = !(e && (e[0] == '0'));
-    if (const char* o = std::getenv("QUANTA_OPT")) g_cfg.opt = o[0] && o[0] != '0';
+    g_cfg.opt = true;       // the optimizing tier is on unless QUANTA_OPT=0
+    if (const char* o = std::getenv("QUANTA_OPT")) g_cfg.opt = o[0] != '0';
     if (const char* l = std::getenv("QUANTA_JIT_LOG")) g_cfg.log = l[0] && l[0] != '0';
     if (const char* s = std::getenv("QUANTA_JIT_TRACE")) g_cfg.trace = s[0] && s[0] != '0';
     if (const char* s = std::getenv("QUANTA_JIT_STATS")) g_cfg.stats = s[0] && s[0] != '0';

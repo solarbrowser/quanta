@@ -235,7 +235,7 @@ constexpr uint64_t kStatusFinished = 0, kStatusRethrow = 1, kStatusResume = 2, k
 
 struct Config {
     bool init = false;
-    bool enabled = false;      // QUANTA_OPT=1
+    bool enabled = true;       // on unless QUANTA_OPT=0
     bool log = false;          // QUANTA_OPT_LOG
     bool dump = false;         // QUANTA_OPT_DUMP: print the IR of every chunk an offer is made for
     uint32_t max_insns = 4000;
@@ -260,7 +260,7 @@ inline Config& config() {
     static Config c;
     if (!c.init) {
         c.init = true;
-        if (const char* e = std::getenv("QUANTA_OPT")) c.enabled = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT")) c.enabled = e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_LOG")) c.log = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DUMP")) { c.dump = e[0] && e[0] != '0'; }
         if (const char* e = std::getenv("QUANTA_OPT_MAXINSNS")) c.max_insns = static_cast<uint32_t>(std::atoi(e));
