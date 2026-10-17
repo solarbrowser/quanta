@@ -2926,7 +2926,6 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
 // the chunk is armed: its call sites start recording what they call, and frames start from a copy of the bytes
 // whose first instruction is the entry stop (h_OptEntry). The stop counts kEntryCompileAt more calls -- the
 // profile -- and then offers the frame to the tier like a loop's back edge does.
-constexpr uint16_t kEntryArmAt = 64, kEntryCompileAt = 64;
 // The calls a unit does not inline run through a step, on the native stack; a deep chain of them stays with the interpreter.
 constexpr uint32_t kEntryMaxDepth = 96;
 
@@ -2934,7 +2933,7 @@ constexpr uint32_t kEntryMaxDepth = 96;
 void opt_note_call(const BytecodeChunk& chunk, Frame& callee) {
     if (chunk.opt_entry == 2) return;
     if (chunk.opt_entry == 0) {
-        if (++chunk.opt_calls < kEntryArmAt) return;
+        if (++chunk.opt_calls < opt::config().entry_arm_at) return;
         init_once();
         if (!g_cfg.opt || !opt::config().enabled || !opt::config().entry || (chunk.handlers && !chunk.handlers->empty()) || chunk.code.size() == 0 ||
             chunk.code.size() > opt::config().max_insns * 8u) {
@@ -2970,7 +2969,7 @@ int opt_fn_enter(Frame& f) {
         return r;
     }
     if (chunk.opt_entry != 1) return 0;
-    if (chunk.opt_calls < kEntryCompileAt) { chunk.opt_calls++; return 0; }
+    if (chunk.opt_calls < opt::config().entry_compile_at) { chunk.opt_calls++; return 0; }
     if (opt_refused().count({&chunk, 0})) { opt_entry_settled(chunk, 2); return 0; }
     if (CallStack::established().depth() > kEntryMaxDepth) return 0;
     const int r = opt_osr(f, 0, f.acc);

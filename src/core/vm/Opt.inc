@@ -99,6 +99,7 @@ struct Node {
     int32_t blk = -1;
     std::vector<int32_t> ins; // Phi operands (one per predecessor of the block, in order)
     bool dead = false;
+    bool light = false;       // Step: only the registers the instruction reads were written back, and values stay live across it
 };
 
 enum class T : uint8_t { None, Jump, Branch, Return, StepBranch, Exit, Bail };
@@ -152,6 +153,7 @@ struct Func {
     int32_t cont_block = -1;             // the parent's block that starts at the return pc
     int32_t entry_block = -1;
     const void* exe = nullptr;           // the executable the call site was seen to reach (guarded on entry)
+    bool no_light = false;               // the function makes an arguments object, which can alias its registers: its steps write everything back
     bool ctor = false;                   // a constructor run for `new`: private to the new object, so a deoptimization leaves through the `new` itself
     int32_t plan = -1;                   // its entry in Graph::ctors
     bool sloppy_this = false;            // reads a sloppy `this`: only an object may reach it as it is
@@ -195,11 +197,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool",
-        "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
-        "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
-        "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "CheckNotNullish", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -246,6 +244,7 @@ struct Config {
     uint32_t max_deopts = 40;         // guard failures before a loop is given up on
     bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
     bool cold = true;                 // QUANTA_OPT_COLD=0 keeps never-executed blocks in the region
+    bool light = false;               // QUANTA_OPT_LIGHT=1: steps write back only what they read (measured: no gain so far)
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
@@ -253,6 +252,7 @@ struct Config {
     uint32_t inline_total = 500;      // all the callees of one unit together
     uint32_t inline_depth = 3;
     uint32_t inline_vars = 56;        // variables the inlined callees add (the deopt scratch buffer is 64 words)
+    uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
     uint32_t max_step_percent = 12;   // refuse a region in which more than this share of the instructions are plain steps
 };
 inline Config& config() {
@@ -271,6 +271,9 @@ inline Config& config() {
         if (const char* e = std::getenv("QUANTA_OPT_ENTRY_MIN")) c.entry_min_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_COLD")) c.cold = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_NATIVES")) c.natives = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_ARM")) c.entry_arm_at = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_PROFILE")) c.entry_compile_at = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_LIGHT")) c.light = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
     }
@@ -343,10 +346,16 @@ private:
     int32_t try_remove_trivial(int32_t phi);
     void seal(int32_t blk);
     void write_var(uint32_t v, int32_t blk, int32_t def) { g_.b[blk].def[v] = def; }
+    // A load of the variable from the register bank, made while the bank still held what it holds now: only then is
+    // the variable's value "what is in memory". A light step rewrites the registers it produces, so a load made before
+    // one (and copied into another variable since) says nothing about the bank any more -- hence the version.
+    static constexpr uint64_t kAnyVersion = ~0ull;
+    std::vector<uint64_t> memver_;
     bool is_own_load(uint32_t v, int32_t d) const {
         if (d < 0) return false;
         const Node& nd = g_.n[d];
-        return (nd.op == K::LoadReg && nd.aux == v) || (nd.op == K::LoadAcc && v == g_.acc_var);
+        if (!((nd.op == K::LoadReg && nd.aux == v) || (nd.op == K::LoadAcc && v == g_.acc_var))) return false;
+        return nd.imm == kAnyVersion || nd.imm == (v < memver_.size() ? memver_[v] : 0);
     }
     // A load of the variable itself is the memory state, whichever block made it.
     int32_t norm(uint32_t v, int32_t d) const {
@@ -358,7 +367,7 @@ private:
         int32_t d = resolve(read_var(v, cb_));
         if (d == kMem && v > g_.acc_var) { fail("an inlined variable read before it was set"); return emit(K::ConstTagged, Rep::Tagged, -1, -1, 0, 0); }
         if (d == kMem) {
-            d = (v == g_.acc_var) ? emit(K::LoadAcc, Rep::Tagged) : emit(K::LoadReg, Rep::Tagged, -1, -1, v);
+            d = (v == g_.acc_var) ? emit(K::LoadAcc, Rep::Tagged, -1, -1, 0, memver_[v]) : emit(K::LoadReg, Rep::Tagged, -1, -1, v, memver_[v]);
             write_var(v, cb_, d);
         }
         return d;
@@ -673,7 +682,7 @@ inline int32_t Builder::try_remove_trivial(int32_t phi) {
         // it runs before anything in the block that could change the bank.
         const uint32_t v = g_.n[phi].aux;
         const int32_t blk = g_.n[phi].blk;
-        same = add_node(blk, v == g_.acc_var ? K::LoadAcc : K::LoadReg, Rep::Tagged, -1, -1, v);
+        same = add_node(blk, v == g_.acc_var ? K::LoadAcc : K::LoadReg, Rep::Tagged, -1, -1, v, memver_[v]);
         auto& nodes = g_.b[blk].nodes;
         size_t at = 0;
         while (at < nodes.size() && g_.n[nodes[at]].op == K::Phi) at++;
@@ -772,10 +781,34 @@ inline void Builder::flush_all(int32_t live_pc) {
 
 inline void Builder::step(const Insn& in, bool& ended) {
     const Op op = static_cast<Op>(in.op);
-    flush_all(in.pc);       // what the interpreter may still read at this instruction
     const int pos = branch_offset_pos(op);
+    // An instruction whose registers are all known (op_effects) is a light step: only what it reads is written back,
+    // and the other values stay in the unit's registers across it; what it writes is read from the bank afterwards.
+    Effects eff;
+    bool light = false;
+    if (config().light && cf_ == 0 && !F().no_light && pos < 0 && op != Op::Throw && op != Op::Return) {
+        eff = op_effects(op, F().chunk->code.data(), in.pc, F().nregs, F().nregs);
+        light = !eff.read_all;
+    }
+    if (light) {
+        for (uint8_t k = 0; k < eff.nr; k++) {
+            const uint32_t v = eff.r[k];
+            const int32_t d = resolve(read_var(v, cb_));
+            if (d == kMem || is_own_load(v, d)) continue;
+            const int32_t t = tagged(d);
+            if (v == g_.acc_var) emit(K::StoreAcc, Rep::None, t);
+            else emit(K::StoreReg, Rep::None, t, -1, v);
+        }
+    } else {
+        flush_all(in.pc);       // what the interpreter may still read at this instruction
+    }
     const int64_t target_pc = pos >= 0 ? static_cast<int64_t>(in.pc) + in.len + i16(in.pc + pos) : -1;
     const int32_t s = emit(K::Step, Rep::I32, -1, -1, in.pc, pos >= 0 ? static_cast<uint64_t>(target_pc) : kNoPc);
+    g_.n[s].light = light;
+    if (light) {
+        for (uint8_t k = 0; k < eff.nw; k++) { write_var(eff.w[k], cb_, kMem); memver_[eff.w[k]]++; }
+        state_valid_ = false;
+    }
     const uint32_t next_pc = in.pc + in.len;
     Block& B = g_.b[cb_];
     if (op == Op::Throw) {
@@ -1296,7 +1329,14 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     case Op::Call: case Op::CallResolved: case Op::Construct: {
         const int32_t callee = site_of(cf_, pc);
         if (callee < 0) return op != Op::Construct && native_call(in);
-        return inline_enter(in, callee, ended);
+        if (!inline_enter(in, callee, ended)) {
+            // The blocks of the callee are already wired in: it is all or nothing, so build again without this site.
+            if (!g_.failed_site.first) g_.failed_site = {F().chunk, pc};
+            fail("an inlined call could not be entered");
+            g_.b[cb_].term.kind = T::Bail;
+            ended = true;
+        }
+        return true;
     }
     default:
         return false;
@@ -1394,7 +1434,8 @@ inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
     for (int32_t k = fi; g_.funcs[k].parent >= 0; k = g_.funcs[k].parent) depth++;
     if (depth >= config().inline_depth || in.pc + in.len >= P.chunk->code.size()) return no_inline_reason(1);
     const Site key{P.chunk, in.pc};
-    if ((no_inline_ && no_inline_->count(key)) || (avoid_ && avoid_->no_inline.count(key))) return no_inline_reason(2);
+    // A call whose guards kept failing (the Avoid table holds its pc) is left as it is: a step.
+    if ((no_inline_ && no_inline_->count(key)) || (avoid_ && (avoid_->no_inline.count(key) || (fi == 0 && avoid_->pcs.count(in.pc))))) return no_inline_reason(2);
     const auto* fb = P.chunk->ic_feedback.get();
     if (!fb) return no_inline_reason(3);
     for (const auto& cs : fb->call_sites) {
@@ -1743,6 +1784,7 @@ inline bool Builder::setup_func(int32_t fi, size_t max_insns) {
     if (F().insns.empty()) return fail("empty");
     compute_liveness();
     F().params = c.parameter_count;
+    for (const Insn& in : F().insns) if (static_cast<Op>(in.op) == Op::LdaFrameArgsMarker) F().no_light = true;
     if (config().inl && g_.frame) {
         for (const Insn& in : F().insns) {
             const Op op = static_cast<Op>(in.op);
@@ -1997,6 +2039,7 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
     if (g_.rpo.empty()) return fail("no blocks");
 
     // ---- SSA ----
+    memver_.assign(g_.nvars, 0);
     for (int32_t blk : g_.rpo) {
         g_.b[blk].reachable = true;
         if (g_.b[blk].preds.empty()) g_.b[blk].sealed = true;
@@ -2108,7 +2151,7 @@ inline void Builder::materialize_mem_operands() {
                 if (d == kMem) {
                     const int32_t p = g_.b[blk].preds[i];
                     const uint32_t v = g_.n[id].aux;
-                    d = emit_in(p, v == g_.acc_var ? K::LoadAcc : K::LoadReg, Rep::Tagged, -1, -1, v);
+                    d = emit_in(p, v == g_.acc_var ? K::LoadAcc : K::LoadReg, Rep::Tagged, -1, -1, v, kAnyVersion);
                 }
                 g_.n[id].ins[i] = d;
             }
@@ -2230,7 +2273,7 @@ inline void Builder::lower() {
         for (auto& [v, d] : s.defs) {
             const int32_t r = resolve(d);
             if (r < 0) continue;
-            if ((g_.n[r].op == K::LoadReg && g_.n[r].aux == v) || (g_.n[r].op == K::LoadAcc && v == g_.acc_var)) continue;
+            if (is_own_load(v, r)) continue;
             keep.push_back({v, r});
         }
         s.defs = std::move(keep);
@@ -2866,7 +2909,7 @@ inline bool Emitter::allocate() {
         const auto& nodes = g_.b[blk].nodes;
         for (auto nit = nodes.rbegin(); nit != nodes.rend(); ++nit) {
             const int32_t id = *nit;
-            if (g_.n[id].op == K::Step) {
+            if (g_.n[id].op == K::Step && !g_.n[id].light) {
                 std::vector<uint64_t> after = live;
                 clrb(after, id);
                 for (size_t w = 0; w < words; w++)
@@ -3657,11 +3700,14 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::Step: {
         const uint8_t op = g_.chunk->code[n.aux];
+        int32_t bytes = 0;
+        if (n.light) save_live(bytes);              // the values that live across it
         a_.mov(abi::A0, RBX);
         a_.mov_imm32(abi::A1, n.aux);
         a_.mov_imm32(abi::A2, static_cast<uint32_t>(n.imm));
         a_.mov_imm32(abi::A3, kNoOperand);
         call_c(reinterpret_cast<const void*>(kStepFns[op]));
+        if (n.light) restore_live(bytes);
         const Reg d = def_g(id, RAX);
         if (d != RAX) a_.mov32(d, RAX);
         commit_g(id, d);

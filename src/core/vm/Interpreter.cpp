@@ -2787,7 +2787,7 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     callee->value_words = words;
     if (UNLIKELY(offer_loops)) {
         if (!chunk.opt_loops) callee->osr_budget = 1;
-        opt_note_call(chunk, *callee);
+        if (chunk.opt_entry != 2) opt_note_call(chunk, *callee);
     }
     base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
@@ -10427,7 +10427,7 @@ template <bool Fast>
     frame.call_info = call_info;
     if (UNLIKELY(chunk.inline_state & kInlineHasOpt)) {
         if (!chunk.opt_loops) frame.osr_budget = 1;
-        opt_note_call(chunk, frame);
+        if (chunk.opt_entry != 2) opt_note_call(chunk, frame);
     }
     // Seeded even when call_info is null (frame_lexical_env/frame_variable_env
     // never read them in that case) -- keeping them accurate regardless costs
