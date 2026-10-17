@@ -23,7 +23,7 @@ enum Reg : uint8_t {
     RAX = 0, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
     R8, R9, R10, R11, R12, R13, R14, R15
 };
-enum Xmm : uint8_t { XMM0 = 0, XMM1, XMM2, XMM3 };
+enum Xmm : uint8_t { XMM0 = 0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15 };
 
 // Condition codes (the low nibble of Jcc/SETcc/CMOVcc).
 enum Cond : uint8_t {
@@ -180,14 +180,21 @@ public:
     void movq_to_xmm(Xmm x, Reg r) { byte(0x66); rex(true, x >> 3, 0, r >> 3); byte(0x0F); byte(0x6E); modrm_rr(static_cast<Reg>(x), r); }
     void movq_from_xmm(Reg r, Xmm x) { byte(0x66); rex(true, x >> 3, 0, r >> 3); byte(0x0F); byte(0x7E); modrm_rr(static_cast<Reg>(x), r); }
     void addsd(Xmm d, Xmm s) { sse(0xF2, 0x58, d, s); }
+    void movapd(Xmm d, Xmm s) { sse(0x66, 0x28, d, s); }
+    void xorpd(Xmm d, Xmm s) { sse(0x66, 0x57, d, s); }
+    void andpd(Xmm d, Xmm s) { sse(0x66, 0x54, d, s); }
+    void sqrtsd(Xmm d, Xmm s) { sse(0xF2, 0x51, d, s); }
+    void movsd_load(Xmm d, Mem m) { byte(0xF2); rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x10); modrm_mem(static_cast<Reg>(d), m); }
+    void movsd_store(Mem m, Xmm s) { byte(0xF2); rex_rm(false, static_cast<Reg>(s), m); byte(0x0F); byte(0x11); modrm_mem(static_cast<Reg>(s), m); }
+    void cvttsd2si64(Reg d, Xmm s) { byte(0xF2); rex(true, d >> 3, 0, s >> 3); byte(0x0F); byte(0x2C); modrm_rr(d, static_cast<Reg>(s)); }
     void addsd_mem(Xmm d, Mem m) { byte(0xF2); rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x58); modrm_mem(static_cast<Reg>(d), m); }
     void subsd(Xmm d, Xmm s) { sse(0xF2, 0x5C, d, s); }
     void mulsd(Xmm d, Xmm s) { sse(0xF2, 0x59, d, s); }
     void divsd(Xmm d, Xmm s) { sse(0xF2, 0x5E, d, s); }
-    void ucomisd(Xmm a, Xmm b) { byte(0x66); byte(0x0F); byte(0x2E); modrm_rr(static_cast<Reg>(a), static_cast<Reg>(b)); }
-    void cvtsi2sd32(Xmm d, Reg r) { byte(0xF2); if (r >> 3) byte(0x41); byte(0x0F); byte(0x2A); modrm_rr(static_cast<Reg>(d), r); }
-    void cvtsi2sd64(Xmm d, Reg r) { byte(0xF2); rex(true, 0, 0, r >> 3); byte(0x0F); byte(0x2A); modrm_rr(static_cast<Reg>(d), r); }
-    void cvttsd2si32(Reg d, Xmm s) { byte(0xF2); if (d >> 3) byte(0x44); byte(0x0F); byte(0x2C); modrm_rr(d, static_cast<Reg>(s)); }
+    void ucomisd(Xmm a, Xmm b) { sse(0x66, 0x2E, a, b); }
+    void cvtsi2sd32(Xmm d, Reg r) { byte(0xF2); rex(false, d >> 3, 0, r >> 3); byte(0x0F); byte(0x2A); modrm_rr(static_cast<Reg>(d), r); }
+    void cvtsi2sd64(Xmm d, Reg r) { byte(0xF2); rex(true, d >> 3, 0, r >> 3); byte(0x0F); byte(0x2A); modrm_rr(static_cast<Reg>(d), r); }
+    void cvttsd2si32(Reg d, Xmm s) { byte(0xF2); rex(false, d >> 3, 0, s >> 3); byte(0x0F); byte(0x2C); modrm_rr(d, static_cast<Reg>(s)); }
 
 private:
     void rex(bool w, int r, int x, int b) {
@@ -229,7 +236,7 @@ private:
         rex(w, 0, 0, r >> 3); byte(0xC1); modrm_rr(static_cast<Reg>(ext), r); byte(n);
     }
     void sse(uint8_t prefix, uint8_t op, Xmm d, Xmm s) {
-        byte(prefix); byte(0x0F); byte(op); modrm_rr(static_cast<Reg>(d), static_cast<Reg>(s));
+        byte(prefix); rex(false, d >> 3, 0, s >> 3); byte(0x0F); byte(op); modrm_rr(static_cast<Reg>(d), static_cast<Reg>(s));
     }
     void rel32(Label& l) {
         if (l.pos >= 0) {

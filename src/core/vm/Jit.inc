@@ -146,6 +146,7 @@ constexpr uint64_t kExitFinished = 0, kExitRethrow = 1, kExitBail = 2;
 
 struct Config {
     bool enabled = false;
+    bool opt = false;             // QUANTA_OPT: the optimizing tier gets first look at loops
     bool log = false;
     bool stats = false;
     bool trace = false;
@@ -270,6 +271,7 @@ void init_once() {
     done = true;
     const char* e = std::getenv("QUANTA_JIT");
     g_cfg.enabled = !(e && (e[0] == '0'));
+    if (const char* o = std::getenv("QUANTA_OPT")) g_cfg.opt = o[0] && o[0] != '0';
     if (const char* l = std::getenv("QUANTA_JIT_LOG")) g_cfg.log = l[0] && l[0] != '0';
     if (const char* s = std::getenv("QUANTA_JIT_TRACE")) g_cfg.trace = s[0] && s[0] != '0';
     if (const char* s = std::getenv("QUANTA_JIT_STATS")) g_cfg.stats = s[0] && s[0] != '0';
@@ -286,8 +288,9 @@ void init_once() {
     // A collection at every safepoint is what QUANTA_GC_STRESS asks for, so the
     // back-edge countdown must not defer one.
     if (std::getenv("QUANTA_GC_STRESS")) g_cfg.safepoint_reload = 1;
-    if (g_cfg.enabled && !selfcheck()) {
+    if ((g_cfg.enabled || g_cfg.opt) && !selfcheck()) {
         g_cfg.enabled = false;
+        g_cfg.opt = false;
         if (g_cfg.log) std::fprintf(stderr, "[jit] disabled: self-check failed\n");
     }
 }
@@ -2591,6 +2594,10 @@ void free_code(JitCode* c) noexcept {
         platform::unmap(c->mem, c->mem_size);
         g_cfg.mapped_bytes -= c->mem_size;
     }
+    for (auto& u : c->opt_units) {
+        platform::unmap(u.mem, u.mem_size);
+        g_cfg.mapped_bytes -= u.mem_size;
+    }
     delete c;
 }
 
@@ -2621,8 +2628,14 @@ void compile_chunk(const BytecodeChunk& chunk) noexcept {
         why = "compiler threw";
     }
     if (compiled) {
+        if (chunk.jit) {   // a step context the optimizing tier made: its units move to the real JitCode
+            compiled->opt_units = std::move(chunk.jit->opt_units);
+            compiled->opt_deopts = chunk.jit->opt_deopts;
+            compiled->opt_state = chunk.jit->opt_state;
+        }
         chunk.jit = std::move(compiled);
         chunk.jit_state = 1;
+        chunk.inline_state = kInlineNever | (chunk.inline_state & kInlineHasOpt);   // generated code runs it now: no stackless entry
         g_cfg.compiled++;
         if (g_cfg.log) std::fprintf(stderr, "[jit] #%u compiled %u bytes of bytecode -> %zu bytes of code (%zu mapped)\n", ordinal,
                                     static_cast<unsigned>(chunk.code.size()), chunk.jit->code_bytes, chunk.jit->mem_size);
@@ -2670,13 +2683,22 @@ bool chunk_has_loop(const BytecodeChunk& chunk) noexcept {
         chunk.jit_state = has_loop ? 3 : 4;
         chunk.jit_hotness = 0;
     }
+    // The optimizing tier gets the first look at a loop: the baseline JIT only has it when the tier
+    // declines it (see osr_try).
+    if (chunk.jit_state == 3 && g_cfg.opt) {
+        // Once the function has been called a couple of times its loops are offered at their first back edge.
+        if (chunk.jit_hotness < 0x80000000u && ++chunk.jit_hotness >= 2) chunk.inline_state |= kInlineHasOpt;
+        return;
+    }
     const uint32_t threshold = chunk.jit_state == 3 ? (g_cfg.threshold < 2 ? g_cfg.threshold : 2) : g_cfg.threshold;
     if (++chunk.jit_hotness < threshold) return;
     compile_chunk(chunk);
 }
 
+#include "Opt.inc"
+
 // The interpreter's offer at a hot back edge (see osr_try in Interpreter.cpp).
-bool osr(Frame& f, uint32_t target, const Value& acc) noexcept;
+bool osr(Frame& f, uint32_t target, const Value& acc);
 
 // Every 1024 entries: has this function earned its keep? A baseline JIT saves
 // dispatch, and each stub miss or step costs more than the dispatch it saved, so
@@ -2706,7 +2728,7 @@ bool tally(JitCode* jc) noexcept {
 
 [[gnu::noinline]] Value run_from(Frame& f, JitCode* jc) {
     const uint32_t pc = f.pc;
-    if (pc >= jc->code_size || jc->native_off[pc] == 0) return run_dispatch(f);
+    if (!jc->entry || pc >= jc->code_size || jc->native_off[pc] == 0) return run_dispatch(f);
     const uint64_t status = jc->entry(&f, jc, jc->rt.base + jc->native_off[pc]);
     if (status == kExitFinished) return f.acc;
     return run_resume(f, jc, status);
@@ -2715,7 +2737,7 @@ bool tally(JitCode* jc) noexcept {
 // Runs the frame in generated code from f.pc until it finishes or has to hand
 // the rest to the interpreter.
 [[gnu::always_inline]] inline Value run(Frame& f, JitCode* jc) {
-    if (__builtin_expect(jc->disabled, 0)) return run_dispatch(f);
+    if (__builtin_expect(jc->disabled || !jc->entry, 0)) return run_dispatch(f);
     if (__builtin_expect(((++jc->entries) & 1023) == 0, 0) && tally(jc)) return run_dispatch(f);
     if (__builtin_expect(f.pc == 0 && jc->owner_thread == &g_thread_marker, 1)) {
         const uint64_t status = jc->entry(&f, jc, jc->rt.base + jc->start_off);
@@ -2726,10 +2748,100 @@ bool tally(JitCode* jc) noexcept {
     return run_from(f, jc);
 }
 
-bool osr(Frame& f, uint32_t target, const Value& acc) noexcept {
+#ifdef QUANTA_OPT_BACKEND
+// The optimizing tier's offer: runs the loop at `target` in optimized code if there is some (compiling
+// it on the first offer). False means "not taken"; the caller carries on as before. True means the
+// activation has run to its end (or been handed back to the interpreter and finished there) and
+// Frame::acc is the result.
+int opt_osr(Frame& f, uint32_t target, const Value& acc) {
+    const BytecodeChunk& chunk = *f.chunk;
+    static thread_local std::set<std::pair<const BytecodeChunk*, uint32_t>> refused;
+    JitCode* jc = chunk.jit.get();
+    if (jc && (jc->opt_state == 2 || jc->owner_thread != &g_thread_marker)) return 0;
+    long ui = -1;
+    uint32_t offset = 0;
+    if (jc) {
+        for (size_t k = 0; k < jc->opt_units.size() && ui < 0; k++)
+            for (auto& [pc, off] : jc->opt_units[k].entries) if (pc == target) { ui = static_cast<long>(k); offset = off; break; }
+    }
+    f.pc = target;
+    f.acc = acc;
+    if (ui < 0) {
+        if (refused.count({&chunk, target})) return 0;
+        init_once();
+        JitCode::OptUnit made;
+        if (!opt::compile(chunk, target, &f, made)) {
+            refused.insert({&chunk, target});
+            // Nothing for this chunk's loops: stop offering them at the first back edge of every call.
+            if (!jc || jc->opt_units.empty()) { chunk.inline_state &= ~kInlineHasOpt; chunk.jit_hotness = 0x80000000u; }
+            return 0;
+        }
+        // A chunk the baseline JIT has not compiled: stepping still needs its tables. If the baseline
+        // compiles it later, compile_chunk carries the optimized units over to the new JitCode.
+        if (!jc) jc = opt::ensure_jitcode(chunk);
+        jc->opt_units.push_back(std::move(made));
+        chunk.inline_state |= kInlineHasOpt;
+        // The baseline JIT is not wanted for this chunk any more (and the stackless path may take it).
+        if (chunk.jit_state != 1) chunk.jit_state = 2;
+        ui = static_cast<long>(jc->opt_units.size() - 1);
+        for (auto& [pc, off] : jc->opt_units[ui].entries) if (pc == target) { offset = off; break; }
+    }
+    // Steps inside the optimized code must not start stackless calls; the frame gets its permission back
+    // when control returns to the interpreter.
+    const bool was_inline_ok = f.inline_ok;
+    f.inline_ok = false;
+    const auto entry = jc->opt_units[ui].entry;
+    const uint8_t* base = jc->opt_units[ui].base;
+    JitRt* rt = jc->opt_units[ui].rt.get();
+    rt->opt_runs++;
+    const uint64_t t_start = __builtin_expect(opt::config().log, 0) ? cycle_counter() : 0;
+    const uint64_t status = entry(&f, rt, base + offset);
+    if (__builtin_expect(opt::config().log, 0)) rt->opt_cycles += cycle_counter() - t_start;
+    // The baseline JIT may have replaced the chunk's JitCode while this ran (a nested call compiled it).
+    f.inline_ok = was_inline_ok;
+    jc = chunk.jit.get();
+    if (status == opt::kStatusFinished) return 1;
+    if (status == opt::kStatusRethrow) {
+        std::exception_ptr ep = std::move(jc->pending);
+        jc->pending = nullptr;
+        if (ep) std::rethrow_exception(ep);
+        return 1;
+    }
+    rt->opt_exits++;
+    if (status == opt::kStatusDeopt) {
+        ++jc->opt_deopts;
+        auto& gs = jc->opt_units[ui].guards;
+        const uint32_t st = rt->last_deopt;
+        const bool known = st < gs.size() && std::get<1>(gs[st]);
+        const uint32_t gpc = known ? std::get<0>(gs[st]) : f.pc;
+        const int32_t evar = known ? std::get<2>(gs[st]) : -1;
+        if (opt::config().log)
+            std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u): %s%s\n", gpc, target,
+                         known ? std::get<1>(gs[st]) : "?", evar >= 0 ? " (loop-carried value)" : "");
+        // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
+        opt::Avoid& av = opt::avoid_table()[&chunk];
+        const uint64_t site = (static_cast<uint64_t>(gpc) << 16) | static_cast<uint16_t>(evar + 1);
+        if (!opt::config().stress && ++av.fails[site] == 2 && av.recompiles < 6) {
+            av.recompiles++;
+            if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);
+            jc->opt_units[ui].entries.clear();         // the unit is dead; the next offer compiles it again
+            refused.erase({&chunk, target});
+        } else if (++jc->opt_units[ui].deopts > opt::config().max_deopts) {
+            // A unit whose guards keep failing costs more than it saves: stop entering it.
+            if (opt::config().log) std::fprintf(stderr, "[opt] giving up on the loop at pc %u\n", target);
+            jc->opt_units[ui].entries.clear();
+            refused.insert({&chunk, target});
+        }
+    }
+    return 2;   // the frame is consistent at f.pc: the interpreter carries on from there
+}
+#endif
+
+bool osr(Frame& f, uint32_t target, const Value& acc) {
     // One offer per activation unless it is taken: if compiling is refused, asking again
     // at every back edge would cost more than the loop saves.
     const BytecodeChunk& chunk = *f.chunk;
+    if (__builtin_expect(opt::config().dump, 0) && f.base == nullptr) opt::dump_chunk(chunk, target);
     if (chunk.jit_state == 2) return false;
     if (chunk.jit_state != 1) {
         init_once();
@@ -2751,13 +2863,21 @@ bool osr(Frame& f, uint32_t target, const Value& acc) noexcept {
 }  // namespace jit
 
 
-bool osr_try(Frame& f, uint32_t target_pc, const Value& acc) {
-    if (jit::osr(f, target_pc, acc)) return true;
+int osr_try(Frame& f, uint32_t target_pc, const Value& acc) {
+#ifdef QUANTA_OPT_BACKEND
+    if (jit::g_cfg.opt && jit::opt::config().enabled) {
+        const int r = jit::opt_osr(f, target_pc, acc);
+        if (r == 1) return 1;
+        if (r == 2) { f.osr_budget = g_osr_budget_init; return 2; }
+    }
+#endif
+    if (jit::osr(f, target_pc, acc)) return 1;
     // Declined: the offer is made once per activation. Leaving the budget below
     // zero would make every later back edge of this loop pay for another call
-    // that gets the same answer.
-    f.osr_budget = INT32_MAX;
-    return false;
+    // that gets the same answer. A stackless frame outlives its activation (the slot is reused by
+    // the next call at that depth), so it asks again after a long while rather than never.
+    f.osr_budget = f.base != nullptr && g_stackless_osr_budget != INT32_MAX ? (1 << 20) : INT32_MAX;
+    return 0;
 }
 
 #endif  // QUANTA_JIT_ENABLED

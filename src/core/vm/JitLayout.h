@@ -17,6 +17,8 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/vm/Bytecode.h"
 #include <cstddef>
+#include <memory>
+#include <tuple>
 #include <cstdint>
 #include <exception>
 #include <vector>
@@ -93,6 +95,11 @@ struct JitRt {
     // that every site would otherwise carry its own copy of. Generated code
     // calls them through this table.
     const void* stubs[8] = {};
+    uint32_t last_deopt = 0;
+    uint32_t last_reason = 0;
+    int32_t stress = 0;                // QUANTA_OPT_DEOPT_STRESS: guards left before the next forced deoptimization
+    uint64_t opt_runs = 0, opt_exits = 0, opt_cycles = 0, opt_iters = 0;
+    uint32_t opt_pc = 0;           // optimizing tier: the frame state a deoptimization came from
     double one = 1.0;                  // Inc/Dec add +-one from memory instead of building it in a register
     double minus_one = -1.0;
 };
@@ -124,6 +131,29 @@ struct JitCode {
     bool disabled = false;
     uint32_t start_off = 0;        // native offset of the instruction at pc 0
     bool has_handlers = false;     // the chunk has try regions: a step must stop at their landing pads
+
+    // Optimizing tier (Opt.inc). Separate from `entry`/`native_off` above: its code can be entered
+    // only at the points listed in each unit, and a chunk that was never baseline-compiled still
+    // gets a JitCode (entry == nullptr) because stepping needs code_copy and the offset table.
+    // One unit per loop nest that got hot.
+    struct OptUnit {
+        void* mem = nullptr;
+        size_t mem_size = 0;
+        size_t code_bytes = 0;
+        uint8_t* base = nullptr;
+        uint64_t (QUANTA_JIT_ABI *entry)(void*, JitRt*, const void*) = nullptr;
+        std::vector<std::pair<uint32_t, uint32_t>> entries;   // (bytecode pc, native offset)
+        // What the generated code addresses (r14): the GC poll counter. Heap-allocated so that its
+        // address survives the unit being moved between JitCodes when the baseline JIT replaces one.
+        std::unique_ptr<JitRt> rt = std::make_unique<JitRt>();
+        uint32_t deopts = 0;
+        uint64_t runs = 0, exits = 0;
+        uint32_t first_pc = 0;
+        std::vector<std::tuple<uint32_t, const char*, int32_t>> guards;   // deopt state id -> (pc, kind of the guard, phi variable or -1)
+    };
+    std::vector<OptUnit> opt_units;
+    uint8_t opt_state = 0;         // 0 on, 2 given up on (too many deoptimizations)
+    uint32_t opt_deopts = 0;
 };
 
 // Marks the cells a chunk's JIT caches keep alive (called from BytecodeChunk::trace).
@@ -174,6 +204,11 @@ struct JitEnvLayout {
     static size_t initialized() { return offsetof(Entry, slot) + offsetof(Environment::BindingSlot, initialized); }
     static size_t mutable_flag() { return offsetof(Entry, slot) + offsetof(Environment::BindingSlot, mutable_flag); }
     static size_t binding_object() { return offsetof(Environment, binding_object_); }
+    // Slots past the inline ones: a pointer to an exact-sized array that is never reallocated.
+    static size_t ext() { return offsetof(Environment, slots_) + offsetof(Environment::SlotMap, ext); }
+    static size_t ext_capacity() { return offsetof(Environment, slots_) + offsetof(Environment::SlotMap, ext_capacity); }
+    static constexpr size_t kEntrySize = sizeof(Entry);
+    static constexpr uint32_t kMaxSlots = static_cast<uint32_t>(Environment::SlotMap::kMaxReservedSlots);
     static const uint32_t* shadow_epoch_addr() { return &Environment::s_binding_shadow_epoch; }
 };
 

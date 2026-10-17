@@ -43,6 +43,10 @@
 #include <cstring>
 #include <bit>
 #include <algorithm>
+#include <set>
+#include <chrono>
+#include <map>
+#include <tuple>
 #if defined(__SSE2__)
 #include <emmintrin.h>
 #endif
@@ -2012,6 +2016,18 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 // complete type too, to hold one as a stack local -- a forward declaration
 // isn't enough there).
 
+// Back edges before a loop is offered to the JIT tiers; QUANTA_OSR_BUDGET lowers it for testing.
+inline const int32_t g_osr_budget_init = [] {
+    const char* e = std::getenv("QUANTA_OSR_BUDGET");
+    return e && *e ? std::atoi(e) : 300;
+}();
+// A stackless frame never offers its loops to the baseline JIT (the callee is one the JIT declined), so
+// its budget is out of reach -- unless the optimizing tier is on, which runs loops in stackless frames too.
+inline const int32_t g_stackless_osr_budget = [] {
+    const char* e = std::getenv("QUANTA_OPT");
+    return e && *e && *e != '0' ? g_osr_budget_init : INT32_MAX;
+}();
+
 struct Frame {
     // A pointer, not a reference: a reference binds once, so a frame built into a reused slot
     // (stackless calls) had to be constructed afresh, every field, on every call.
@@ -2072,7 +2088,7 @@ struct Frame {
     bool jit_halted = false;
     // Back edges left before the interpreter offers this activation to the baseline
     // JIT (osr_try, Jit.inc): a loop that has run this long is worth compiling for.
-    int32_t osr_budget = 300;
+    int32_t osr_budget = g_osr_budget_init;
     // Stackless calls (see InlineArena). A frame the interpreter built for a call it made
     // itself, rather than one run_with_regs built on the C++ stack, has a caller: the Return
     // that ends it dispatches the caller's next instruction instead of returning a value.
@@ -2226,10 +2242,11 @@ inline void frame_set_lexical_env(Frame& f, Environment* env) {
 typedef Value HandlerFn(Frame&, uint32_t, Value, Value*, const uint8_t*) QUANTA_HANDLER_TYPE;
 using Handler = HandlerFn*;
 
-// Called at a loop's back edge once Frame::osr_budget runs out. True means the
-// baseline JIT ran the rest of the function and left its result in Frame::acc;
-// false that the interpreter carries on (the budget is then refilled).
-bool osr_try(Frame& f, uint32_t target_pc, const Value& acc);
+// Called at a loop's back edge once Frame::osr_budget runs out. 1: a JIT tier ran the rest of the
+// function and left its result in Frame::acc (the caller returns it as the function's value). 2: the optimized code ran the loop and handed the
+// frame back (Frame::pc and Frame::acc say where the interpreter picks up). 0: declined, the
+// interpreter carries on at the back edge's target.
+int osr_try(Frame& f, uint32_t target_pc, const Value& acc);
 
 extern const std::array<Handler, 256> kHandlers;
 
@@ -2406,7 +2423,7 @@ inline void inline_slot_frame_init(InlineSlot& slot) {
         nullptr, nullptr, std::span<const Value>(), nullptr, true, nullptr, slot.env_saves, slot.resolved_envs,
         nullptr, nullptr, nullptr, nullptr, nullptr, Value(), Value(), 0, 0, 0, true};
     fr->call_info = &slot.call_info;
-    fr->osr_budget = INT32_MAX;
+    fr->osr_budget = g_stackless_osr_budget;
     fr->inline_ok = true;
 }
 
@@ -2488,25 +2505,32 @@ constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_
 // A body that is only `return <constant | this | this.name>`: no frame to build at all (try_leaf_call).
 // Not an Ok verdict, so a screen that takes anything but kInlineNever to be a stackless one tests for it first.
 constexpr uint8_t kInlineLeaf = 32;
+// The optimizing tier has code for a loop of this chunk: a call starts with a budget of one back edge, so
+// the first loop it reaches is offered at once instead of after another few hundred iterations.
+constexpr uint8_t kInlineHasOpt = 64;
 
 [[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn) {
     // Decided by the body alone, so it does not wait for the JIT: a leaf is answered without ever
     // running, which means nothing ever moves its jit_state off "not seen yet".
     if (exe.fast_leaf && !fn->is_arrow()) {
-        chunk.inline_state = kInlineLeaf;
-        return kInlineLeaf;
+        chunk.inline_state = kInlineLeaf | (chunk.inline_state & kInlineHasOpt);
+        return chunk.inline_state;
     }
     // Only a state the JIT will not leave is a verdict to keep: 1 (compiled) and 2 (refused or off).
     // 0 is "not seen yet" and 3 and 4 are "counting calls toward a decision", and a chunk in any of
     // them goes on to 1 or 2 -- a verdict cached then (a loop function is in 3 on its first call)
     // would hold the stackless path closed against it for good, though the JIT refuses most of them.
-    if (chunk.jit_state != 1 && chunk.jit_state != 2) return 0;
+    // With the optimizing tier on, a function with a loop that has not been offered yet (state 3) is
+    // as good as one the baseline JIT declined: its loops go to the tier, not to a compile on call 2.
+    const bool undecided_loop = g_stackless_osr_budget != INT32_MAX && chunk.jit_state == 3;
+    if (chunk.jit_state != 1 && chunk.jit_state != 2 && !undecided_loop) return 0;
     const bool strict = fn->is_strict() || exe.fast_strict;
     uint8_t v = kInlineNever;
-    if (chunk.jit_state == 2 && !chunk.env_mode && chunk.register_count <= kInlineMaxRegs && !fn->is_arrow() &&
+    const bool declined = chunk.jit_state == 2 || undecided_loop;
+    if (declined && !chunk.env_mode && chunk.register_count <= kInlineMaxRegs && !fn->is_arrow() &&
         !exe.fast_uses_super && !exe.fast_leaf) {
         v = kInlineOk | (strict ? kInlineStrict : 0) | (exe.fast_uses_this ? kInlineWantsThis : 0);
-    } else if (chunk.jit_state == 2 && chunk.env_mode && chunk.env && chunk.register_count <= kInlineMaxRegs &&
+    } else if (declined && chunk.env_mode && chunk.env && chunk.register_count <= kInlineMaxRegs &&
                exe.fast_env_gate && (exe.fast_no_closures || exe.fast_shared_ctx) && !fn->is_arrow() &&
                !exe.fast_uses_super) {
         // An environment-mode function whose bindings can be laid down by index. The keys are
@@ -2514,6 +2538,7 @@ constexpr uint8_t kInlineLeaf = 32;
         if (!chunk.env->env_keys_ready) return 0;
         if (chunk.env->env_seed_ok) v = kInlineOk | kInlineEnv | (strict ? kInlineStrict : 0);
     }
+    v |= chunk.inline_state & kInlineHasOpt;
     chunk.inline_state = v;
     return v;
 }
@@ -2647,6 +2672,7 @@ constexpr uint8_t kInlineLeaf = 32;
     callee->value_words = words;
     callee->env_call = true;
     callee->rare_pop = true;
+    if (UNLIKELY(verdict & kInlineHasOpt)) callee->osr_budget = 1;
 
     InlineEnvState& st = slot.env;
     st.call_env = call_env;
@@ -2680,6 +2706,7 @@ constexpr uint8_t kInlineLeaf = 32;
     if (UNLIKELY(verdict & kInlineEnv))
         return inline_call_enter_env(f, fn, exe, chunk, argv, argc, this_value, return_pc, out, verdict);
     Context& ctx = *f.ctx;
+    const bool offer_loops = UNLIKELY(verdict & kInlineHasOpt);
     // A call that changes the strictness, needs a boxed `this`, or runs in another realm is the
     // general path's. (this_needs_super: an arrow's super lookup, which the callee would not see.)
     if (UNLIKELY(ctx.this_needs_super() || ctx.is_strict_mode() != ((verdict & kInlineStrict) != 0) ||
@@ -2746,6 +2773,7 @@ constexpr uint8_t kInlineLeaf = 32;
     callee->base = base;
     callee->return_pc = return_pc;
     callee->value_words = words;
+    if (UNLIKELY(offer_loops)) callee->osr_budget = 1;
     base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
     out = callee;
@@ -2897,7 +2925,11 @@ QUANTA_HANDLER Value h_Return(HANDLER_PARAMS) {
 // due and, if so, tail-call this, which owns the frame.
 [[gnu::noinline]] QUANTA_HANDLER Value h_BackEdgeDue(HANDLER_PARAMS) {
     Collector::safepoint();
-    if (f.osr_budget < 0 && osr_try(f, pc, acc)) return f.acc;
+    if (f.osr_budget < 0) {
+        const int r = osr_try(f, pc, acc);
+        if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, pc, acc, regs, code); }
+        if (r == 2) { pc = f.pc; acc = f.acc; }
+    }
     DISPATCH();
 }
 
@@ -2936,7 +2968,11 @@ QUANTA_HANDLER Value h_JumpIfSlow(HANDLER_PARAMS) {
         pc += off;
         if (off < 0) {
             Collector::safepoint();
-            if (__builtin_expect(--f.osr_budget < 0, 0) && osr_try(f, pc, acc)) return f.acc;
+            if (__builtin_expect(--f.osr_budget < 0, 0)) {
+                const int r = osr_try(f, pc, acc);
+                if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, pc, acc, regs, code); }
+                if (r == 2) { pc = f.pc; acc = f.acc; }
+            }
         }
     }
     DISPATCH();
@@ -10092,7 +10128,7 @@ inline Value run(Frame& f, JitCode*) { return run_dispatch(f); }
 inline void free_code(JitCode*) noexcept {}
 inline void print_stats() {}
 }
-bool osr_try(Frame& f, uint32_t, const Value&) { f.osr_budget = INT32_MAX; return false; }
+int osr_try(Frame& f, uint32_t, const Value&) { f.osr_budget = INT32_MAX; return 0; }
 #endif
 
 // Where a frame starts or resumes: in generated code when the chunk has any.
@@ -10314,6 +10350,7 @@ template <bool Fast>
                 this_value, (!Fast && initial_acc) ? *initial_acc : Value(), 0, 0, 0, this_resolved};
     FrameLinkScope frame_link(&chunk, &frame.instr_pc, owner);
     frame.call_info = call_info;
+    if (UNLIKELY(chunk.inline_state & kInlineHasOpt)) frame.osr_budget = 1;
     // Seeded even when call_info is null (frame_lexical_env/frame_variable_env
     // never read them in that case) -- keeping them accurate regardless costs
     // nothing here and avoids a stale pointer sitting on the frame.
@@ -10362,7 +10399,7 @@ template <bool Fast>
     // Calls this activation makes may be stackless ones unless the baseline JIT is the one driving
     // it (see "Stackless calls" above). The guard gives back any such frame still running if the
     // activation is left by an exception that is not handled here.
-    frame.inline_ok = !chunk.jit && inline_calls_enabled() && !g_track_positions && !Engine::multi_engine();
+    frame.inline_ok = !(chunk.jit && chunk.jit->entry) && inline_calls_enabled() && !g_track_positions && !Engine::multi_engine();
     struct InlineUnwind {
         Frame& f;
         ~InlineUnwind() { if (UNLIKELY(f.active != nullptr)) while (f.active) inline_frame_pop(*f.active); }
@@ -10688,7 +10725,12 @@ void jit_trace(const JitCode* code, Visitor& v) {
 }
 
 namespace Quanta::VM {
-void jit_print_stats() { jit::print_stats(); }
+void jit_print_stats() {
+    jit::print_stats();
+#ifdef QUANTA_OPT_BACKEND
+    jit::opt::print_unit_stats();
+#endif
+}
 
 namespace {
 
