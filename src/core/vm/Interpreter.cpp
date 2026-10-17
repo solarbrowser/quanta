@@ -2474,8 +2474,17 @@ constexpr uint8_t kInlineOk = 2;
 constexpr uint8_t kInlineStrict = 4;      // the callee runs strict
 constexpr uint8_t kInlineWantsThis = 8;   // a sloppy callee that reads `this` (it boxes a primitive)
 constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_call_enter_env)
+// A body that is only `return <constant | this | this.name>`: no frame to build at all (try_leaf_call).
+// Not an Ok verdict, so a screen that takes anything but kInlineNever to be a stackless one tests for it first.
+constexpr uint8_t kInlineLeaf = 32;
 
 [[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn) {
+    // Decided by the body alone, so it does not wait for the JIT: a leaf is answered without ever
+    // running, which means nothing ever moves its jit_state off "not seen yet".
+    if (exe.fast_leaf && !fn->is_arrow()) {
+        chunk.inline_state = kInlineLeaf;
+        return kInlineLeaf;
+    }
     // Only a state the JIT will not leave is a verdict to keep: 1 (compiled) and 2 (refused or off).
     // 0 is "not seen yet" and 3 and 4 are "counting calls toward a decision", and a chunk in any of
     // them goes on to 1 or 2 -- a verdict cached then (a loop function is in 3 on its first call)
@@ -2646,10 +2655,10 @@ constexpr uint8_t kInlineEnv = 16;        // an environment-mode callee (inline_
     const FunctionExecutable& exe = *fn->get_executable().get();
     const BytecodeChunk& chunk = *exe.bytecode_chunk;
     uint8_t verdict = chunk.inline_state;
-    if (UNLIKELY(verdict < kInlineOk)) {
+    if (UNLIKELY(!(verdict & kInlineOk))) {
         if (verdict == kInlineNever) return false;
         verdict = inline_classify(exe, chunk, fn);
-        if (verdict < kInlineOk) return false;
+        if (!(verdict & kInlineOk)) return false;
     }
     if (UNLIKELY(verdict & kInlineEnv))
         return inline_call_enter_env(f, fn, exe, chunk, argv, argc, this_value, return_pc, out, verdict);
@@ -6776,12 +6785,39 @@ Value h_CallInlineGo(Frame& f, uint32_t pc, Value acc) {
     [[clang::musttail]] return h_CallPlain(f, pc, acc);
 }
 
+// A call to a leaf (kInlineLeaf): answered from the body's own bytes. What the entry tests besides
+// the verdict is the one thing it cannot know, a construct call in flight, which the callee's own
+// entry would have consumed; and the receiver may not suit the body (a primitive `this` in a sloppy
+// function), in which case the ordinary call decides.
+Value h_CallLeaf(Frame& f, uint32_t pc, Value acc) {
+    Function* fn = f.regs[f.code[pc + 1]].as_function();
+    if (LIKELY(!f.ctx->has_pending_construct_call() &&
+               try_leaf_call(*fn->get_executable()->bytecode_chunk, Value(), acc))) {
+        pc += 6;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_CallPlain(f, pc, acc);
+}
+
+Value h_CallResolvedLeaf(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    Function* fn = f.regs[code[pc + 1]].as_function();
+    if (LIKELY(!f.ctx->has_pending_construct_call() &&
+               try_leaf_call(*fn->get_executable()->bytecode_chunk, f.regs[code[pc + 2]], acc))) {
+        pc += 7;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc);
+}
+
 [[gnu::noinline]] Value h_CallInline(Frame& f, uint32_t pc, Value acc) {
     const Value& callee = f.regs[f.code[pc + 1]];
     if (LIKELY(callee.is_function())) {
         Function* fn = callee.as_function();
         if (LIKELY(fn->fast_callable())) {
-            if (fn->get_executable()->bytecode_chunk->inline_state != kInlineNever)
+            const uint8_t verdict = fn->get_executable()->bytecode_chunk->inline_state;
+            if (verdict == kInlineLeaf) [[clang::musttail]] return h_CallLeaf(f, pc, acc);
+            if (verdict != kInlineNever)
                 [[clang::musttail]] return h_CallInlineGo(f, pc, acc);
         } else if (fn->maybe_env_callable() && fn->get_executable()->bytecode_chunk->inline_state != kInlineNever) {
             [[clang::musttail]] return h_CallInlineGo(f, pc, acc);
@@ -6805,7 +6841,9 @@ Value h_CallResolvedInlineGo(Frame& f, uint32_t pc, Value acc) {
     if (LIKELY(callee.is_function())) {
         Function* fn = callee.as_function();
         if (LIKELY(fn->fast_callable())) {
-            if (fn->get_executable()->bytecode_chunk->inline_state != kInlineNever)
+            const uint8_t verdict = fn->get_executable()->bytecode_chunk->inline_state;
+            if (verdict == kInlineLeaf) [[clang::musttail]] return h_CallResolvedLeaf(f, pc, acc);
+            if (verdict != kInlineNever)
                 [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc);
         } else if (fn->maybe_env_callable() && fn->get_executable()->bytecode_chunk->inline_state != kInlineNever) {
             [[clang::musttail]] return h_CallResolvedInlineGo(f, pc, acc);
