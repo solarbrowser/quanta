@@ -946,10 +946,12 @@ struct BytecodeChunk {
         // bytecode when it compiles; `id` is the identity a site is monomorphic on (the executable, or the
         // function itself for a native); `mega` once it has seen two.
         struct CallSite {
+            static constexpr uint8_t kMaxTargets = 4;
             uint32_t pc = 0;
-            bool mega = false;
-            class Function* fn = nullptr;
-            const void* id = nullptr;
+            bool mega = false;             // more targets than kMaxTargets
+            uint8_t n = 0;
+            class Function* fns[kMaxTargets] = {};
+            const void* ids[kMaxTargets] = {};
         };
         std::vector<CallSite> call_sites;
         // The optimizing tier's function-entry hook: the chunk's bytes with the entry stop at the front, for the

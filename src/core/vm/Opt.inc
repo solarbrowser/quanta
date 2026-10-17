@@ -79,6 +79,7 @@ enum class K : uint8_t {
     LoadHolder,           // Tagged, shape slot aux of the object at imm (a prototype that holds a method)
     LoadPoly,             // Tagged, a Ptr: the slot of the entry in polys[aux] whose shape word the object has (deopt if none)
     CheckNotNullish,      // Tagged a -> a, deopt when it is undefined or null
+    IsFn,                 // Tagged a -> Bool: a function whose executable is imm (aux 1: the function imm itself)
     Trap,                 // always deoptimizes: the code after it has never run
     CheckBits,            // Tagged a: deopt unless it is exactly the word imm (an object known by identity)
     MathF,                // F64 a [, F64 b]: the Math function aux (kMathFns)
@@ -132,6 +133,7 @@ struct Block {
     int32_t first_insn = -1, last_insn = -1;   // [first, last] indices into the function's instructions
     int32_t func = 0;                    // which function's bytecode the block is made of
     bool cold = false;                   // a block of an inlined function that has never run: it only deoptimizes
+    int32_t poly_kind = 0, poly_site = -1, poly_t = -1;   // 1: tests callee poly_t of a polymorphic call, 2: sets that callee up
     int32_t ret_to = -1;                 // a block of an inlined function that returns: where it goes
 };
 
@@ -166,6 +168,13 @@ struct Func {
     uint32_t params = 0;
     std::vector<std::pair<uint32_t, Function*>> cand;   // call pc -> what the feedback says it calls (and the tier may inline)
     std::vector<std::pair<uint32_t, int32_t>> sites;          // call pc -> the inlined instance
+    struct PolySite {                                         // a call with several callees, told apart by identity checks
+        uint32_t pc = 0;
+        Insn call{};
+        std::vector<int32_t> callees;                         // the instances, in the order they are tried
+        int32_t fv = -1;                                      // the callee value, read once by the call block
+    };
+    std::vector<PolySite> polys;
 };
 
 struct Graph {
@@ -197,7 +206,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -246,6 +255,7 @@ struct Config {
     bool cold = true;                 // QUANTA_OPT_COLD=0 keeps never-executed blocks in the region
     bool light = false;               // QUANTA_OPT_LIGHT=1: steps write back only what they read (measured: no gain so far)
     bool allow_calls = false;         // QUANTA_OPT_CALLS=1: function-entry units may keep calls as steps
+    uint32_t poly_max = 4;            // QUANTA_OPT_POLY=n: most callees one call site may have and still be inlined (1: monomorphic only)
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
@@ -276,6 +286,7 @@ inline Config& config() {
         if (const char* e = std::getenv("QUANTA_OPT_PROFILE")) c.entry_compile_at = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_LIGHT")) c.light = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_CALLS")) c.allow_calls = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_POLY")) c.poly_max = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
     }
@@ -407,7 +418,7 @@ private:
         return cur_state_;
     }
     // ---- inlining ----
-    Function* inline_target(int32_t fi, const Insn& in);
+    bool inline_targets(int32_t fi, const Insn& in, std::vector<Function*>& out);
     bool ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc);
     bool block_is_cold(int32_t fi, int32_t blk) const;
     bool native_call(const Insn& in);
@@ -415,6 +426,14 @@ private:
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
     bool inline_enter(const Insn& in, int32_t callee, bool& ended);
+    bool inline_define(const Insn& in, int32_t ci, int32_t fv, bool guard);
+    bool poly_dispatch(int32_t site, int32_t t, bool& ended);
+    int32_t make_instance(int32_t fi, const Insn& call, Function* target, std::vector<int32_t>& added);
+    int32_t poly_of(int32_t fi, uint32_t pc) const {
+        const auto& ps = g_.funcs[fi].polys;
+        for (size_t k = 0; k < ps.size(); k++) if (ps[k].pc == pc) return static_cast<int32_t>(k);
+        return -1;
+    }
     int32_t site_of(int32_t fi, uint32_t pc) const {
         for (auto& [p, c] : g_.funcs[fi].sites) if (p == pc) return c;
         return -1;
@@ -1331,7 +1350,19 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     }
     case Op::Call: case Op::CallResolved: case Op::Construct: {
         const int32_t callee = site_of(cf_, pc);
-        if (callee < 0) return op != Op::Construct && native_call(in);
+        if (callee < 0) {
+            const int32_t poly = poly_of(cf_, pc);
+            if (poly >= 0) {
+                if (!poly_dispatch(poly, 0, ended)) {
+                    if (!g_.failed_site.first) g_.failed_site = {F().chunk, pc};
+                    fail("a polymorphic call could not be entered");
+                    g_.b[cb_].term.kind = T::Bail;
+                    ended = true;
+                }
+                return true;
+            }
+            return op != Op::Construct && native_call(in);
+        }
         if (!inline_enter(in, callee, ended)) {
             // The blocks of the callee are already wired in: it is all or nothing, so build again without this site.
             if (!g_.failed_site.first) g_.failed_site = {F().chunk, pc};
@@ -1354,6 +1385,27 @@ inline bool Builder::translate_block(int32_t blk) {
         flush_all(B0.exit_pc);
         g_.b[blk].term.kind = T::Bail;
         g_.b[blk].term.tpc = static_cast<uint32_t>(B0.exit_pc);
+        return true;
+    }
+    if (B0.poly_kind) {
+        auto& ps = F().polys[B0.poly_site];
+        begin_op(ps.call.pc);
+        bool ended = false;
+        bool ok;
+        if (B0.poly_kind == 1) {
+            ok = poly_dispatch(B0.poly_site, B0.poly_t, ended);
+        } else {
+            const bool last = static_cast<size_t>(B0.poly_t) + 1 == ps.callees.size();
+            ok = inline_define(ps.call, ps.callees[B0.poly_t], ps.fv, last);
+            Block& B = g_.b[blk];
+            B.term.kind = T::Jump;
+            B.term.t = B.succs[0];
+        }
+        if (!ok) {
+            if (!g_.failed_site.first) g_.failed_site = {F().chunk, ps.pc};
+            fail("a polymorphic call could not be entered");
+            g_.b[blk].term.kind = T::Bail;
+        }
         return true;
     }
     if (B0.synthetic || B0.first_insn < 0) {
@@ -1424,52 +1476,59 @@ inline std::vector<int32_t> Builder::compute_rpo() {
 
 // ---- inlining ----
 
-// What the feedback says the call at `in` reaches, when the tier can take that body in: a function with plain
-// bytecode (no try regions, no loops), small, in this realm, that the interpreter could run stackless (so
-// a deoptimization can rebuild its frame) or that is a leaf (so a deoptimization can leave through the call).
-inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
-    auto no_inline_reason = [&](int why) -> Function* {
+// What the feedback says the call at `in` reaches (up to CallSite::kMaxTargets functions), when the tier can take every
+// one of those bodies in: plain bytecode (no try regions, no loops), small, in this realm, that the interpreter could run
+// stackless (so a deoptimization can rebuild its frame) or that is a leaf (so a deoptimization can leave through the call).
+// One target is inlined behind an identity check; several are told apart by a chain of checks.
+inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Function*>& out) {
+    auto no = [&](int why) {
         if (config().log) std::fprintf(stderr, "[opt] call at pc %u of chunk %p not inlinable: %d\n", in.pc, static_cast<const void*>(g_.funcs[fi].chunk), why);
-        return nullptr;
+        return false;
     };
     const Func& P = g_.funcs[fi];
     uint32_t depth = 0;
     for (int32_t k = fi; g_.funcs[k].parent >= 0; k = g_.funcs[k].parent) depth++;
-    if (depth >= config().inline_depth || in.pc + in.len >= P.chunk->code.size()) return no_inline_reason(1);
+    if (depth >= config().inline_depth || in.pc + in.len >= P.chunk->code.size()) return no(1);
     const Site key{P.chunk, in.pc};
     // A call whose guards kept failing (the Avoid table holds its pc) is left as it is: a step.
-    if ((no_inline_ && no_inline_->count(key)) || (avoid_ && (avoid_->no_inline.count(key) || (fi == 0 && avoid_->pcs.count(in.pc))))) return no_inline_reason(2);
+    if ((no_inline_ && no_inline_->count(key)) || (avoid_ && (avoid_->no_inline.count(key) || (fi == 0 && avoid_->pcs.count(in.pc))))) return no(2);
     const auto* fb = P.chunk->ic_feedback.get();
-    if (!fb) return no_inline_reason(3);
+    if (!fb) return no(3);
     for (const auto& cs : fb->call_sites) {
         if (cs.pc != in.pc) continue;
-        Function* fn = cs.fn;
-        if (cs.mega || !fn || fn->get_function_kind() != Function::FunctionKind::Plain || fn->is_arrow()) return no_inline_reason(4);
-        const FunctionExecutable* exe = fn->get_executable().get();
-        if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm) return no_inline_reason(5);
-        const BytecodeChunk& c = *exe->bytecode_chunk;
-        if (static_cast<Op>(in.op) == Op::Construct) {
-            Graph::CtorPlan plan;
+        const bool construct = static_cast<Op>(in.op) == Op::Construct;
+        if (cs.mega || cs.n == 0 || cs.n > config().poly_max || (construct && cs.n != 1)) return no(4);
+        for (uint8_t t = 0; t < cs.n; t++) {
+            Function* fn = cs.fns[t];
+            if (!fn || fn->get_function_kind() != Function::FunctionKind::Plain || fn->is_arrow()) return no(4);
+            const FunctionExecutable* exe = fn->get_executable().get();
+            if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm) return no(5);
+            const BytecodeChunk& c = *exe->bytecode_chunk;
+            if (construct) {
+                Graph::CtorPlan plan;
+                uint32_t n = 0;
+                const bool sc = fn->stackless_constructible() && !fn->is_class_constructor();
+                const bool ok = sc && ctor_plan(fn, plan, n, false);
+                if (config().log) std::fprintf(stderr, "[opt] new at pc %u: constructible=%d plan=%d\n", in.pc, sc, ok);
+                if (!ok) return no(6);
+                out.push_back(fn);
+                continue;
+            }
+            uint8_t v = c.inline_state;
+            if (v & kInlineNever) return no(7);
+            if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
+            if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf)) || (v & kInlineEnv)) return no(8);
+            const bool strict = (v & kInlineLeaf) ? (fn->is_strict() || exe->fast_strict) : (v & kInlineStrict) != 0;
+            if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return no(9);
+            // A sloppy body that reads `this` boxes a primitive receiver: only a method call can promise an object.
+            if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved) return no(10);
             uint32_t n = 0;
-            const bool sc = fn->stackless_constructible() && !fn->is_class_constructor();
-            const bool ok = sc && ctor_plan(fn, plan, n, false);
-            if (config().log) std::fprintf(stderr, "[opt] new at pc %u: constructible=%d plan=%d\n", in.pc, sc, ok);
-            if (!ok) return no_inline_reason(6);
-            return fn;
+            if (!inline_scan(fn, c, n) || n > config().inline_insns) return no(11);
+            out.push_back(fn);
         }
-        uint8_t v = c.inline_state;
-        if (v & kInlineNever) return no_inline_reason(7);
-        if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
-        if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf)) || (v & kInlineEnv)) return no_inline_reason(8);
-        const bool strict = (v & kInlineLeaf) ? (fn->is_strict() || exe->fast_strict) : (v & kInlineStrict) != 0;
-        if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return no_inline_reason(9);
-        // A sloppy body that reads `this` boxes a primitive receiver: only a method call can promise an object.
-        if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved) return no_inline_reason(10);
-        uint32_t n = 0;
-        if (!inline_scan(fn, c, n) || n > config().inline_insns) return no_inline_reason(11);
-        return fn;
+        return true;
     }
-    return no_inline_reason(12);
+    return no(12);
 }
 
 // ---- natives ----
@@ -1496,7 +1555,7 @@ inline bool Builder::native_call(const Insn& in) {
     const auto* fbk = F().chunk->ic_feedback.get();
     if (!fbk) return false;
     Function* fn = nullptr;
-    for (const auto& cs : fbk->call_sites) if (cs.pc == in.pc && !cs.mega) fn = cs.fn;
+    for (const auto& cs : fbk->call_sites) if (cs.pc == in.pc && !cs.mega && cs.n == 1) fn = cs.fns[0];
     if (!fn || !fn->is_native()) return false;
     const uint8_t* code = F().chunk->code.data();
     const bool resolved = static_cast<Op>(in.op) == Op::CallResolved;
@@ -1633,23 +1692,19 @@ inline bool Builder::inline_scan(const Function*, const BytecodeChunk& c, uint32
     return true;
 }
 
-// Replaces the call that ends `blk` by the callee's blocks: the call block jumps to the callee's first block, its
-// returns go on to the block that follows the call. Nothing is done when the callee does not fit the budgets.
-inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
-    const int32_t fi = g_.b[blk].func;
-    const Insn call = g_.funcs[fi].insns[g_.b[blk].last_insn];
-    Function* target = nullptr;
-    for (auto& cd : g_.funcs[fi].cand) if (cd.first == call.pc) target = cd.second;
-    if (!target) return false;
+// Makes one inlined instance of `target` for the call `call` of function `fi`: its variables, its blocks (appended to the
+// graph, the reachable ones listed in `added`), its returns wired to the block after the call. Returns its function
+// number, or -1 (with nothing wired) when the callee does not fit the budgets.
+inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* target, std::vector<int32_t>& added) {
     const FunctionExecutable* exe = target->get_executable().get();
     const BytecodeChunk& c = *exe->bytecode_chunk;
     uint32_t n = 0;
     const bool is_ctor = static_cast<Op>(call.op) == Op::Construct;
     Graph::CtorPlan plan;
-    if (is_ctor) { if (!ctor_plan(target, plan, n, true)) return false; }
+    if (is_ctor) { if (!ctor_plan(target, plan, n, true)) return -1; }
     else inline_scan(target, c, n);
     const uint32_t nregs = std::max<uint32_t>(c.register_count, c.parameter_count);
-    if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + 3 > config().inline_vars) return false;
+    if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + 3 > config().inline_vars) return -1;
     inline_insns_ += n;
     inline_vars_ += nregs + 3;
     const bool leaf = is_ctor || (c.inline_state & kInlineLeaf) != 0;
@@ -1685,19 +1740,18 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
     g_.funcs.push_back(std::move(f));
     const int32_t ci = static_cast<int32_t>(g_.funcs.size() - 1);
     const size_t first = g_.b.size();
-    if (!setup_func(ci, config().max_insns)) return false;
-    if (g_.funcs[ci].cont_block < 0) return fail("a call with nothing after it");
+    if (!setup_func(ci, config().max_insns)) return -1;
+    if (g_.funcs[ci].cont_block < 0) { fail("a call with nothing after it"); return -1; }
     g_.funcs[ci].entry_block = g_.funcs[ci].block_at[0];
-    g_.funcs[fi].sites.push_back({call.pc, ci});
     // Returns continue after the call.
     for (size_t bi = first; bi < g_.b.size(); bi++) {
         Block& B = g_.b[bi];
         if (B.first_insn >= 0 && static_cast<Op>(g_.funcs[ci].insns[B.last_insn].op) == Op::Return) B.succs.push_back(g_.funcs[ci].cont_block);
     }
-    g_.b[blk].succs.assign(1, g_.funcs[ci].entry_block);
     // The blocks the callee's first block reaches.
     std::vector<uint8_t> seen(g_.b.size(), 0);
     std::vector<int32_t> work{g_.funcs[ci].entry_block};
+    const size_t added_before = added.size();
     while (!work.empty()) {
         const int32_t x = work.back();
         work.pop_back();
@@ -1706,8 +1760,8 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
         added.push_back(x);
         for (int32_t s2 : g_.b[x].succs) work.push_back(s2);
     }
-    for (int32_t x : added)
-        if (x != g_.funcs[ci].entry_block && block_is_cold(ci, x)) g_.b[x].cold = true;
+    for (size_t k = added_before; k < added.size(); k++)
+        if (added[k] != g_.funcs[ci].entry_block && block_is_cold(ci, added[k])) g_.b[added[k]].cold = true;
     if (!leaf) {
         uint32_t words = 0, depth = 0;
         for (int32_t k = ci; k > 0; k = g_.funcs[k].parent) { words += inline_frame_words(g_.funcs[k].nregs); depth++; }
@@ -1716,12 +1770,99 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
         g_.inl_strict = strict;
     }
     g_.inl_count++;
+    return ci;
+}
+
+// Replaces the call that ends `blk` by the callee's blocks: the call block jumps to the callee's first block, its
+// returns go on to the block that follows the call. With several callees the call block starts a chain of identity
+// checks, each leading to a block that sets up that callee's variables. Nothing is done when the callees do not fit the
+// budgets.
+inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
+    const int32_t fi = g_.b[blk].func;
+    const Insn call = g_.funcs[fi].insns[g_.b[blk].last_insn];
+    std::vector<Function*> targets;
+    for (auto& cd : g_.funcs[fi].cand) if (cd.first == call.pc) targets.push_back(cd.second);
+    if (targets.empty()) return false;
+    // All or nothing: the budgets for every callee are checked before the first is made.
+    {
+        uint32_t insns = 0, vars = 0;
+        for (Function* t : targets) {
+            const BytecodeChunk& c = *t->get_executable()->bytecode_chunk;
+            uint32_t n = 0;
+            if (static_cast<Op>(call.op) == Op::Construct) { Graph::CtorPlan plan; if (!ctor_plan(t, plan, n, false)) return false; }
+            else inline_scan(t, c, n);
+            insns += n;
+            vars += std::max<uint32_t>(c.register_count, c.parameter_count) + 3;
+        }
+        if (inline_insns_ + insns > config().inline_total || inline_vars_ + vars > config().inline_vars) return false;
+    }
+    if (targets.size() == 1) {
+        const int32_t ci = make_instance(fi, call, targets[0], added);
+        if (ci < 0) return false;
+        g_.funcs[fi].sites.push_back({call.pc, ci});
+        g_.b[blk].succs.assign(1, g_.funcs[ci].entry_block);
+        return true;
+    }
+    std::vector<int32_t> cis, got;
+    for (Function* t : targets) {
+        const int32_t ci = make_instance(fi, call, t, got);
+        if (ci < 0) return false;
+        cis.push_back(ci);
+    }
+    const int32_t k = static_cast<int32_t>(cis.size());
+    Func::PolySite ps;
+    ps.pc = call.pc;
+    ps.call = call;
+    ps.callees = cis;
+    const int32_t site_index = static_cast<int32_t>(g_.funcs[fi].polys.size());
+    auto make = [&](int32_t kind, int32_t t) {
+        const int32_t b = new_block(call.pc, call.pc);
+        g_.b[b].func = fi;
+        g_.b[b].poly_kind = kind;
+        g_.b[b].poly_site = site_index;
+        g_.b[b].poly_t = t;
+        got.push_back(b);
+        return b;
+    };
+    std::vector<int32_t> prep(k), disp(k, -1);
+    for (int32_t t = 0; t < k; t++) {
+        prep[t] = make(2, t);
+        g_.b[prep[t]].succs.assign(1, g_.funcs[cis[t]].entry_block);
+    }
+    // disp[j] decides between target j and the rest; the call block itself decides target 0, the last needs no check of its own.
+    for (int32_t j = 1; j + 1 < k; j++) disp[j] = make(1, j);
+    auto next_of = [&](int32_t j) { return j + 1 < k - 1 ? disp[j + 1] : prep[k - 1]; };
+    g_.b[blk].succs = {prep[0], k == 2 ? prep[1] : disp[1]};
+    for (int32_t j = 1; j + 1 < k; j++) g_.b[disp[j]].succs = {prep[j], next_of(j)};
+    g_.funcs[fi].polys.push_back(std::move(ps));
+    for (int32_t x : got) added.push_back(x);
     return true;
 }
 
-// The call itself: the callee's identity is checked, the callee's variables are given their first values (its
-// parameters from the arguments, the rest undefined) and control goes to its first block.
-inline bool Builder::inline_enter(const Insn& in, int32_t ci, bool& ended) {
+// The identity test of target `t` of a polymorphic call, as a branch on the block being built.
+inline bool Builder::poly_dispatch(int32_t site, int32_t t, bool& ended) {
+    Func::PolySite& ps = F().polys[site];
+    const uint8_t* code = F().chunk->code.data();
+    const bool resolved = static_cast<Op>(ps.call.op) == Op::CallResolved;
+    const uint32_t callee_r = F().var_base + code[ps.call.pc + 1];
+    if (callee_r >= F().acc_var) return false;
+    if (t == 0) ps.fv = tagged(value(callee_r));
+    (void)resolved;
+    const Func& C = g_.funcs[ps.callees[t]];
+    const int32_t cond = emit(K::IsFn, Rep::Bool, ps.fv, -1, C.by_identity ? 1 : 0,
+                              reinterpret_cast<uint64_t>(C.by_identity ? static_cast<const void*>(C.fnp) : C.exe));
+    Block& B = g_.b[cb_];
+    B.term.kind = T::Branch;
+    B.term.cond = cond;
+    B.term.t = B.succs[0];
+    B.term.f = B.succs[1];
+    ended = true;
+    return true;
+}
+
+// The call itself: the callee's identity is checked (`guard`; a polymorphic call has told the callees apart already), the
+// callee's variables are given their first values (its parameters from the arguments, the rest undefined).
+inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bool guard) {
     const uint8_t* code = F().chunk->code.data();
     const Op op = static_cast<Op>(in.op);
     const bool resolved = op == Op::CallResolved;
@@ -1732,9 +1873,14 @@ inline bool Builder::inline_enter(const Insn& in, int32_t ci, bool& ended) {
     const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
     if (callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
     const Func C = g_.funcs[ci];
-    const int32_t fv = tagged(value(callee_r));
-    const int32_t chk = guarded(K::CheckFn, Rep::None, fv, -1, C.by_identity ? 1 : 0, reinterpret_cast<uint64_t>(C.by_identity ? static_cast<const void*>(C.fnp) : C.exe));
-    const int32_t entry_state = g_.n[chk].state;
+    const int32_t fv = fv_in >= 0 ? fv_in : tagged(value(callee_r));
+    int32_t entry_state;
+    if (guard) {
+        const int32_t chk = guarded(K::CheckFn, Rep::None, fv, -1, C.by_identity ? 1 : 0, reinterpret_cast<uint64_t>(C.by_identity ? static_cast<const void*>(C.fnp) : C.exe));
+        entry_state = g_.n[chk].state;
+    } else {
+        entry_state = snapshot();
+    }
     int32_t thisv;
     if (construct) {
         // The constructor's object: made with the shape the stores will give it, so they are plain slot writes.
@@ -1752,6 +1898,11 @@ inline bool Builder::inline_enter(const Insn& in, int32_t ci, bool& ended) {
     set(static_cast<uint32_t>(C.this_var), thisv);
     set(static_cast<uint32_t>(C.fn_var), fv);
     if (C.leaf) g_.funcs[ci].entry_state = entry_state;
+    return true;
+}
+
+inline bool Builder::inline_enter(const Insn& in, int32_t ci, bool& ended) {
+    if (!inline_define(in, ci, -1, true)) return false;
     Block& B = g_.b[cb_];
     B.term.kind = T::Jump;
     B.term.t = B.succs[0];
@@ -1793,7 +1944,8 @@ inline bool Builder::setup_func(int32_t fi, size_t max_insns) {
             const Op op = static_cast<Op>(in.op);
             if (op != Op::Call && op != Op::CallResolved && op != Op::Construct) continue;
             if (F().ctor) continue;        // a constructor that is inlined stays free of calls
-            if (Function* t = inline_target(fi, in)) F().cand.push_back({in.pc, t});
+            std::vector<Function*> ts;
+            if (inline_targets(fi, in, ts)) for (Function* t : ts) F().cand.push_back({in.pc, t});
         }
     }
 
@@ -1975,6 +2127,10 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
             if (B.last_insn < 0 || B.synthetic) return false;
             const Func& fn = g_.funcs[B.func];
             const uint32_t pc = fn.insns[B.last_insn].pc;
+            // The block after the call has to be part of the region (it may have been left out as cold): the callee's
+            // returns go there.
+            const int32_t cont = fn.block_at[pc + fn.insns[B.last_insn].len];
+            if (cont < 0 || cont >= static_cast<int32_t>(reach.size()) || !reach[cont]) return false;
             for (auto& cd : fn.cand) if (cd.first == pc) return true;
             return false;
         };
@@ -1988,7 +2144,8 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
             if (g_.why) return false;
             if (!ok) continue;
             reach.resize(g_.b.size(), 0);
-            for (int32_t x : added) { reach[x] = 1; if (is_site(x)) work.push_back(x); }
+            for (int32_t x : added) reach[x] = 1;
+            for (int32_t x : added) if (is_site(x)) work.push_back(x);
         }
         for (Block& B : g_.b) B.def.resize(g_.nvars, kUnset);
     }
@@ -2480,7 +2637,7 @@ inline void Builder::cse() {
         case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::ModF:
         case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
         case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag:
-        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish: case K::CheckBits:
+        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish: case K::CheckBits: case K::IsFn:
             return 1;
         case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen: case K::LoadEnv:
         case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly:
@@ -3479,6 +3636,31 @@ inline void Emitter::emit_node(int32_t id) {
     case K::Trap:
         a_.jmp(deopt_label(n.state));
         return;
+    case K::IsFn: {
+        const Reg s = use_g(n.a, RAX);
+        Label& no = new_label();
+        Label& done = new_label();
+        a_.mov(RCX, s);
+        a_.shr_imm(RCX, 48);
+        a_.cmp32_imm(RCX, 0x7FF9);                 // QUIET_NAN | TAG_FUNCTION
+        a_.jcc(CC_NE, no);
+        a_.mov(RCX, s);
+        a_.shl_imm(RCX, 16);
+        a_.shr_imm(RCX, 16);
+        if (n.aux == 0) a_.mov_load(RCX, mem(RCX, static_cast<int32_t>(JitObjectLayout::function_executable())));
+        a_.mov_imm64(RDX, n.imm);
+        a_.cmp(RCX, RDX);
+        a_.mov_imm32(RAX, 0);
+        a_.setcc(CC_E, RAX);
+        a_.jmp(done);
+        a_.bind(no);
+        a_.mov_imm32(RAX, 0);
+        a_.bind(done);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov32(d, RAX);
+        commit_g(id, d);
+        return;
+    }
     case K::CheckBits: {
         const Reg s = use_g(n.a, RAX);
         a_.mov_imm64(RCX, n.imm);

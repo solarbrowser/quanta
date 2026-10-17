@@ -6757,12 +6757,19 @@ QUANTA_HANDLER Value h_CallResolvedLean(HANDLER_PARAMS) {
     auto& sites = const_cast<BytecodeChunk&>(caller).ensure_ic_feedback().call_sites;
     const FunctionExecutable* exe = fn->get_executable().get();
     const void* id = exe ? static_cast<const void*>(exe) : static_cast<const void*>(fn);
-    for (auto& s : sites) {
-        if (s.pc != pc) continue;
-        if (s.id != id) s.mega = true;
-        return;
+    BytecodeChunk::IcFeedback::CallSite* site = nullptr;
+    for (auto& s : sites) if (s.pc == pc) { site = &s; break; }
+    if (!site) {
+        sites.emplace_back();
+        site = &sites.back();
+        site->pc = pc;
     }
-    sites.push_back({pc, false, fn, id});
+    if (site->mega) return;
+    for (uint8_t k = 0; k < site->n; k++) if (site->ids[k] == id) return;
+    if (site->n == BytecodeChunk::IcFeedback::CallSite::kMaxTargets) { site->mega = true; return; }
+    site->fns[site->n] = fn;
+    site->ids[site->n] = id;
+    site->n++;
     // A new reference to a cell from a chunk's feedback: the collector must see the chunk again (see learn_transition).
     Collector::write_barrier(owner);
     mark_owner_feedback_dirty(owner);

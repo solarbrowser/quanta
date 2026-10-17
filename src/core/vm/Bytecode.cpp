@@ -131,7 +131,8 @@ void BytecodeChunk::trace(Visitor& v) const {
         v.visit(fb.own_desc_value);
     }
     if (ic_feedback) {
-        for (const auto& cs : ic_feedback->call_sites) v.visit_object(reinterpret_cast<Object*>(cs.fn));
+        for (const auto& cs : ic_feedback->call_sites)
+            for (uint8_t k = 0; k < cs.n; k++) v.visit_object(reinterpret_cast<Object*>(cs.fns[k]));
         for (const auto& kfb : ic_feedback->keyed_feedback) {
             if (!kfb) continue;
             for (uint8_t i = 0; i < kfb->transition_count; i++) {
