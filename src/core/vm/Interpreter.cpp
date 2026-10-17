@@ -6687,6 +6687,17 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
 // tail-calls the generated handler untouched.
 Value h_CallInline(Frame& f, uint32_t pc, Value acc);
 
+// A callee whose whole body is `return <constant | this | this.name>` (try_leaf_call) is answered
+// here, ahead of call_fast_gate, which would otherwise be entered for no more than the same test:
+// a call that needs neither a frame nor a call-stack entry. The same conditions call_fast_gate
+// applies before it asks -- an arrow takes `this` from its enclosing function, and a construct
+// call in flight belongs to the callee's own entry.
+inline bool answer_leaf(Function& fn, Context& ctx, const Value& receiver, Value& out) {
+    const FunctionExecutable& exe = *fn.get_executable();
+    return UNLIKELY(exe.fast_leaf) && !fn.is_arrow() && !ctx.has_pending_construct_call() &&
+           try_leaf_call(*exe.bytecode_chunk, receiver, out);
+}
+
 // The stackless attempt (h_CallInline) is its own function: folded in here it costs this one a
 // longer prologue on every call, including the ones that never qualify.
 Value h_CallPlain(Frame& f, uint32_t pc, Value acc) {
@@ -6697,8 +6708,15 @@ Value h_CallPlain(Frame& f, uint32_t pc, Value acc) {
         f.instr_pc = pc;
         Context& ctx = *f.ctx;
         const std::span<const Value> call_args(f.regs + code[pc + 2], code[pc + 3]);
-        acc = LIKELY(fn->fast_callable()) ? fn->call_fast_gate(ctx, call_args, Value())
-                                          : fn->call_register_args(ctx, call_args, Value());
+        if (LIKELY(fn->fast_callable())) {
+            if (answer_leaf(*fn, ctx, Value(), acc)) {
+                pc += 6;
+                DISPATCH();
+            }
+            acc = fn->call_fast_gate(ctx, call_args, Value());
+        } else {
+            acc = fn->call_register_args(ctx, call_args, Value());
+        }
         if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
         Collector::safepoint();
         pc += 6;
@@ -6718,8 +6736,15 @@ Value h_CallResolvedPlain(Frame& f, uint32_t pc, Value acc) {
         Context& ctx = *f.ctx;
         const std::span<const Value> call_args(f.regs + code[pc + 3], code[pc + 4]);
         const Value& receiver = f.regs[code[pc + 2]];
-        acc = LIKELY(fn->fast_callable()) ? fn->call_fast_gate(ctx, call_args, receiver)
-                                          : fn->call_register_args(ctx, call_args, receiver);
+        if (LIKELY(fn->fast_callable())) {
+            if (answer_leaf(*fn, ctx, receiver, acc)) {
+                pc += 7;
+                DISPATCH();
+            }
+            acc = fn->call_fast_gate(ctx, call_args, receiver);
+        } else {
+            acc = fn->call_register_args(ctx, call_args, receiver);
+        }
         if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc);
         Collector::safepoint();
         pc += 7;
