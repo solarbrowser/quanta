@@ -310,10 +310,25 @@ void learn_ic(Frame* f, JitCode* jc, uint32_t pc, uint32_t block) noexcept {
     const FeedbackBody* fb = f->chunk->feedback[fb_index].peek();
     if (!fb) return;
     JitIC* ics = &jc->ics[block];
+    // What the copy below depends on besides the entry counts: which inherited entries are current, and the
+    // two epochs they were checked against. An epoch moves whenever any prototype or descriptor changes,
+    // which retires the copy's inherited ways (the stub compares it) while the feedback is refreshed by the
+    // interpreter without the counts moving -- a copy judged only by the counts then stayed retired for good,
+    // and every read of an inherited method went to the helper.
+    const uint64_t proto_now = Object::proto_epoch();
+    const uint64_t desc_now = Object::descriptor_epoch();
+    uint32_t current_proto = 0;
+    if (!fb->proto_mega) {
+        for (uint8_t k = 0; k < fb->proto_count; k++) {
+            const FeedbackSlot::ProtoEntry& pe = fb->proto_entries[k];
+            if (pe.proto_epoch == proto_now && (!pe.from_descriptor || pe.desc_epoch == desc_now)) current_proto++;
+        }
+    }
     const uint32_t sig = 0x80000000u | fb->count | (static_cast<uint32_t>(fb->proto_count) << 8) |
                          (static_cast<uint32_t>(fb->mega) << 16) | (static_cast<uint32_t>(fb->proto_mega) << 17) |
-                         (static_cast<uint32_t>(f->feedback_rooted) << 18);
-    if (ics[0].signature == sig) return;
+                         (static_cast<uint32_t>(f->feedback_rooted) << 18) | ((current_proto & 7u) << 19);
+    const uint32_t epochs = static_cast<uint32_t>(proto_now) * 2654435761u ^ static_cast<uint32_t>(desc_now);
+    if (ics[0].signature == sig && ics[0].pad == epochs) return;
     const bool is_set = static_cast<Op>(f->chunk->code[pc]) == Op::SetNamed;
     JitIC fresh[JitIC::kWays];
     uint32_t n = 0;
@@ -330,13 +345,20 @@ void learn_ic(Frame* f, JitCode* jc, uint32_t pc, uint32_t block) noexcept {
     if (!is_set && f->feedback_rooted && fb->proto_count != 0 && !fb->proto_mega) {
         for (uint8_t k = 0; k < fb->proto_count && n < JitIC::kWays; k++) {
             const FeedbackSlot::ProtoEntry& pe = fb->proto_entries[k];
-            if (!pe.receiver_shape || !pe.prototype || pe.absent || pe.is_getter || pe.is_setter ||
+            if (!pe.receiver_shape || !pe.prototype || pe.is_getter || pe.is_setter ||
                 pe.proto_epoch != Object::proto_epoch()) continue;
             JitIC& ic = fresh[n];
             ic.shape_word = reinterpret_cast<uint64_t>(pe.receiver_shape) | JitObjectLayout::kOrdinaryType;
             ic.proto_word = reinterpret_cast<uint64_t>(pe.prototype);
             ic.proto_epoch = pe.proto_epoch;
-            if (pe.from_descriptor) {
+            if (pe.absent) {
+                // A name nothing on the chain has: the shape says the receiver does not, and the epoch says
+                // the chain has not changed, so the read is undefined. Served as a value copied out of the
+                // chain, which is what it is (the descriptor epoch is only read, not relied on).
+                ic.kind = JitIC::ProtoValue;
+                ic.value = Value();
+                ic.desc_epoch = Object::descriptor_epoch();
+            } else if (pe.from_descriptor) {
                 ic.kind = JitIC::ProtoValue;
                 ic.value = pe.cached_value;
                 ic.desc_epoch = pe.desc_epoch;
@@ -352,6 +374,7 @@ void learn_ic(Frame* f, JitCode* jc, uint32_t pc, uint32_t block) noexcept {
     }
     for (uint32_t k = 0; k < JitIC::kWays; k++) ics[k] = fresh[k];   // unused entries stay Empty
     ics[0].signature = sig;
+    ics[0].pad = epochs;
 }
 
 // Runs the one instruction at `pc` through the interpreter's own handler and
@@ -777,6 +800,45 @@ QUANTA_JIT_ABI int fast_create_object_t(Frame* f, uint32_t pc, uint32_t) noexcep
     obj->adopt_literal_shape(t.shape, t.count);
     Engine::fixup_new_object_realm(obj, f->ctx);
     f->acc = Value(obj);
+    return 1;
+}
+
+// The by-name environment forms (h_LdaEnvFast, h_gen_StaEnvInit, h_gen_EnterLoopEnv, h_gen_ExitLoopEnv): none of
+// them can throw or run script, so they are plain calls here instead of steps. kind: 0 LdaEnv, 1 LdaEnvStar
+// (the value is also stored in the register the instruction names), 2 StaEnvInit, 3 EnterLoopEnv, 4 ExitLoopEnv.
+QUANTA_JIT_ABI int fast_env_name(Frame* f, uint32_t pc, uint32_t kind) noexcept {
+    const uint8_t* code = f->chunk->code.data();
+    if (kind == 4) { frame_pop_block_scope(*f); return 1; }
+    if (kind == 3) {
+        const uint16_t idx = read_u16(code, pc + 1);
+        frame_push_block_scope(*f);
+        Environment* env = frame_lexical_env(*f);
+        const auto& vars = f->chunk->env->loop_envs[idx];
+        const auto& keys = loop_env_keys_for(*f->chunk, idx);
+        if (seed_scope_bindings(env, vars, keys, nullptr)) return 1;
+        for (size_t i = 0; i < vars.size(); i++) {
+            const auto& v = vars[i];
+            if (v.is_lexical) {
+                env->create_uninitialized_binding_interned(keys[i], !v.is_const);
+                if (v.is_const) env->mark_const_binding(v.name);
+            } else {
+                env->create_binding_interned(keys[i], Value(), true);
+            }
+        }
+        return 1;
+    }
+    const std::string* key = f->chunk->names[read_u16(code, pc + 1)];
+    Environment* env = frame_lexical_env(*f);
+    if (!env) return 0;
+    if (kind == 2) {
+        env->initialize_binding_interned(key, f->acc);
+        return 1;
+    }
+    static const std::string* kThis = Shape::intern("this");
+    if (key == kThis) return 0;
+    Value out;
+    if (!env->try_read_declarative_chain(key, out)) return 0;
+    f->acc = out;
     return 1;
 }
 
@@ -2177,6 +2239,21 @@ void Compiler::emit_insn(size_t idx) {
     }
     case Op::JumpIfTrue: emit_cond_jump(in, idx, true, bool_known); break;
     case Op::JumpIfFalse: emit_cond_jump(in, idx, false, bool_known); break;
+    case Op::BitNot: {
+        // ~acc for an int32-valued double; anything else (and INT_MIN, which cvttsd2si cannot tell from an overflow) is the step's.
+        Label& slow = new_label();
+        finite_check(R13, RDX, slow);
+        a_.movq_to_xmm(XMM0, R13);
+        a_.cvttsd2si32(RAX, XMM0);
+        a_.cmp32_imm(RAX, INT32_MIN);
+        a_.jcc(CC_E, slow);
+        a_.mov_imm32(RCX, 0xFFFFFFFFu);
+        a_.xor32(RAX, RCX);
+        a_.cvtsi2sd32(XMM0, RAX);
+        a_.movq_from_xmm(R13, XMM0);
+        emit_step_cold(in, slow);
+        break;
+    }
     case Op::LdaTdz: a_.mov_imm64(R13, bits_of(Value::vm_tdz_sentinel())); break;
     case Op::LdaTdzStar:
         if (!reg_ok(code[in.pc + 1])) { fail("register"); return; }
@@ -2219,6 +2296,19 @@ void Compiler::emit_insn(size_t idx) {
         a_.bind(is_number);
         break;
     }
+    case Op::LdaEnv:
+        if (u16(in.pc + 1) >= chunk_.names.size()) { fail("operand"); return; }
+        emit_fast_inline(in, reinterpret_cast<const void*>(&fast_env_name), 0, true, -1); break;
+    case Op::LdaEnvStar:
+        if (u16(in.pc + 1) >= chunk_.names.size() || !reg_ok(code[in.pc + 3])) { fail("operand"); return; }
+        emit_fast_inline(in, reinterpret_cast<const void*>(&fast_env_name), 1, true, code[in.pc + 3]); break;
+    case Op::StaEnvInit:
+        if (u16(in.pc + 1) >= chunk_.names.size()) { fail("operand"); return; }
+        emit_fast_inline(in, reinterpret_cast<const void*>(&fast_env_name), 2, false, -1); break;
+    case Op::EnterLoopEnv:
+        emit_fast_inline(in, reinterpret_cast<const void*>(&fast_env_name), 3, false, -1); break;
+    case Op::ExitLoopEnv:
+        emit_fast_inline(in, reinterpret_cast<const void*>(&fast_env_name), 4, false, -1); break;
     case Op::DefineOwn:
         if (!reg_ok(code[in.pc + 1]) || u16(in.pc + 4) >= chunk_.feedback.size()) { fail("operand"); return; }
         emit_fast_inline(in, reinterpret_cast<const void*>(&fast_define_own), 0, false, -1); break;
