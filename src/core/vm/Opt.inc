@@ -245,6 +245,7 @@ struct Config {
     bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
     bool cold = true;                 // QUANTA_OPT_COLD=0 keeps never-executed blocks in the region
     bool light = false;               // QUANTA_OPT_LIGHT=1: steps write back only what they read (measured: no gain so far)
+    bool allow_calls = false;         // QUANTA_OPT_CALLS=1: function-entry units may keep calls as steps
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
@@ -274,6 +275,7 @@ inline Config& config() {
         if (const char* e = std::getenv("QUANTA_OPT_ARM")) c.entry_arm_at = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_PROFILE")) c.entry_compile_at = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_LIGHT")) c.light = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_CALLS")) c.allow_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
     }
@@ -2114,7 +2116,7 @@ inline void Builder::finalize() {
     // A call the unit has to leave to a step runs on the native stack and through the slow call path, which costs
     // more than the interpreter's own stackless call. A loop pays for that with the iterations around it; a whole
     // function that is called often does not.
-    if (g_.fn_entry && !g_.why) {
+    if (g_.fn_entry && !g_.why && !config().allow_calls) {
         for (int32_t blk : g_.rpo)
             for (int32_t id : g_.b[blk].nodes) {
                 if (g_.n[id].op != K::Step) continue;

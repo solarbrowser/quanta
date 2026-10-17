@@ -2948,6 +2948,7 @@ void opt_note_call(const BytecodeChunk& chunk, Frame& callee) {
         entry_code[0] = kOptEntryOp;
         chunk.opt_entry = 1;
         chunk.opt_calls = 0;
+        if (opt::config().log) std::fprintf(stderr, "[opt] armed chunk %p (%zu bytes)\n", static_cast<const void*>(&chunk), n);
         if (opt::has_calls(chunk)) chunk.inline_state |= kInlineRecordCalls;
     }
     callee.code = chunk.ic_feedback->entry_code.get();

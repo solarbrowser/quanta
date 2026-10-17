@@ -2684,7 +2684,10 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     callee->value_words = words;
     callee->env_call = true;
     callee->rare_pop = true;
-    if (UNLIKELY(verdict & kInlineHasOpt)) callee->osr_budget = 1;
+    if (UNLIKELY(verdict & kInlineHasOpt)) {
+        if (!chunk.opt_loops) callee->osr_budget = 1;
+        if (chunk.opt_entry != 2) opt_note_call(chunk, *callee);
+    }
 
     InlineEnvState& st = slot.env;
     st.call_env = call_env;
