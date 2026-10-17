@@ -20,7 +20,7 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
     Header& h = block->h_;
     h.heap        = heap;
     h.next        = nullptr;
-    h.free_list   = nullptr;
+    h.scan_word   = 0;
     h.cell_size   = cell_size;
     h.capacity    = static_cast<uint32_t>(kPayloadSize / cell_size);
     h.bump_cursor = 0;
@@ -31,6 +31,7 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
     h.segment     = segment;
     // A recycled region arrives with whatever the last block left here.
     h.in_dirty_list = false;
+    h.no_reuse = false;
     std::memset(h.alloc_bitmap, 0, sizeof(h.alloc_bitmap));
     std::memset(h.mark_bitmap, 0, sizeof(h.mark_bitmap));
     std::memset(h.remembered_bitmap, 0, sizeof(h.remembered_bitmap));
@@ -38,20 +39,25 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
 }
 
 void* HeapBlock::try_allocate() {
-    void* p;
-    if (h_.free_list) {
-        p = h_.free_list;
-        h_.free_list = h_.free_list->next;
+    size_t idx;
+    if (h_.free_count && !h_.no_reuse) {
+        // Picked from the bitmap instead of a list threaded through the dead cells: popping a list
+        // reads the next link out of the cell about to be handed out, a load that waits on memory
+        // the sweep touched long ago, where the constructor's first store to a cold line costs nothing.
+        uint32_t w = h_.scan_word;
+        uint64_t free_bits;
+        while (!(free_bits = ~h_.alloc_bitmap[w])) w++;
+        idx = static_cast<size_t>(w) * 64 + static_cast<size_t>(__builtin_ctzll(free_bits));
+        assert(idx < h_.bump_cursor && "free_count promised a free slot below the bump cursor");
+        h_.scan_word = w;
         h_.free_count--;
     } else if (h_.bump_cursor < h_.capacity) {
-        p = payload_start() + static_cast<size_t>(h_.bump_cursor) * h_.cell_size;
-        h_.bump_cursor++;
+        idx = h_.bump_cursor++;
     } else {
         return nullptr;
     }
-    size_t idx = slot_index(p);
     h_.alloc_bitmap[idx / 64] |= (1ULL << (idx % 64));
-    return p;
+    return payload_start() + idx * h_.cell_size;
 }
 
 void HeapBlock::free_cell(void* p) {
@@ -64,15 +70,14 @@ void HeapBlock::free_cell(void* p) {
     // inherit the dead cell's old-generation status.
     h_.mark_bitmap[idx / 64] &= ~bit;
     h_.remembered_bitmap[idx / 64] &= ~bit;
-    auto* cell = static_cast<FreeCell*>(p);
-    cell->next = h_.free_list;
-    h_.free_list = cell;
+    if (idx / 64 < h_.scan_word) h_.scan_word = static_cast<uint32_t>(idx / 64);
     h_.free_count++;
 }
 
 void HeapBlock::retire_cell(void* p) {
     size_t idx = slot_index(p);
     assert(idx != SIZE_MAX);
+    h_.no_reuse = true;
     uint64_t bit = 1ULL << (idx % 64);
     h_.alloc_bitmap[idx / 64] &= ~bit;
     h_.mark_bitmap[idx / 64] &= ~bit;

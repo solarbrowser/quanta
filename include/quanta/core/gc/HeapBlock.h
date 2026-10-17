@@ -53,7 +53,7 @@ public:
     uint32_t    capacity() const    { return h_.capacity; }
     uint32_t    live_count() const  { return h_.bump_cursor - h_.free_count; }
     bool        is_empty() const    { return live_count() == 0; }
-    bool        is_full() const     { return !h_.free_list && h_.bump_cursor == h_.capacity; }
+    bool        is_full() const     { return !h_.free_count && h_.bump_cursor == h_.capacity; }
 
     HeapBlock*  next() const           { return h_.next; }
     void        set_next(HeapBlock* n) { h_.next = n; }
@@ -139,12 +139,12 @@ public:
     }
 
 private:
-    struct FreeCell { FreeCell* next; };
-
     struct Header {
         Heap*      heap;
         HeapBlock* next;
-        FreeCell*  free_list;
+        // First bitmap word that may hold a free slot below bump_cursor.
+        uint32_t   scan_word;
+        uint32_t   pad_;
         uint32_t   cell_size;
         uint32_t   capacity;
         uint32_t   bump_cursor;
@@ -161,6 +161,9 @@ private:
         // dirty_blocks_. Sits in padding the two enums already leave, so the
         // header does not grow.
         bool       in_dirty_list;
+        // Set once a cell has been retired (poison mode): a freed slot of this block is never handed out
+        // again, which is the point of retiring one.
+        bool       no_reuse;
         uint64_t   alloc_bitmap[kBitmapWords];
         uint64_t   mark_bitmap[kBitmapWords];
         uint64_t   remembered_bitmap[kBitmapWords];
