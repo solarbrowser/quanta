@@ -1752,38 +1752,43 @@ inline void dump(const Graph& g, FILE* out) {
 // Register allocation and code generation (x86-64, System V)
 // ===========================================================================
 
-#if defined(QUANTA_JIT_ARCH_X64) && !defined(QUANTA_JIT_WIN64)
+#if defined(QUANTA_JIT_ARCH_X64) || defined(QUANTA_JIT_ARCH_A64)
 #define QUANTA_OPT_BACKEND 1
+#ifdef QUANTA_JIT_ARCH_A64
+constexpr int kPushBytes = 16;     // push/pop keep sp 16-aligned: a slot is two words
+#else
+constexpr int kPushBytes = 8;
+#endif
 
 // Helpers the generated code calls from its cold paths. noexcept: no C++ exception unwinds through
 // generated code.
-inline uint64_t helper_truthy(uint64_t bits) noexcept {
+inline QUANTA_JIT_ABI uint64_t helper_truthy(uint64_t bits) noexcept {
     Value v;
     std::memcpy(&v, &bits, 8);
     return v.to_boolean() ? 1 : 0;
 }
-inline void helper_barrier(Object* obj) noexcept { Collector::write_barrier(obj); }
-inline void helper_barrier_value(Object* obj, uint64_t bits) noexcept {
+inline QUANTA_JIT_ABI void helper_barrier(Object* obj) noexcept { Collector::write_barrier(obj); }
+inline QUANTA_JIT_ABI void helper_barrier_value(Object* obj, uint64_t bits) noexcept {
     Value v;
     std::memcpy(&v, &bits, 8);
     Collector::write_barrier_value(obj, v);
 }
-inline void helper_barrier_env(Environment* env, uint64_t bits) noexcept {
+inline QUANTA_JIT_ABI void helper_barrier_env(Environment* env, uint64_t bits) noexcept {
     Value v;
     std::memcpy(&v, &bits, 8);
     Collector::write_barrier_env_for(env, v);
 }
-inline double helper_fmod(double a, double b) noexcept { return std::fmod(a, b); }
+inline QUANTA_JIT_ABI double helper_fmod(double a, double b) noexcept { return std::fmod(a, b); }
 // A load from the current environment whose predicted slot was not there: the walk by name the
 // interpreter's general handler makes, over declarative environments. 0 for anything else (a hole, an
 // object environment, an unbound name): the interpreter will say what it is.
-inline uint64_t helper_env_load(Frame* f, const std::string* key, uint64_t* out) noexcept {
+inline QUANTA_JIT_ABI uint64_t helper_env_load(Frame* f, const std::string* key, uint64_t* out) noexcept {
     Value v;
     if (!frame_lexical_env(*f)->try_read_declarative_chain(key, v)) return 0;
     std::memcpy(out, &v, 8);
     return 1;
 }
-inline void helper_poll(JitRt* rt) noexcept {
+inline QUANTA_JIT_ABI void helper_poll(JitRt* rt) noexcept {
     rt->sp_counter = g_cfg.safepoint_reload;
     Collector::safepoint();
 }
@@ -1858,6 +1863,14 @@ private:
     void save_live(int32_t& bytes);
     void restore_live(int32_t bytes);
     void emit_prologue_epilogue();
+    // A call into C++: the target in RAX, and the shadow space the Microsoft convention wants below the arguments.
+    void call_c(const void* fn) {
+        a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(fn));
+        if (abi::kShadow) a_.sub_imm(RSP, abi::kShadow);
+        a_.call_reg(RAX);
+        if (abi::kShadow) a_.add_imm(RSP, abi::kShadow);
+    }
+    int32_t xmm_save_off_ = 0;     // Microsoft convention: where xmm6-xmm15 are kept while the code runs
 };
 
 constexpr Reg Emitter::kGprPool[];
@@ -2010,7 +2023,15 @@ inline bool Emitter::allocate() {
             active.push_back(id);
         }
     }
+#ifdef QUANTA_JIT_ARCH_A64
+    frame_bytes_ = ((nslots_ * 8 + 15) / 16) * 16;
+#else
     frame_bytes_ = 8 + ((nslots_ * 8 + 15) / 16) * 16;
+#endif
+#ifdef QUANTA_JIT_WIN64
+    xmm_save_off_ = frame_bytes_ - 8;      // 16-aligned: frame_bytes_ is 8 more than a multiple of 16
+    frame_bytes_ += 10 * 16;               // xmm6-xmm15 are the callee's to preserve
+#endif
     return true;
 }
 
@@ -2109,10 +2130,9 @@ inline void Emitter::emit_barrier_check(int32_t val_node, Reg o, Reg v) {
         save_live(bytes);
         a_.push(o);
         a_.push(v);
-        a_.pop(RSI);
-        a_.pop(RDI);
-        a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(&helper_barrier_value));
-        a_.call_reg(RAX);
+        a_.pop(abi::A1);
+        a_.pop(abi::A0);
+        call_c(reinterpret_cast<const void*>(&helper_barrier_value));
         restore_live(bytes);
         a_.jmp(back);
     });
@@ -2139,10 +2159,9 @@ inline void Emitter::emit_env_barrier_check(int32_t val_node, Reg v) {
         a_.push(v);
         int32_t bytes;
         save_live(bytes);
-        a_.mov_load(RSI, mem(RSP, bytes));
-        a_.mov_load(RDI, mem(RSP, bytes + 8));
-        a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(&helper_barrier_env));
-        a_.call_reg(RAX);
+        a_.mov_load(abi::A1, mem(RSP, bytes));
+        a_.mov_load(abi::A0, mem(RSP, bytes + kPushBytes));
+        call_c(reinterpret_cast<const void*>(&helper_barrier_env));
         restore_live(bytes);
         a_.pop(v);
         a_.pop(RAX);
@@ -2359,6 +2378,12 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov_imm64(RDX, 0x8000000000000000ull);
         a_.cmp(RCX, RDX);
         a_.jcc(CC_E, cold);
+#ifdef QUANTA_JIT_ARCH_A64
+        // fcvtzs saturates instead of answering one indefinite value: both ends go to the cold path.
+        a_.mov_imm64(RDX, 0x7FFFFFFFFFFFFFFFull);
+        a_.cmp(RCX, RDX);
+        a_.jcc(CC_E, cold);
+#endif
         a_.mov32(d, RCX);
         a_.bind(back);
         commit_g(id, d);
@@ -2411,10 +2436,14 @@ inline void Emitter::emit_node(int32_t id) {
     case K::NegF: {
         const Xmm a = use_x(n.a, XMM0);
         const Xmm d = def_x(id, XMM0);
+#ifdef QUANTA_JIT_ARCH_A64
+        a_.fneg(d, a);
+#else
         a_.mov_imm64(RDX, 0x8000000000000000ull);
         a_.movq_to_xmm(XMM1, RDX);
         if (d != a) a_.movapd(d, a);
         a_.xorpd(d, XMM1);
+#endif
         commit_x(id, d);
         return;
     }
@@ -2454,10 +2483,18 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg d = def_g(id, RAX);
         a_.xor32(RAX, RAX);
         switch (n.op) {
+#ifdef QUANTA_JIT_ARCH_A64
+        // fcmp leaves "unordered" as C=1, V=1: the conditions below are the ones that are false for NaN.
+        case K::LtF: a_.ucomisd(a, b); a_.setcc(CC_S, RAX); break;      // MI
+        case K::GtF: a_.ucomisd(a, b); a_.setcc(CC_G, RAX); break;      // GT
+        case K::LeF: a_.ucomisd(a, b); a_.setcc(CC_BE, RAX); break;     // LS
+        case K::GeF: a_.ucomisd(a, b); a_.setcc(CC_GE, RAX); break;     // GE
+#else
         case K::LtF: a_.ucomisd(b, a); a_.setcc(CC_A, RAX); break;
         case K::GtF: a_.ucomisd(a, b); a_.setcc(CC_A, RAX); break;
         case K::LeF: a_.ucomisd(b, a); a_.setcc(CC_AE, RAX); break;
         case K::GeF: a_.ucomisd(a, b); a_.setcc(CC_AE, RAX); break;
+#endif
         case K::EqF:
             a_.xor32(RCX, RCX);
             a_.ucomisd(a, b);
@@ -2501,9 +2538,12 @@ inline void Emitter::emit_node(int32_t id) {
         const Xmm a = use_x(n.a, XMM0);
         const Reg d = def_g(id, RAX);
         a_.xor32(RAX, RAX);
+        a_.xor32(RCX, RCX);
         a_.xorpd(XMM1, XMM1);
         a_.ucomisd(a, XMM1);
-        a_.setcc(CC_NE, RAX);
+        a_.setcc(CC_NE, RAX);      // not zero ...
+        a_.setcc(CC_NP, RCX);      // ... and not NaN
+        a_.and32(RAX, RCX);
         if (d != RAX) a_.mov32(d, RAX);
         commit_g(id, d);
         return;
@@ -2548,9 +2588,8 @@ inline void Emitter::emit_node(int32_t id) {
             a_.bind(generic);
             int32_t bytes;
             save_live(bytes);
-            a_.mov(RDI, s == RDI ? RDI : s);
-            a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(&helper_truthy));
-            a_.call_reg(RAX);
+            if (s != abi::A0) a_.mov(abi::A0, s);
+            call_c(reinterpret_cast<const void*>(&helper_truthy));
             restore_live(bytes);
             a_.jmp(done);
         });
@@ -2578,12 +2617,11 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::Step: {
         const uint8_t op = g_.chunk->code[n.aux];
-        a_.mov(RDI, RBX);
-        a_.mov_imm32(RSI, n.aux);
-        a_.mov_imm32(RDX, static_cast<uint32_t>(n.imm));
-        a_.mov_imm32(RCX, kNoOperand);
-        a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(kStepFns[op]));
-        a_.call_reg(RAX);
+        a_.mov(abi::A0, RBX);
+        a_.mov_imm32(abi::A1, n.aux);
+        a_.mov_imm32(abi::A2, static_cast<uint32_t>(n.imm));
+        a_.mov_imm32(abi::A3, kNoOperand);
+        call_c(reinterpret_cast<const void*>(kStepFns[op]));
         const Reg d = def_g(id, RAX);
         if (d != RAX) a_.mov32(d, RAX);
         commit_g(id, d);
@@ -2616,9 +2654,8 @@ inline void Emitter::emit_node(int32_t id) {
             a_.bind(cold);
             int32_t bytes;
             save_live(bytes);
-            a_.mov(RDI, R14);
-            a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(&helper_poll));
-            a_.call_reg(RAX);
+            a_.mov(abi::A0, R14);
+            call_c(reinterpret_cast<const void*>(&helper_poll));
             restore_live(bytes);
             a_.jmp(back);
         });
@@ -2691,11 +2728,10 @@ inline void Emitter::emit_node(int32_t id) {
                 int32_t bytes;
                 save_live(bytes);
                 a_.sub_imm(RSP, 16);
-                a_.mov(RDI, RBX);
-                a_.mov_imm64(RSI, key);
-                a_.mov(RDX, RSP);
-                a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(&helper_env_load));
-                a_.call_reg(RAX);
+                a_.mov(abi::A0, RBX);
+                a_.mov_imm64(abi::A1, key);
+                a_.mov(abi::A2, RSP);
+                call_c(reinterpret_cast<const void*>(&helper_env_load));
                 a_.mov_load(RDX, mem(RSP, 0));
                 a_.add_imm(RSP, 16);
                 a_.test32(RAX, RAX);       // (after the add: it sets the flags)
@@ -2840,8 +2876,7 @@ inline void Emitter::emit_node(int32_t id) {
         a_.cmp32_imm(RCX, -1);
         a_.jcc(CC_E, cold);
         a_.mov32(R11, RAX);
-        a_.cdq();
-        a_.idiv32(RCX);
+        a_.rem32(RDX, RAX, RCX);
         a_.test32(RDX, RDX);
         a_.jcc(CC_NE, have);
         {   // a zero remainder takes the dividend's sign
@@ -2863,8 +2898,7 @@ inline void Emitter::emit_node(int32_t id) {
             if (a != XMM0) a_.movapd(XMM0, a);
             int32_t bytes;
             save_live(bytes);
-            a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(&helper_fmod));
-            a_.call_reg(RAX);
+            call_c(reinterpret_cast<const void*>(&helper_fmod));
             restore_live(bytes);
             if (d != XMM0) a_.movapd(d, XMM0);
             a_.jmp(done);
@@ -2941,12 +2975,20 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
     for (int32_t blk : order_) blk_label_[blk] = &new_label();
 
     // Prologue: the entry address arrives in the third argument register.
+#ifdef QUANTA_JIT_ARCH_A64
+    a_.enter_frame();
+#else
     a_.push(RBP); a_.push(RBX); a_.push(R12); a_.push(R13); a_.push(R14); a_.push(R15);
-    a_.sub_imm(RSP, frame_bytes_);
-    a_.mov(RBX, RDI);
-    a_.mov(R14, RSI);
+    if (abi::kPreservesRdiRsi) { a_.push(RDI); a_.push(RSI); }
+#endif
+    if (frame_bytes_) a_.sub_imm(RSP, frame_bytes_);
+#ifdef QUANTA_JIT_WIN64
+    for (int i = 0; i < 10; i++) a_.movups_store(mem(RSP, xmm_save_off_ + 16 * i), static_cast<Xmm>(6 + i));
+#endif
+    a_.mov(RBX, abi::A0);
+    a_.mov(R14, abi::A1);
     a_.mov_load(R12, mem(RBX, static_cast<int32_t>(kOffRegs)));
-    a_.jmp_reg(RDX);
+    a_.jmp_reg(abi::A2);
 
     for (size_t i = 0; i < order_.size() && !why_; i++) {
         const int32_t blk = order_[i];
@@ -2994,9 +3036,18 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
     }
     if (why_) return false;
     a_.bind(epilogue_);
-    a_.add_imm(RSP, frame_bytes_);
+#ifdef QUANTA_JIT_WIN64
+    for (int i = 0; i < 10; i++) a_.movups_load(static_cast<Xmm>(6 + i), mem(RSP, xmm_save_off_ + 16 * i));
+#endif
+    if (frame_bytes_) a_.add_imm(RSP, frame_bytes_);
+#ifdef QUANTA_JIT_ARCH_A64
+    a_.leave_frame();
+    if (a_.failed()) return fail("branch out of range");
+#else
+    if (abi::kPreservesRdiRsi) { a_.pop(RSI); a_.pop(RDI); }
     a_.pop(R15); a_.pop(R14); a_.pop(R13); a_.pop(R12); a_.pop(RBX); a_.pop(RBP);
     a_.ret();
+#endif
     out = std::move(a_.buf);
     return true;
 }

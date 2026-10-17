@@ -42,7 +42,7 @@ enum Reg : uint8_t {
     RAX = 0, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
     R8, R9, R10, R11, R12, R13, R14, R15
 };
-enum Xmm : uint8_t { XMM0 = 0, XMM1, XMM2, XMM3 };
+enum Xmm : uint8_t { XMM0 = 0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15 };
 
 // The x86 numbering, so a table indexed by Cond means the same thing here.
 enum Cond : uint8_t {
@@ -74,6 +74,10 @@ inline constexpr uint8_t kPhys[16] = {
     /* R12 */ 20, /* R13 */ 21, /* R14 */ 22, /* R15 */ 23
 };
 inline constexpr uint8_t phys(Reg r) { return kPhys[r]; }
+// The d register behind each floating-point role. XMM0 and XMM1 are d0 and d1, where C helpers take their first two
+// double arguments; the others sit in d16-d29, which no calling convention asks a callee to preserve (d8-d15 are
+// callee-saved on AArch64, and d30 is the assembler's scratch).
+inline constexpr uint32_t fp(Xmm x) { return x < 2 ? static_cast<uint32_t>(x) : static_cast<uint32_t>(x) + 14u; }
 
 constexpr uint32_t kScratchAddr = 16;   // x16
 constexpr uint32_t kScratchData = 17;   // x17
@@ -81,10 +85,11 @@ constexpr uint32_t kZr = 31;            // xzr/wzr (or sp, depending on the inst
 constexpr uint32_t kLr = 30;
 constexpr uint32_t kFpScratch = 30;     // d30
 
-// ARM condition field for each x86 Cond (index by Cond). 0xFF: no counterpart (parity).
+// ARM condition field for each x86 Cond (index by Cond). Parity is "unordered": after fcmp that is the V flag, so
+// CC_P is VS and CC_NP is VC (integer overflow shares the same two, and nothing here asks for both).
 inline constexpr uint8_t kArmCond[16] = {
     /* O  */ 6,  /* NO */ 7,  /* B  */ 3,  /* AE */ 2,  /* E  */ 0,  /* NE */ 1,
-    /* BE */ 9,  /* A  */ 8,  /* S  */ 4,  /* NS */ 5,  0xFF, 0xFF,
+    /* BE */ 9,  /* A  */ 8,  /* S  */ 4,  /* NS */ 5,  /* P  */ 6, /* NP */ 7,
     /* L  */ 11, /* GE */ 10, /* LE */ 13, /* G  */ 12
 };
 
@@ -269,24 +274,42 @@ public:
     void ud2() { emit(0xD4200000u); }
 
     // ---- floating point ------------------------------------------------
-    void movq_to_xmm(Xmm x, Reg r) { emit(0x9E670000u | (phys(r) << 5) | x); }     // fmov dX, r
-    void movq_from_xmm(Reg r, Xmm x) { emit(0x9E660000u | (static_cast<uint32_t>(x) << 5) | phys(r)); }
-    void addsd(Xmm d, Xmm s) { emit(0x1E602800u | (static_cast<uint32_t>(s) << 16) | (static_cast<uint32_t>(d) << 5) | d); }
-    void subsd(Xmm d, Xmm s) { emit(0x1E603800u | (static_cast<uint32_t>(s) << 16) | (static_cast<uint32_t>(d) << 5) | d); }
-    void mulsd(Xmm d, Xmm s) { emit(0x1E600800u | (static_cast<uint32_t>(s) << 16) | (static_cast<uint32_t>(d) << 5) | d); }
-    void divsd(Xmm d, Xmm s) { emit(0x1E601800u | (static_cast<uint32_t>(s) << 16) | (static_cast<uint32_t>(d) << 5) | d); }
+    void movq_to_xmm(Xmm x, Reg r) { emit(0x9E670000u | (phys(r) << 5) | fp(x)); }     // fmov dX, r
+    void movq_from_xmm(Reg r, Xmm x) { emit(0x9E660000u | (fp(x) << 5) | phys(r)); }
+    void addsd(Xmm d, Xmm s) { emit(0x1E602800u | (fp(s) << 16) | (fp(d) << 5) | fp(d)); }
+    void subsd(Xmm d, Xmm s) { emit(0x1E603800u | (fp(s) << 16) | (fp(d) << 5) | fp(d)); }
+    void mulsd(Xmm d, Xmm s) { emit(0x1E600800u | (fp(s) << 16) | (fp(d) << 5) | fp(d)); }
+    void divsd(Xmm d, Xmm s) { emit(0x1E601800u | (fp(s) << 16) | (fp(d) << 5) | fp(d)); }
     void addsd_mem(Xmm d, Mem m) {
         access_fp(true, kFpScratch, m);
-        emit(0x1E602800u | (kFpScratch << 16) | (static_cast<uint32_t>(d) << 5) | d);
+        emit(0x1E602800u | (kFpScratch << 16) | (fp(d) << 5) | fp(d));
     }
-    void ucomisd(Xmm a, Xmm b) { emit(0x1E602000u | (static_cast<uint32_t>(b) << 16) | (static_cast<uint32_t>(a) << 5)); }   // fcmp
-    void cvtsi2sd32(Xmm d, Reg r) { emit(0x1E620000u | (phys(r) << 5) | d); }       // scvtf dD, wR
-    void cvtsi2sd64(Xmm d, Reg r) { emit(0x9E620000u | (phys(r) << 5) | d); }       // scvtf dD, xR
+    void ucomisd(Xmm a, Xmm b) { emit(0x1E602000u | (fp(b) << 16) | (fp(a) << 5)); }   // fcmp
+    void cvtsi2sd32(Xmm d, Reg r) { emit(0x1E620000u | (phys(r) << 5) | fp(d)); }       // scvtf dD, wR
+    void cvtsi2sd64(Xmm d, Reg r) { emit(0x9E620000u | (phys(r) << 5) | fp(d)); }       // scvtf dD, xR
+    void movapd(Xmm d, Xmm s) { emit(0x1E604000u | (fp(s) << 5) | fp(d)); }             // fmov dD, dS
+    void fneg(Xmm d, Xmm s) { emit(0x1E614000u | (fp(s) << 5) | fp(d)); }
+    // x86's xorpd with itself zeroes; that is all the code generator asks of it.
+    void xorpd(Xmm d, Xmm s) {
+        if (d == s) emit(0x9E670000u | (kZr << 5) | fp(d));                           // fmov dD, xzr
+        else emit(0x6E201C00u | (fp(s) << 16) | (fp(d) << 5) | fp(d));               // eor vD.16b, vD.16b, vS.16b
+    }
+    void movsd_load(Xmm d, Mem m) { access_fp(true, fp(d), m); }
+    void movsd_store(Mem m, Xmm s) { access_fp(false, fp(s), m); }
+    // Truncating conversion to 64 bits. fcvtzs saturates (and answers 0 for NaN) where x86 answers
+    // 0x8000000000000000 for everything out of range: callers test for both ends.
+    void cvttsd2si64(Reg d, Xmm s) { emit(0x9E780000u | (fp(s) << 5) | phys(d)); }
+    // d = num % den (signed 32-bit, den != 0 and != -1). x86's idiv wants fixed registers, so the
+    // interface does too: num in RAX, den in RCX, remainder in RDX.
+    void rem32(Reg rem, Reg num, Reg den) {
+        emit(0x1AC00C00u | (phys(den) << 16) | (phys(num) << 5) | kScratchAddr);                       // sdiv w16, num, den
+        emit(0x1B008000u | (phys(den) << 16) | (phys(num) << 10) | (kScratchAddr << 5) | phys(rem));   // msub wRem, w16, den, num
+    }
     // x86's cvttsd2si answers 0x80000000 for anything outside int32; fcvtzs saturates. The
     // generated code tests for that value, so it is produced here: convert to 64 bits, and
     // if that is not the sign extension of its low half the result is out of range.
     void cvttsd2si32(Reg d, Xmm s) {
-        emit(0x9E780000u | (static_cast<uint32_t>(s) << 5) | kScratchData);                              // fcvtzs x17, dS
+        emit(0x9E780000u | (fp(s) << 5) | kScratchData);                                                 // fcvtzs x17, dS
         emit(0xEB20C000u | (kScratchData << 16) | (kScratchData << 5) | kZr);                             // cmp x17, w17, sxtw
         emit(0x52A00000u | (0x8000u << 5) | kScratchAddr);                                                // mov w16, #0x80000000
         emit(0x1A800000u | (kScratchAddr << 16) | (0u << 12) | (kScratchData << 5) | phys(d));            // csel wD, w17, w16, eq
@@ -434,24 +457,26 @@ private:
             default: return load ? 0x38600800u : 0x38200800u;
         }
     }
-    // d-register load (8 bytes) for addsd_mem.
+    // d-register load or store (8 bytes).
     void access_fp(bool load, uint32_t rt, const Mem& m) {
-        (void)load;
         uint32_t rn = phys(m.base);
         const int64_t disp = m.disp;
         if (m.index >= 0) {
             emit(0x8B000000u | (phys(static_cast<Reg>(m.index)) << 16) | (log2_scale(m.scale) << 10) | (rn << 5) | kScratchAddr);
             rn = kScratchAddr;
         }
+        const uint32_t unsigned_form = load ? 0xFD400000u : 0xFD000000u;
+        const uint32_t unscaled_form = load ? 0xFC400000u : 0xFC000000u;
+        const uint32_t reg_form = load ? 0xFC600800u : 0xFC200800u;
         if (disp >= 0 && disp % 8 == 0 && disp / 8 <= 4095) {
-            emit(0xFD400000u | (static_cast<uint32_t>(disp / 8) << 10) | (rn << 5) | rt);
+            emit(unsigned_form | (static_cast<uint32_t>(disp / 8) << 10) | (rn << 5) | rt);
         } else if (disp >= -256 && disp <= 255) {
-            emit(0xFC400000u | ((static_cast<uint32_t>(disp) & 0x1FFu) << 12) | (rn << 5) | rt);
+            emit(unscaled_form | ((static_cast<uint32_t>(disp) & 0x1FFu) << 12) | (rn << 5) | rt);
         } else if (rn == kScratchAddr) {
             failed_ = true;
         } else {
             mov_imm_to(kScratchAddr, static_cast<uint64_t>(disp));
-            emit(0xFC600800u | (kScratchAddr << 16) | (3u << 13) | (rn << 5) | rt);                  // ldr d, [base, x16]
+            emit(reg_form | (kScratchAddr << 16) | (3u << 13) | (rn << 5) | rt);
         }
     }
 

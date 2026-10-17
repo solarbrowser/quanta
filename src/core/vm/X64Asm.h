@@ -184,8 +184,13 @@ public:
     void xorpd(Xmm d, Xmm s) { sse(0x66, 0x57, d, s); }
     void andpd(Xmm d, Xmm s) { sse(0x66, 0x54, d, s); }
     void sqrtsd(Xmm d, Xmm s) { sse(0xF2, 0x51, d, s); }
+    // Full 128-bit moves, for saving the callee-saved xmm registers of the Microsoft convention.
+    void movups_load(Xmm d, Mem m) { rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x10); modrm_mem(static_cast<Reg>(d), m); }
+    void movups_store(Mem m, Xmm s) { rex_rm(false, static_cast<Reg>(s), m); byte(0x0F); byte(0x11); modrm_mem(static_cast<Reg>(s), m); }
     void movsd_load(Xmm d, Mem m) { byte(0xF2); rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x10); modrm_mem(static_cast<Reg>(d), m); }
     void movsd_store(Mem m, Xmm s) { byte(0xF2); rex_rm(false, static_cast<Reg>(s), m); byte(0x0F); byte(0x11); modrm_mem(static_cast<Reg>(s), m); }
+    // d = num % den (signed 32-bit); idiv's fixed registers: num in RAX, den in RCX, remainder in RDX.
+    void rem32(Reg rem, Reg num, Reg den) { (void)rem; (void)num; (void)den; cdq(); idiv32(RCX); }
     void cvttsd2si64(Reg d, Xmm s) { byte(0xF2); rex(true, d >> 3, 0, s >> 3); byte(0x0F); byte(0x2C); modrm_rr(d, static_cast<Reg>(s)); }
     void addsd_mem(Xmm d, Mem m) { byte(0xF2); rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x58); modrm_mem(static_cast<Reg>(d), m); }
     void subsd(Xmm d, Xmm s) { sse(0xF2, 0x5C, d, s); }

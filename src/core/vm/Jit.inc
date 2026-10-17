@@ -506,7 +506,7 @@ QUANTA_JIT_ABI int32_t step(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_
 // common shape is specialised (nothing leaves the instruction but falling through, no try region, bytes
 // that fit the copy); anything else is step()'s.
 template <int N>
-int32_t step_k(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noexcept {
+QUANTA_JIT_ABI int32_t step_k(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noexcept {
     constexpr uint8_t op = static_cast<uint8_t>(N);
     JitCode* jc = f->chunk->jit.get();
     const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(static_cast<Op>(op)));
@@ -546,7 +546,7 @@ int32_t step_k(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noexce
     return kStepFinished;
 }
 
-using StepFn = int32_t (*)(Frame*, uint32_t, uint32_t, uint32_t) noexcept;
+using StepFn = int32_t (QUANTA_JIT_ABI *)(Frame*, uint32_t, uint32_t, uint32_t) noexcept;
 template <size_t... I>
 constexpr std::array<StepFn, 256> make_step_table(std::index_sequence<I...>) {
     return {{&step_k<static_cast<int>(I)>...}};
