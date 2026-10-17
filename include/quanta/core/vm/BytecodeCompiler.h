@@ -514,6 +514,11 @@ private:
     uint16_t add_name(const std::string& name);
     void emit_lookup_ref(Op narrow_op, Op wide_op, const std::string& name);
     uint32_t alloc_feedback_slot();
+    // CreateObject for a literal of `count` properties, or CreateObjectT when they are all plain static data
+    // properties (the caller says so) and worth asking the object to be made with its final shape. Returns the
+    // template's index, or -1 for the plain form; each property's DefineOwn is then told to the template.
+    int emit_create_object(size_t count, bool plain_properties);
+    void note_literal_site(int template_index, uint32_t feedback_slot);
     uint32_t alloc_private_feedback();
     uint32_t alloc_keyed_feedback();
     // Picks the narrow or wide opcode/operand form the same way emit_load_const

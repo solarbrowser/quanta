@@ -961,6 +961,13 @@ public:
         if (used_as_prototype()) bump_proto_epoch();
         return true;
     }
+    // A fresh object that takes a literal's final shape before any of its values exist (Op::CreateObjectT).
+    // Its `n` slots are made valid now, since the shape says they are there and a collection may trace them
+    // before the literal has stored them; a block reserved for them is not initialized by the reserve.
+    void adopt_literal_shape(Shape* s, uint32_t n) {
+        shape_ = s;
+        for (uint32_t i = 0; i < n; i++) *shape_slot_ptr(i) = Value();
+    }
     [[gnu::always_inline]] void add_shape_property_cached(const std::string&, const Value& value, Shape* to_shape) {
         shape_ = to_shape;
         const uint32_t new_count = to_shape->slot_count();

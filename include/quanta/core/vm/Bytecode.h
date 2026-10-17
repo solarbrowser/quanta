@@ -496,6 +496,12 @@ enum class Op : uint8_t {
     // any other consumer.
     LdaFrameArgsMarker,
 
+    // CreateObject for an object literal whose properties are all plain static keys with plain
+    // values: its operand names a LiteralTemplate, which once the literal has run learns the
+    // shape the object ends with, so the object is made with that shape and each DefineOwn is
+    // one slot store (Interpreter.cpp, h_CreateObjectT).
+    CreateObjectT,  // t
+
     kCount
 };
 
@@ -580,6 +586,11 @@ struct FeedbackBody {
         return &transitions[transition_count++];
     }
     bool transition_mega = false;
+    // DefineOwn only: set when this site is one property of an object literal whose objects are
+    // made with their final shape (Op::CreateObjectT). An object that already has that shape
+    // takes the value in `lit_slot` with no transition.
+    Shape* lit_shape = nullptr;
+    uint32_t lit_slot = 0;
 
     // GetNamed-only: caches reading an INHERITED (not own) data property.
     // `prototype` is the receiver's immediate get_prototype() at learn time
@@ -920,6 +931,16 @@ struct BytecodeChunk {
         // function is compiled was most of what a large script's feedback
         // came to.
         std::vector<std::unique_ptr<KeyedFeedback>> keyed_feedback;
+        // What an object literal learns about itself (see Op::CreateObjectT). Not serialized and not
+        // shared between chunks; the shape is not a cell, it lives as long as the thread.
+        struct LiteralTemplate {
+            uint16_t count = 0;                 // properties, all of them plain static data properties
+            uint8_t runs = 0;                   // evaluations seen before the shape could be learned
+            bool refused = false;               // the sites did not form the chain a template needs
+            Shape* shape = nullptr;             // the shape the object ends with, once learned
+            std::vector<uint32_t> sites;        // each property's DefineOwn feedback slot, in order
+        };
+        std::vector<LiteralTemplate> literal_templates;
         KeyedFeedback* keyed(uint32_t index) {
             std::unique_ptr<KeyedFeedback>& slot = keyed_feedback[index];
             if (!slot) slot = std::make_unique<KeyedFeedback>();

@@ -57,6 +57,7 @@ void BytecodeChunk::drop_feedback() const {
     for (const auto& slot : feedback) const_cast<FeedbackSlot&>(slot).reset();
     if (ic_feedback) {
         for (auto& kfb : ic_feedback->keyed_feedback) kfb.reset();
+        for (auto& t : ic_feedback->literal_templates) { t.shape = nullptr; t.runs = 0; t.refused = false; }
     }
 }
 
@@ -244,7 +245,8 @@ const OpInfo& op_info(Op op) {
         {"LinkExports", 2, 'z'},
         {"LdaEnvSlotAt", 4, 'D'}, {"StaEnvSlotAt", 4, 'D'},
         {"ForInKeyPresent", 3, 'J'},
-        {"LdaArgLength", 0, '-'}, {"LdaArgAt", 0, '-'}, {"LdaFrameArgsMarker", 0, '-'}
+        {"LdaArgLength", 0, '-'}, {"LdaArgAt", 0, '-'}, {"LdaFrameArgsMarker", 0, '-'},
+        {"CreateObjectT", 2, 'h'}
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");

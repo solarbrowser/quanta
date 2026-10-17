@@ -7293,6 +7293,25 @@ uint32_t BytecodeCompiler::alloc_feedback_slot() {
     return static_cast<uint32_t>(feedback_.size() - 1);
 }
 
+int BytecodeCompiler::emit_create_object(size_t count, bool plain_properties) {
+    auto& templates = chunk_->ensure_ic_feedback().literal_templates;
+    if (plain_properties && count >= 1 && count <= 64 && templates.size() < 0xFFFF) {
+        const int index = static_cast<int>(templates.size());
+        templates.emplace_back();
+        templates.back().count = static_cast<uint16_t>(count);
+        emit(Op::CreateObjectT);
+        emit_u16(static_cast<uint16_t>(index));
+        return index;
+    }
+    emit(Op::CreateObject);
+    emit_u16(static_cast<uint16_t>(count));
+    return -1;
+}
+
+void BytecodeCompiler::note_literal_site(int template_index, uint32_t feedback_slot) {
+    if (template_index >= 0) chunk_->ensure_ic_feedback().literal_templates[template_index].sites.push_back(feedback_slot);
+}
+
 uint32_t BytecodeCompiler::alloc_private_feedback() {
     auto& pf = chunk_->ensure_ic_feedback().private_feedback;
     if (pf.size() >= 0xFFFFFFFEu) { failed_ = true; return 0; }
@@ -12423,8 +12442,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // Getter/Setter) has native codegen below.
             if (object_literal_is_complex(lit)) return false;
 
-            emit(Op::CreateObject);
-            emit_u16(static_cast<uint16_t>(lit->get_properties().size()));
+            // A literal made only of plain `key: value` properties with static keys can have its object made
+            // with the final shape (Op::CreateObjectT). Whether it really can is learned at run time from what
+            // its property sites saw; this only says it is worth asking.
+            bool plain_properties = true;
+            for (const auto& p : lit->get_properties()) {
+                if (!p->key || p->computed || p->type != ObjectLiteral::PropertyType::Value ||
+                    p->key->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                    plain_properties = false;
+                    break;
+                }
+            }
+            const int template_index = emit_create_object(lit->get_properties().size(), plain_properties);
             int obj_reg = alloc_temp();
             if (failed_) return false;
             emit(Op::Star);
@@ -12535,8 +12564,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         }
                         // CreateDataProperty (a poisoned Object.prototype
                         // accessor must not fire) -- DefineOwn.
+                        const uint32_t define_fb = alloc_feedback_slot();
                         emit_named_ic(Op::DefineOwn, Op::DefineOwnWide, static_cast<uint8_t>(obj_reg),
-                                      add_name(key), alloc_feedback_slot());
+                                      add_name(key), define_fb);
+                        note_literal_site(template_index, define_fb);
                     }
                 } else {
                     // Computed key (Value or Method only -- computed-key
@@ -13162,8 +13193,7 @@ size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool dis
             // (DefineOwn), in source order. Nothing here is an anonymous
             // function, so no NamedEvaluation step applies.
             const uint32_t count = e.name_id;
-            emit(Op::CreateObject);
-            emit_u16(static_cast<uint16_t>(count));
+            const int template_index = emit_create_object(count, /*plain_properties=*/true);
             int obj_reg = alloc_temp();
             if (failed_) return 0;
             emit(Op::Star);
@@ -13180,8 +13210,10 @@ size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool dis
                     emit(Op::SetFunctionNameIfUnnamed);
                     emit_u16(add_name(key));
                 }
+                const uint32_t define_fb = alloc_feedback_slot();
                 emit_named_ic(Op::DefineOwn, Op::DefineOwnWide, static_cast<uint8_t>(obj_reg),
-                              add_name(key), alloc_feedback_slot());
+                              add_name(key), define_fb);
+                note_literal_site(template_index, define_fb);
                 child += prop.span;
             }
             emit(Op::Ldar);

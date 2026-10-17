@@ -9108,6 +9108,14 @@ Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
         if (LIKELY(shape_fast_path_ok(obj->get_type()) && obj->is_extensible() &&
                    !obj->has_any_descriptor_override())) {
             const FeedbackBody* fb = f.chunk->feedback[read_u16(code, pc + 4)].peek();
+            // An object that already has the literal's final shape (Op::CreateObjectT made it so):
+            // this property is in its slot, and the value goes there.
+            if (fb && fb->lit_shape && fb->lit_shape == obj->get_shape()) {
+                *obj->shape_slot_for_cached_index(fb->lit_slot) = acc;
+                if (UNLIKELY(store_needs_barrier(acc))) [[clang::musttail]] return h_SetNamedBarrier(f, pc, acc);
+                pc += 6;
+                DISPATCH();
+            }
             if (LIKELY(fb && !fb->transition_mega && fb->transition_count != 0)) {
                 const FeedbackSlot::TransitionEntry& te = fb->transitions[0];
                 if (te.from_shape == obj->get_shape()) {
@@ -9895,6 +9903,68 @@ Value h_gen_CreateObject(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Makes an object literal's object, with its final shape when the literal has learned it. The shape
+// is learned from the literal's own property sites on its second evaluation: by then each has seen
+// the transition it makes, and they form a chain from the empty shape that adds the keys in order,
+// one slot each. That is checked here rather than assumed, so a literal with a repeated key, an index
+// key or a site that went megamorphic is never templated and keeps the one-property-at-a-time form.
+bool learn_literal_template(const BytecodeChunk& chunk, BytecodeChunk::IcFeedback::LiteralTemplate& t) {
+    if (t.sites.size() != t.count || t.count == 0) return false;
+    Shape* prev = Shape::root();
+    for (uint32_t i = 0; i < t.count; i++) {
+        const FeedbackBody* fb = chunk.feedback[t.sites[i]].peek();
+        if (!fb || fb->transition_mega || fb->transition_count != 1) return false;
+        const FeedbackSlot::TransitionEntry& te = fb->transitions[0];
+        if (te.from_shape != prev || te.slot_index != i || te.to_shape->slot_count() != i + 1) return false;
+        prev = te.to_shape;
+    }
+    t.shape = prev;
+    for (uint32_t i = 0; i < t.count; i++) {
+        FeedbackBody* fb = chunk.feedback[t.sites[i]].peek();
+        fb->lit_shape = prev;
+        fb->lit_slot = i;
+    }
+    return true;
+}
+
+Value h_CreateObjectT(Frame& f, uint32_t pc, Value acc);
+
+[[gnu::noinline]] Value h_CreateObjectTSlow(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = *f.chunk;
+    BytecodeChunk::IcFeedback::LiteralTemplate& t = chunk.ic_feedback->literal_templates[read_u16(f.code, pc + 1)];
+    if (!t.refused && ++t.runs >= 2 && !learn_literal_template(chunk, t)) t.refused = true;
+    if (t.shape) [[clang::musttail]] return h_CreateObjectT(f, pc, acc);
+    // The ordinary object, the way Op::CreateObject makes it; the properties arrive one by one.
+    Object* obj;
+    if (t.count <= 4) {
+        obj = ObjectFactory::create_object_with_slots((t.count + 1u) & ~1u).release();
+    } else {
+        obj = ObjectFactory::create_object().release();
+        obj->reserve_property_slots(t.count);
+    }
+    Engine::fixup_new_object_realm(obj, f.ctx);
+    acc = Value(obj);
+    pc += 3;
+    DISPATCH();
+}
+
+Value h_CreateObjectT(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk::IcFeedback::LiteralTemplate& t = f.chunk->ic_feedback->literal_templates[read_u16(f.code, pc + 1)];
+    if (UNLIKELY(!t.shape)) [[clang::musttail]] return h_CreateObjectTSlow(f, pc, acc);
+    Object* obj;
+    if (t.count <= 4) {
+        obj = ObjectFactory::create_object_with_slots((t.count + 1u) & ~1u).release();
+    } else {
+        obj = ObjectFactory::create_object().release();
+        obj->reserve_property_slots(t.count);
+    }
+    obj->adopt_literal_shape(t.shape, t.count);
+    Engine::fixup_new_object_realm(obj, f.ctx);
+    acc = Value(obj);
+    pc += 3;
+    DISPATCH();
+}
+
 Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
@@ -10197,6 +10267,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::FinalizeComputedProperty)] = &h_gen_FinalizeComputedProperty;
     t[static_cast<uint8_t>(Op::SetFunctionNameIfUnnamed)] = &h_gen_SetFunctionNameIfUnnamed;
     t[static_cast<uint8_t>(Op::CreateObject)] = &h_gen_CreateObject;
+    t[static_cast<uint8_t>(Op::CreateObjectT)] = &h_CreateObjectT;
     t[static_cast<uint8_t>(Op::CreateArray)] = &h_gen_CreateArray;
     t[static_cast<uint8_t>(Op::CreateRestArray)] = &h_gen_CreateRestArray;
     t[static_cast<uint8_t>(Op::Throw)] = &h_gen_Throw;
