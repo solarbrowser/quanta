@@ -78,6 +78,7 @@ enum class K : uint8_t {
     CheckEpoch,           // deopt unless the global prototype epoch (aux 0) or descriptor epoch (aux 1) is imm
     LoadHolder,           // Tagged, shape slot aux of the object at imm (a prototype that holds a method)
     LoadPoly,             // Tagged, a Ptr: the slot of the entry in polys[aux] whose shape word the object has (deopt if none)
+    Trap,                 // always deoptimizes: the code after it has never run
     NewObject,            // Tagged a (the constructor): a fresh object of the shape described by imm (NewDesc*), or deopt
     IsNullish,            // Tagged a -> Bool: undefined or null
     LoadLookup,           // Tagged, a name's cached binding (cache entry: imm; aux bits 0-1 the form, bit 8 set when imm is an offset from the frame's cache)
@@ -124,6 +125,7 @@ struct Block {
     int32_t exit_pc = -1;                // synthetic exit block: leaves the region, resuming at this pc
     int32_t first_insn = -1, last_insn = -1;   // [first, last] indices into the function's instructions
     int32_t func = 0;                    // which function's bytecode the block is made of
+    bool cold = false;                   // a block of an inlined function that has never run: it only deoptimizes
     int32_t ret_to = -1;                 // a block of an inlined function that returns: where it goes
 };
 
@@ -191,7 +193,7 @@ inline const char* kname(K k) {
         "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
         "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
         "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "NewObject", "IsNullish"};
+        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "Trap", "NewObject", "IsNullish"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -203,7 +205,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreReg: case K::StoreAcc: case K::Step: case K::StepExit: case K::Poll:
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
-    case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch:
+    case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap:
         return false;
     default: return true;
     }
@@ -236,6 +238,7 @@ struct Config {
     uint32_t skip = 0, limit = 0xFFFFFFFFu, seen = 0;   // QUANTA_OPT_SKIP / QUANTA_OPT_LIMIT: bisect which compiles are allowed
     uint32_t max_deopts = 40;         // guard failures before a loop is given up on
     bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
+    bool cold = true;                 // QUANTA_OPT_COLD=0 keeps never-executed blocks in the region
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 120;      // largest callee (decoded instructions)
@@ -258,6 +261,7 @@ inline Config& config() {
         if (const char* e = std::getenv("QUANTA_OPT_MAXDEOPTS")) c.max_deopts = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_ENTRY")) c.entry = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_ENTRY_MIN")) c.entry_min_insns = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_COLD")) c.cold = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
     }
@@ -384,6 +388,7 @@ private:
     // ---- inlining ----
     Function* inline_target(int32_t fi, const Insn& in);
     bool ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc);
+    bool block_is_cold(int32_t fi, int32_t blk) const;
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
     bool inline_enter(const Insn& in, int32_t callee, bool& ended);
@@ -1235,6 +1240,15 @@ inline bool Builder::translate_block(int32_t blk) {
         B0.term.t = B0.succs[0];
         return true;
     }
+    if (B0.cold) {
+        // Never executed: reaching it means the speculation was wrong; leave through the deopt path (which, in a callee,
+        // rebuilds the interpreter frames).
+        begin_op(F().insns[B0.first_insn].pc);
+        guarded(K::Trap, Rep::None, -1);
+        g_.b[blk].term.kind = T::Bail;
+        g_.b[blk].term.tpc = F().insns[B0.first_insn].pc;
+        return true;
+    }
     if (B0.loop_header) emit(K::Poll, Rep::None);
     bool ended = false;
     for (int32_t i = B0.first_insn; i <= B0.last_insn && !ended; i++) {
@@ -1292,20 +1306,24 @@ inline std::vector<int32_t> Builder::compute_rpo() {
 // bytecode (no try regions, no loops), small, in this realm, that the interpreter could run stackless (so
 // a deoptimization can rebuild its frame) or that is a leaf (so a deoptimization can leave through the call).
 inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
+    auto no_inline_reason = [&](int why) -> Function* {
+        if (config().log) std::fprintf(stderr, "[opt] call at pc %u of chunk %p not inlinable: %d\n", in.pc, static_cast<const void*>(g_.funcs[fi].chunk), why);
+        return nullptr;
+    };
     const Func& P = g_.funcs[fi];
     uint32_t depth = 0;
     for (int32_t k = fi; g_.funcs[k].parent >= 0; k = g_.funcs[k].parent) depth++;
-    if (depth >= config().inline_depth || in.pc + in.len >= P.chunk->code.size()) return nullptr;
+    if (depth >= config().inline_depth || in.pc + in.len >= P.chunk->code.size()) return no_inline_reason(1);
     const Site key{P.chunk, in.pc};
-    if ((no_inline_ && no_inline_->count(key)) || (avoid_ && avoid_->no_inline.count(key))) return nullptr;
+    if ((no_inline_ && no_inline_->count(key)) || (avoid_ && avoid_->no_inline.count(key))) return no_inline_reason(2);
     const auto* fb = P.chunk->ic_feedback.get();
-    if (!fb) return nullptr;
+    if (!fb) return no_inline_reason(3);
     for (const auto& cs : fb->call_sites) {
         if (cs.pc != in.pc) continue;
         Function* fn = cs.fn;
-        if (cs.mega || !fn || fn->get_function_kind() != Function::FunctionKind::Plain || fn->is_arrow()) return nullptr;
+        if (cs.mega || !fn || fn->get_function_kind() != Function::FunctionKind::Plain || fn->is_arrow()) return no_inline_reason(4);
         const FunctionExecutable* exe = fn->get_executable().get();
-        if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm) return nullptr;
+        if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm) return no_inline_reason(5);
         const BytecodeChunk& c = *exe->bytecode_chunk;
         if (static_cast<Op>(in.op) == Op::Construct) {
             Graph::CtorPlan plan;
@@ -1313,22 +1331,45 @@ inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
             const bool sc = fn->stackless_constructible() && !fn->is_class_constructor();
             const bool ok = sc && ctor_plan(fn, plan, n, false);
             if (config().log) std::fprintf(stderr, "[opt] new at pc %u: constructible=%d plan=%d\n", in.pc, sc, ok);
-            if (!ok) return nullptr;
+            if (!ok) return no_inline_reason(6);
             return fn;
         }
         uint8_t v = c.inline_state;
-        if (v & kInlineNever) return nullptr;
+        if (v & kInlineNever) return no_inline_reason(7);
         if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
-        if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf)) || (v & kInlineEnv)) return nullptr;
+        if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf)) || (v & kInlineEnv)) return no_inline_reason(8);
         const bool strict = (v & kInlineLeaf) ? (fn->is_strict() || exe->fast_strict) : (v & kInlineStrict) != 0;
-        if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return nullptr;
+        if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return no_inline_reason(9);
         // A sloppy body that reads `this` boxes a primitive receiver: only a method call can promise an object.
-        if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved) return nullptr;
+        if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved) return no_inline_reason(10);
         uint32_t n = 0;
-        if (!inline_scan(fn, c, n) || n > config().inline_insns) return nullptr;
+        if (!inline_scan(fn, c, n) || n > config().inline_insns) return no_inline_reason(11);
         return fn;
     }
-    return nullptr;
+    return no_inline_reason(12);
+}
+
+// A block that has not run, going by what its property accesses have learned: a site that has seen no receiver of any
+// kind belongs to code nobody has executed. (A receiver the caches do not learn from -- a Proxy -- looks the same, which
+// costs speed and never correctness: the block is left to the interpreter.)
+inline bool Builder::block_is_cold(int32_t fi, int32_t blk) const {
+    const Func& fn = g_.funcs[fi];
+    const Block& B = g_.b[blk];
+    if (B.first_insn < 0 || B.synthetic) return false;
+    const BytecodeChunk& c = *fn.chunk;
+    for (int32_t i = B.first_insn; i <= B.last_insn; i++) {
+        const Insn& in = fn.insns[i];
+        const Op op = static_cast<Op>(in.op);
+        if (op != Op::GetNamed && op != Op::GetNamedStar && op != Op::SetNamed) continue;
+        const uint32_t fbi = read_u16(c.code.data(), in.pc + 4);
+        if (fbi >= c.feedback.size()) continue;
+        const FeedbackBody* fb = c.feedback[fbi].peek();
+        if (!fb) return true;
+        if (fb->count == 0 && fb->proto_count == 0 && !fb->array_length && !fb->prim_valid && !fb->own_desc_receiver &&
+            !fb->mega && !fb->proto_mega && fb->transition_count == 0 && !fb->transition_mega)
+            return true;
+    }
+    return false;
 }
 
 // What a constructor must look like for `new` to be inlined: a single block of straight-line code that does nothing outside
@@ -1474,6 +1515,8 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
         added.push_back(x);
         for (int32_t s2 : g_.b[x].succs) work.push_back(s2);
     }
+    for (int32_t x : added)
+        if (x != g_.funcs[ci].entry_block && block_is_cold(ci, x)) g_.b[x].cold = true;
     if (!leaf) {
         uint32_t words = 0, depth = 0;
         for (int32_t k = ci; k > 0; k = g_.funcs[k].parent) { words += inline_frame_words(g_.funcs[k].nregs); depth++; }
@@ -1712,6 +1755,27 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
         g_.entries.push_back(e);
     }
     reach.resize(g_.b.size(), 0);
+    // ---- cold code ----
+    // Blocks whose property accesses have never seen a receiver have not run. They are left out of the region (an edge
+    // into one becomes an exit to the interpreter), and so is everything only they lead to.
+    if (config().cold) {
+        std::vector<uint8_t> cold(nb0, 0), seen(g_.b.size(), 0);
+        for (int32_t i = 0; i < static_cast<int32_t>(nb0); i++) cold[i] = reach[i] && block_is_cold(0, i);
+        std::vector<int32_t> work;
+        for (int32_t e : g_.entries) for (int32_t s2 : g_.b[e].succs) work.push_back(s2);
+        while (!work.empty()) {
+            const int32_t x = work.back();
+            work.pop_back();
+            if (x >= static_cast<int32_t>(nb0) || seen[x] || !reach[x]) continue;
+            // An entry's own block stays whatever it looks like.
+            bool is_entry_target = false;
+            for (int32_t e : g_.entries) if (g_.b[e].succs[0] == x) is_entry_target = true;
+            if (cold[x] && !is_entry_target) continue;
+            seen[x] = 1;
+            for (int32_t s2 : g_.b[x].succs) work.push_back(s2);
+        }
+        for (int32_t i = 0; i < static_cast<int32_t>(nb0); i++) reach[i] = seen[i];
+    }
     // ---- inlining ----
     if (config().inl && g_.frame) {
         auto is_site = [&](int32_t b) {
@@ -3139,6 +3203,9 @@ inline void Emitter::emit_node(int32_t id) {
         commit_g(id, d);
         return;
     }
+    case K::Trap:
+        a_.jmp(deopt_label(n.state));
+        return;
     case K::NewObject: {
         Label& dl = deopt_label(n.state);
         const Reg fr = use_g(n.a, RAX);
