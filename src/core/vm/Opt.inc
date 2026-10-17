@@ -383,6 +383,7 @@ private:
     bool live_at_f(int32_t fi, uint32_t pc, uint32_t v) const {
         const Func& fn = g_.funcs[fi];
         const uint32_t lv = v - fn.var_base;
+        if (pc >= fn.insn_at.size()) return true;      // not a pc of this function: assume it is live
         const int32_t i = fn.insn_at[pc];
         return i < 0 || (fn.live_before[static_cast<size_t>(i) * fn.live_words + (lv >> 6)] >> (lv & 63)) & 1;
     }
@@ -2022,6 +2023,7 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
                 const int32_t s = g_.b[i].succs[k];
                 if (npred[s] < 2) continue;
                 const int32_t l = new_block(g_.b[s].start_pc, g_.b[s].start_pc);
+                g_.b[l].func = g_.b[s].func;           // its pc is in that function's code
                 g_.b[l].synthetic = true;
                 g_.b[l].succs.push_back(s);
                 g_.b[l].sealed = false;
@@ -2752,6 +2754,7 @@ private:
     std::vector<int32_t> pos_, bstart_, bend_;
     std::vector<int32_t> order_;
     int32_t nslots_ = 0;
+    int32_t native_args_ = -1;     // first of the four frame slots a native call's receiver and arguments are laid out in
     uint32_t used_gpr_ = 0, used_xmm_ = 0;     // masks of registers the allocator handed out
     std::deque<Label> labels_;
     std::vector<Label*> blk_label_;
@@ -2963,6 +2966,9 @@ inline bool Emitter::allocate() {
             active.push_back(id);
         }
     }
+    for (int32_t blk : order_)
+        for (int32_t id : g_.b[blk].nodes)
+            if (!g_.n[id].dead && g_.n[id].op == K::CallNative && native_args_ < 0) { native_args_ = nslots_; nslots_ += 4; }
 #ifdef QUANTA_JIT_ARCH_A64
     frame_bytes_ = ((nslots_ * 8 + 15) / 16) * 16;
 #else
@@ -3496,27 +3502,28 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::CallNative: {
         Label& dl = deopt_label(n.state);
-        a_.sub_imm(RSP, 32);                        // [0] argument 0, [8] argument 1, [16] the receiver
+        // Laid out in the frame (the spill slots are addressed from rsp, so rsp must not move before they are read):
+        // [0] argument 0, [8] argument 1, [16] the receiver.
+        const int32_t area = native_args_ * 8;
         const uint64_t undefined_bits = std::bit_cast<uint64_t>(Value());
         for (int k = 0; k < 3; k++) {
             const int32_t operand = k == 2 ? n.a : k == 0 ? n.b : n.c;
             if (operand >= 0) {
                 const Reg r = use_g(operand, RAX);
-                a_.mov_store(mem(RSP, k * 8), r);
+                a_.mov_store(mem(RSP, area + k * 8), r);
             } else {
                 a_.mov_imm64(RAX, undefined_bits);
-                a_.mov_store(mem(RSP, k * 8), RAX);
+                a_.mov_store(mem(RSP, area + k * 8), RAX);
             }
         }
         int32_t bytes;
         save_live(bytes);
         a_.mov(abi::A0, RBX);
         a_.mov_imm64(abi::A1, n.imm);
-        a_.mov_load(abi::A2, mem(RSP, bytes + 16));
-        a_.lea(abi::A3, mem(RSP, bytes));
+        a_.mov_load(abi::A2, mem(RSP, bytes + area + 16));
+        a_.lea(abi::A3, mem(RSP, bytes + area));
         call_c(reinterpret_cast<const void*>(&helper_call_native));
         restore_live(bytes);
-        a_.add_imm(RSP, 32);
         a_.cmp_imm(RAX, -1);
         a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
