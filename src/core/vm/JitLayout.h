@@ -156,6 +156,9 @@ struct JitCode {
             int32_t parent = -1;
             uint32_t var_base = 0, nregs = 0, call_pc = 0, call_len = 0;
         };
+        // What an inlined `new` allocates (helper_new_object): the object takes its final shape at once.
+        struct NewDesc { Shape* from = nullptr; Shape* to = nullptr; Object* proto = nullptr; uint32_t nslots = 0; };
+        std::vector<std::unique_ptr<NewDesc>> descs;
         std::vector<InlFrame> inl;
         struct InlState { int32_t func = 0; uint32_t pc = 0; std::vector<uint32_t> vars; };   // vars: global variable numbers
         std::vector<InlState> inl_states;       // by deopt state id; func 0 for a state of the root

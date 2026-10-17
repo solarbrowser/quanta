@@ -6765,6 +6765,14 @@ QUANTA_HANDLER Value h_CallLeanRec(HANDLER_PARAMS) {
     [[clang::musttail]] return h_CallLean(f, pc, acc, regs, code);
 }
 
+QUANTA_HANDLER Value h_ConstructLean(HANDLER_PARAMS);
+
+QUANTA_HANDLER Value h_ConstructLeanRec(HANDLER_PARAMS) {
+    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && f.feedback_rooted && regs[code[pc + 1]].is_function())
+        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function(), f.owner);
+    [[clang::musttail]] return h_ConstructLean(f, pc, acc, regs, code);
+}
+
 QUANTA_HANDLER Value h_CallResolvedLeanRec(HANDLER_PARAMS) {
     if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && f.feedback_rooted && regs[code[pc + 1]].is_function())
         note_call(*f.chunk, pc, regs[code[pc + 1]].as_function(), f.owner);
@@ -10138,6 +10146,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CallViaFunctionCall)] = &h_gen_CallViaFunctionCall;
     t[static_cast<uint8_t>(Op::CallViaFunctionApply)] = &h_gen_CallViaFunctionApply;
     t[static_cast<uint8_t>(Op::Construct)] = &h_ConstructLean;
+    if (g_stackless_osr_budget != INT32_MAX) t[static_cast<uint8_t>(Op::Construct)] = &h_ConstructLeanRec;
     t[static_cast<uint8_t>(Op::CallSpread)] = &h_gen_CallSpread;
     t[static_cast<uint8_t>(Op::ConstructSpread)] = &h_gen_ConstructSpread;
     t[static_cast<uint8_t>(Op::CreateRegExp)] = &h_gen_CreateRegExp;

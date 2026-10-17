@@ -2890,7 +2890,12 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
         const uint64_t site = (static_cast<uint64_t>(gpc) << 16) | static_cast<uint16_t>(evar + 1);
-        if (!opt::config().stress && ++av.fails[site] == 2 && av.recompiles < 12) {
+        if (!opt::config().stress && evar == -2 && av.recompiles < 12) {
+            // A global epoch moved: the next build reads the new one.
+            av.recompiles++;
+            jc->opt_units[ui].entries.clear();
+            refused.erase({&chunk, target});
+        } else if (!opt::config().stress && evar != -2 && ++av.fails[site] == 2 && av.recompiles < 12) {
             av.recompiles++;
             if (inlined) av.no_inline.insert({&chunk, site_pc});
             else if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);

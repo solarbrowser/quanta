@@ -78,6 +78,7 @@ enum class K : uint8_t {
     CheckEpoch,           // deopt unless the global prototype epoch (aux 0) or descriptor epoch (aux 1) is imm
     LoadHolder,           // Tagged, shape slot aux of the object at imm (a prototype that holds a method)
     LoadPoly,             // Tagged, a Ptr: the slot of the entry in polys[aux] whose shape word the object has (deopt if none)
+    NewObject,            // Tagged a (the constructor): a fresh object of the shape described by imm (NewDesc*), or deopt
     IsNullish,            // Tagged a -> Bool: undefined or null
     LoadLookup,           // Tagged, a name's cached binding (cache entry: imm; aux bits 0-1 the form, bit 8 set when imm is an offset from the frame's cache)
 };
@@ -144,6 +145,8 @@ struct Func {
     int32_t cont_block = -1;             // the parent's block that starts at the return pc
     int32_t entry_block = -1;
     const void* exe = nullptr;           // the executable the call site was seen to reach (guarded on entry)
+    bool ctor = false;                   // a constructor run for `new`: private to the new object, so a deoptimization leaves through the `new` itself
+    int32_t plan = -1;                   // its entry in Graph::ctors
     bool sloppy_this = false;            // reads a sloppy `this`: only an object may reach it as it is
     Function* fnp = nullptr;             // the function itself
     bool by_identity = false;            // the callee is recognized by the function, not its executable (its caches belong to it)
@@ -164,6 +167,9 @@ struct Graph {
     std::vector<Func> funcs;
     std::vector<Node> n;
     std::vector<Block> b;
+    struct CtorPlan { std::vector<std::pair<uint32_t, uint32_t>> stores; uint64_t proto_epoch = 0; JitCode::OptUnit::NewDesc* desc = nullptr; };
+    std::vector<CtorPlan> ctors;
+    std::vector<std::unique_ptr<JitCode::OptUnit::NewDesc>> descs;
     struct Poly { uint8_t n = 0; uint64_t word[4] = {}; uint32_t slot[4] = {}; };
     std::vector<Poly> polys;             // the shapes a polymorphic property read serves
     std::vector<State> states;
@@ -185,7 +191,7 @@ inline const char* kname(K k) {
         "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
         "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
         "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "IsNullish"};
+        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "NewObject", "IsNullish"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -377,6 +383,7 @@ private:
     }
     // ---- inlining ----
     Function* inline_target(int32_t fi, const Insn& in);
+    bool ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc);
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
     bool inline_enter(const Insn& in, int32_t callee, bool& ended);
@@ -396,6 +403,16 @@ private:
         return true;
     }
     void begin_op(uint32_t pc) { cur_pc_ = pc; state_valid_ = false; }
+    // A check of one of the global epochs. Its state is a copy marked edge_var -2: failing it only means the world
+    // changed since the unit was built, so the unit is rebuilt (the epoch it checks is read again) instead of the
+    // site being given up on.
+    void epoch_guard(uint32_t which, uint64_t value) {
+        const int32_t id = emit(K::CheckEpoch, Rep::None, -1, -1, which, value);
+        State s = g_.states[snapshot()];
+        s.edge_var = -2;
+        g_.states.push_back(std::move(s));
+        g_.n[id].state = static_cast<int32_t>(g_.states.size() - 1);
+    }
 
     // ---- typing helpers (builder time) ----
     // The value as an F64, or -1 when it can never be one (a boolean, a non-number constant).
@@ -499,6 +516,13 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::DefineOwn: R(pc + 1); e.rd(acc); break;
     case Op::DefineElement: R(pc + 1); R(pc + 2); e.rd(acc); break;
     case Op::Call: {
+        R(pc + 1);
+        const uint32_t start = code[pc + 2], argc = code[pc + 3];
+        for (uint32_t i = 0; i < argc; i++) e.rd(start + i);
+        e.wr(acc);
+        break;
+    }
+    case Op::Construct: {
         R(pc + 1);
         const uint32_t start = code[pc + 2], argc = code[pc + 3];
         for (uint32_t i = 0; i < argc; i++) e.rd(start + i);
@@ -1040,6 +1064,7 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         const uint32_t rcv = reg(pc + 1), fbi = u16(pc + 4);
         const uint32_t dst = fused ? reg(pc + 6) : 0;
         if (!ok_reg(rcv) || (fused && !ok_reg(dst)) || fbi >= F().chunk->feedback.size()) return false;
+        if (F().ctor && resolve(value(rcv)) == resolve(value(static_cast<uint32_t>(F().this_var)))) return false;   // mid-construction shapes
         const FeedbackBody& fb = F().chunk->feedback[fbi].read();
         const bool own = fb.count >= 1 && !fb.mega && !fb.entries[0].is_accessor;
         const bool array_len = !own && fb.array_length && fb.count == 0;
@@ -1077,9 +1102,9 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         if (inh) {
             guarded(K::CheckShape, Rep::None, obj, -1, 0, inh->receiver_word);
             guarded(K::CheckProto, Rep::None, obj, -1, 0, reinterpret_cast<uint64_t>(inh->prototype));
-            guarded(K::CheckEpoch, Rep::None, -1, -1, 0, inh->proto_epoch);
+            epoch_guard(0, inh->proto_epoch);
             if (inh->from_descriptor) {
-                guarded(K::CheckEpoch, Rep::None, -1, -1, 1, inh->desc_epoch);
+                epoch_guard(1, inh->desc_epoch);
                 v = const_of(inh->cached_value);
             } else {
                 v = emit(K::LoadHolder, Rep::Tagged, -1, -1, inh->slot_index, reinterpret_cast<uint64_t>(inh->holder));
@@ -1098,6 +1123,17 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
     case Op::SetNamed: {
         const uint32_t rcv = reg(pc + 1), fbi = u16(pc + 4);
         if (!ok_reg(rcv) || fbi >= F().chunk->feedback.size()) return false;
+        if (F().ctor) {
+            // `this.name = value` in an inlined constructor: the object already has its final shape.
+            uint32_t slot = 0;
+            bool found = false;
+            for (auto& [spc, sslot] : g_.ctors[F().plan].stores) if (spc == pc) { slot = sslot; found = true; }
+            if (!found || resolve(value(rcv)) != resolve(value(static_cast<uint32_t>(F().this_var)))) return false;
+            const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+            const int32_t val = tagged(value(acc()));
+            emit(K::StoreSlot, Rep::None, obj, val, slot);
+            return true;
+        }
         const FeedbackBody& fb = F().chunk->feedback[fbi].read();
         if (fb.count < 1 || fb.mega || fb.entries[0].is_accessor) return false;
         if (!object_value(value(rcv))) return false;
@@ -1119,6 +1155,7 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         return true;
     }
     case Op::SetKeyed: {
+        if (F().ctor) return false;
         const uint32_t rcv = reg(pc + 1), kreg = reg(pc + 2);
         if (!ok_reg(rcv) || !ok_reg(kreg)) return false;
         if (!dense_array_receiver(rcv)) return false;
@@ -1150,7 +1187,13 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         return true;
     }
     case Op::Return: {
-        const int32_t v = tagged(value(acc()));
+        int32_t v = tagged(value(acc()));
+        if (cf_ != 0 && F().ctor) {
+            // `new` yields the object unless the constructor returns another: only a body that returns nothing is inlined.
+            const Node& rn = g_.n[resolve(v)];
+            if (rn.op != K::ConstTagged || rn.imm != std::bit_cast<uint64_t>(Value())) return false;
+            v = tagged(value(static_cast<uint32_t>(F().this_var)));
+        }
         Block& B = g_.b[cb_];
         if (cf_ != 0) {
             // An inlined callee: the result is the caller's accumulator and control goes on after the call.
@@ -1166,7 +1209,7 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         ended = true;
         return true;
     }
-    case Op::Call: case Op::CallResolved: {
+    case Op::Call: case Op::CallResolved: case Op::Construct: {
         const int32_t callee = site_of(cf_, pc);
         if (callee < 0) return false;
         return inline_enter(in, callee, ended);
@@ -1264,6 +1307,15 @@ inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
         const FunctionExecutable* exe = fn->get_executable().get();
         if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm) return nullptr;
         const BytecodeChunk& c = *exe->bytecode_chunk;
+        if (static_cast<Op>(in.op) == Op::Construct) {
+            Graph::CtorPlan plan;
+            uint32_t n = 0;
+            const bool sc = fn->stackless_constructible() && !fn->is_class_constructor();
+            const bool ok = sc && ctor_plan(fn, plan, n, false);
+            if (config().log) std::fprintf(stderr, "[opt] new at pc %u: constructible=%d plan=%d\n", in.pc, sc, ok);
+            if (!ok) return nullptr;
+            return fn;
+        }
         uint8_t v = c.inline_state;
         if (v & kInlineNever) return nullptr;
         if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
@@ -1277,6 +1329,58 @@ inline Function* Builder::inline_target(int32_t fi, const Insn& in) {
         return fn;
     }
     return nullptr;
+}
+
+// What a constructor must look like for `new` to be inlined: a single block of straight-line code that does nothing outside
+// the object it makes (its only stores are `this.name = value` adding properties along transitions the site has seen).
+// Then every guard in it can leave through the `new` itself, and the object can be made with its final shape.
+static bool fail_plan(int why) { if (config().log) std::fprintf(stderr, "[opt] ctor plan refused: %d\n", why); return false; }
+inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc) {
+    const FunctionExecutable* exe = fn->get_executable().get();
+    const BytecodeChunk& c = *exe->bytecode_chunk;
+    if ((c.handlers && !c.handlers->empty()) || c.register_count > kInlineMaxRegs) return fail_plan(1);
+    const uint8_t* code = c.code.data();
+    const uint32_t size = static_cast<uint32_t>(c.code.size());
+    const Value pv = fn->constructor_prototype();
+    Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
+    if (!proto) return fail_plan(2);
+    Shape* from = nullptr;
+    Shape* cur = nullptr;
+    insns = 0;
+    plan.stores.clear();
+    plan.proto_epoch = Object::proto_epoch();
+    bool returned = false;
+    for (uint32_t pc = 0; pc < size;) {
+        if (returned || code[pc] >= static_cast<uint8_t>(Op::kCount)) return fail_plan(3);
+        const Op op = static_cast<Op>(code[pc]);
+        if (op_unsupported(op) || op == Op::Throw || branch_offset_pos(op) >= 0) return fail_plan(4);
+        if (config().log) std::fprintf(stderr, "[opt] ctor op %s\n", op_name(op));
+        if (op == Op::Return) returned = true;
+        if (op == Op::SetNamed) {
+            const uint32_t fbi = read_u16(code, pc + 4);
+            if (fbi >= c.feedback.size()) return fail_plan(5);
+            const FeedbackBody& fb = c.feedback[fbi].read();
+            if (fb.transition_mega || fb.transition_count == 0) return fail_plan(6);
+            const FeedbackBody::TransitionEntry& te = fb.transitions[0];
+            if (!te.from_shape || !te.to_shape || te.prototype != proto || te.proto_epoch != Object::proto_epoch()) return fail_plan(7);
+            if (!cur) from = te.from_shape; else if (te.from_shape != cur) return fail_plan(8);
+            cur = te.to_shape;
+            plan.stores.push_back({pc, te.slot_index});
+        }
+        pc += 1 + static_cast<uint32_t>(op_operand_bytes(op));
+        insns++;
+    }
+    if (!returned || plan.stores.empty()) return fail_plan(9);
+    if (make_desc) {
+        auto d = std::make_unique<JitCode::OptUnit::NewDesc>();
+        d->from = from;
+        d->to = cur;
+        d->proto = proto;
+        d->nslots = cur->slot_count();
+        plan.desc = d.get();
+        g_.descs.push_back(std::move(d));
+    }
+    return true;
 }
 
 inline bool Builder::inline_scan(const Function*, const BytecodeChunk& c, uint32_t& insns) {
@@ -1308,13 +1412,16 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
     const FunctionExecutable* exe = target->get_executable().get();
     const BytecodeChunk& c = *exe->bytecode_chunk;
     uint32_t n = 0;
-    inline_scan(target, c, n);
+    const bool is_ctor = static_cast<Op>(call.op) == Op::Construct;
+    Graph::CtorPlan plan;
+    if (is_ctor) { if (!ctor_plan(target, plan, n, true)) return false; }
+    else inline_scan(target, c, n);
     const uint32_t nregs = std::max<uint32_t>(c.register_count, c.parameter_count);
     if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + 3 > config().inline_vars) return false;
     inline_insns_ += n;
     inline_vars_ += nregs + 3;
-    const bool leaf = (c.inline_state & kInlineLeaf) != 0;
-    const bool strict = leaf ? (target->is_strict() || exe->fast_strict) : (c.inline_state & kInlineStrict) != 0;
+    const bool leaf = is_ctor || (c.inline_state & kInlineLeaf) != 0;
+    const bool strict = is_ctor || (leaf ? (target->is_strict() || exe->fast_strict) : (c.inline_state & kInlineStrict) != 0);
 
     Func f;
     f.chunk = &c;
@@ -1336,7 +1443,12 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
         PrivateFeedback* unused = nullptr;
         inline_instance_caches(c, target, f.lookup, unused);
     }
-    f.sloppy_this = !strict && c.uses_this;
+    f.sloppy_this = !strict && c.uses_this && !is_ctor;
+    if (is_ctor) {
+        f.ctor = true;
+        f.plan = static_cast<int32_t>(g_.ctors.size());
+        g_.ctors.push_back(plan);
+    }
     g_.nvars += nregs + 3;
     g_.funcs.push_back(std::move(f));
     const int32_t ci = static_cast<int32_t>(g_.funcs.size() - 1);
@@ -1379,6 +1491,7 @@ inline bool Builder::inline_enter(const Insn& in, int32_t ci, bool& ended) {
     const uint8_t* code = F().chunk->code.data();
     const Op op = static_cast<Op>(in.op);
     const bool resolved = op == Op::CallResolved;
+    const bool construct = op == Op::Construct;
     const uint32_t callee_r = F().var_base + code[in.pc + 1];
     const uint32_t this_r = resolved ? F().var_base + code[in.pc + 2] : 0;
     const uint32_t start = F().var_base + code[in.pc + (resolved ? 3 : 2)];
@@ -1388,7 +1501,15 @@ inline bool Builder::inline_enter(const Insn& in, int32_t ci, bool& ended) {
     const int32_t fv = tagged(value(callee_r));
     const int32_t chk = guarded(K::CheckFn, Rep::None, fv, -1, C.by_identity ? 1 : 0, reinterpret_cast<uint64_t>(C.by_identity ? static_cast<const void*>(C.fnp) : C.exe));
     const int32_t entry_state = g_.n[chk].state;
-    const int32_t thisv = resolved ? tagged(value(this_r)) : const_of(Value());
+    int32_t thisv;
+    if (construct) {
+        // The constructor's object: made with the shape the stores will give it, so they are plain slot writes.
+        const Graph::CtorPlan& plan = g_.ctors[C.plan];
+        epoch_guard(0, plan.proto_epoch);
+        thisv = guarded(K::NewObject, Rep::Tagged, fv, -1, 0, reinterpret_cast<uint64_t>(plan.desc));
+    } else {
+        thisv = resolved ? tagged(value(this_r)) : const_of(Value());
+    }
     if (C.sloppy_this) guarded(K::CheckObj, Rep::Ptr, thisv);
     const int32_t undef = const_of(Value());
     const uint32_t copy = std::min<uint32_t>(C.params, argc);
@@ -1435,7 +1556,8 @@ inline bool Builder::setup_func(int32_t fi, size_t max_insns) {
     if (config().inl && g_.frame) {
         for (const Insn& in : F().insns) {
             const Op op = static_cast<Op>(in.op);
-            if (op != Op::Call && op != Op::CallResolved) continue;
+            if (op != Op::Call && op != Op::CallResolved && op != Op::Construct) continue;
+            if (F().ctor) continue;        // a constructor that is inlined stays free of calls
             if (Function* t = inline_target(fi, in)) F().cand.push_back({in.pc, t});
         }
     }
@@ -2236,6 +2358,24 @@ inline QUANTA_JIT_ABI uint64_t helper_truthy(uint64_t bits) noexcept {
     std::memcpy(&v, &bits, 8);
     return v.to_boolean() ? 1 : 0;
 }
+// An inlined `new`: the constructor's object, already of the shape its stores would give it. 0 when the constructor's
+// prototype or the fresh object's shape is not what the unit was built for (the caller deoptimizes to run the `new`).
+inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
+    Value fv;
+    std::memcpy(&fv, &fn_bits, 8);
+    Function* fn = fv.as_function();
+    const Value pv = fn->constructor_prototype();
+    Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
+    if (proto != d->proto) return 0;
+    Object* self = fn->new_construct_object(proto);
+    if (self->get_shape() != d->from) return 0;
+    self->reserve_property_slots(d->nslots);
+    self->adopt_literal_shape(d->to, d->nslots);
+    const Value r(self);
+    uint64_t bits;
+    std::memcpy(&bits, &r, 8);
+    return bits;
+}
 inline QUANTA_JIT_ABI void helper_barrier(Object* obj) noexcept { Collector::write_barrier(obj); }
 inline QUANTA_JIT_ABI void helper_barrier_value(Object* obj, uint64_t bits) noexcept {
     Value v;
@@ -2996,6 +3136,27 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov_imm32(RAX, 0);
         a_.setcc(n.op == K::EqTag ? CC_E : CC_NE, RAX);
         if (d != RAX) a_.mov32(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::NewObject: {
+        Label& dl = deopt_label(n.state);
+        const Reg fr = use_g(n.a, RAX);
+        a_.mov_imm64(RCX, n.imm);
+        a_.push(fr);
+        a_.push(RCX);
+        int32_t bytes;
+        save_live(bytes);
+        a_.mov_load(abi::A1, mem(RSP, bytes));
+        a_.mov_load(abi::A0, mem(RSP, bytes + kPushBytes));
+        call_c(reinterpret_cast<const void*>(&helper_new_object));
+        restore_live(bytes);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
         commit_g(id, d);
         return;
     }
@@ -3791,6 +3952,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     all_rts().push_back(unit.rt.get());
     unit.entries = std::move(entries);
     unit.guards = em.guard_kinds;
+    unit.descs = std::move(g.descs);
     if (g.funcs.size() > 1) {
         // What a deoptimization inside an inlined callee needs to rebuild the interpreter frames it stands for.
         unit.root_vars = g.acc_var + 1;
