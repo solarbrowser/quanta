@@ -185,7 +185,17 @@ struct Graph {
     std::vector<Func> funcs;
     std::vector<Node> n;
     std::vector<Block> b;
-    struct CtorPlan { std::vector<std::pair<uint32_t, uint32_t>> stores; uint64_t proto_epoch = 0; JitCode::OptUnit::NewDesc* desc = nullptr; };
+    struct CtorPlan {
+        std::vector<std::pair<uint32_t, uint32_t>> stores;
+        uint64_t proto_epoch = 0;
+        JitCode::OptUnit::NewDesc* desc = nullptr;
+        // A constructor that only forwards to `this.<name>.apply(this, arguments)` (Prototype.js's Class.create):
+        // the body that is inlined is that method's, found on the prototype chain and checked again at run time.
+        Function* inner = nullptr;
+        Object* holder = nullptr;
+        uint32_t holder_slot = 0;
+        uint64_t inner_bits = 0, desc_epoch = 0;
+    };
     std::vector<CtorPlan> ctors;
     std::vector<std::unique_ptr<JitCode::OptUnit::NewDesc>> descs;
     std::vector<std::unique_ptr<JitCode::OptUnit::NativeDesc>> natives;
@@ -1482,7 +1492,8 @@ inline std::vector<int32_t> Builder::compute_rpo() {
 // One target is inlined behind an identity check; several are told apart by a chain of checks.
 inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Function*>& out) {
     auto no = [&](int why) {
-        if (config().log) std::fprintf(stderr, "[opt] call at pc %u of chunk %p not inlinable: %d\n", in.pc, static_cast<const void*>(g_.funcs[fi].chunk), why);
+        if (config().log) std::fprintf(stderr, "[opt] call at pc %u of chunk %p not inlinable: %d (entry state %u, verdict %u, calls %u)\n", in.pc, static_cast<const void*>(g_.funcs[fi].chunk), why, g_.funcs[fi].chunk->opt_entry, g_.funcs[fi].chunk->inline_state, g_.funcs[fi].chunk->opt_calls);
+        if (config().log && why == 12) std::fprintf(stderr, "[opt]   sites recorded: %zu\n", g_.funcs[fi].chunk->ic_feedback ? g_.funcs[fi].chunk->ic_feedback->call_sites.size() : 0);
         return false;
     };
     const Func& P = g_.funcs[fi];
@@ -1626,28 +1637,78 @@ inline bool Builder::block_is_cold(int32_t fi, int32_t blk) const {
 // the object it makes (its only stores are `this.name = value` adding properties along transitions the site has seen).
 // Then every guard in it can leave through the `new` itself, and the object can be made with its final shape.
 static bool fail_plan(int why) { if (config().log) std::fprintf(stderr, "[opt] ctor plan refused: %d\n", why); return false; }
-inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc) {
-    const FunctionExecutable* exe = fn->get_executable().get();
-    const BytecodeChunk& c = *exe->bytecode_chunk;
-    if ((c.handlers && !c.handlers->empty()) || c.register_count > kInlineMaxRegs) return fail_plan(1);
+// Whether `c` is exactly `function () { this.<name>.apply(this, arguments); }`; the name's index when it is.
+inline bool apply_forwarder(const BytecodeChunk& c, uint32_t& name_index) {
+    static constexpr Op kShape[] = {Op::LdaThisStar, Op::GetNamedStar, Op::LdarStar, Op::LdaFrameArgsMarker, Op::Star,
+                                    Op::CallViaFunctionApply, Op::LdaUndefined, Op::Return};
+    if (c.handlers && !c.handlers->empty()) return false;
     const uint8_t* code = c.code.data();
     const uint32_t size = static_cast<uint32_t>(c.code.size());
+    uint32_t pc = 0;
+    for (Op want : kShape) {
+        if (pc >= size || code[pc] != static_cast<uint8_t>(want)) return false;
+        if (want == Op::GetNamedStar) name_index = read_u16(code, pc + 2);
+        pc += 1 + static_cast<uint32_t>(op_operand_bytes(want));
+    }
+    return pc == size;
+}
+
+inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc) {
+    const FunctionExecutable* exe = fn->get_executable().get();
     const Value pv = fn->constructor_prototype();
     Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
     if (!proto) return fail_plan(2);
+    plan.inner = nullptr;
+    uint32_t name_index = 0;
+    if (apply_forwarder(*exe->bytecode_chunk, name_index)) {
+        // The method the forwarder calls, as a plain data property in a shape slot of the prototype or an ancestor.
+        const std::string& name = *exe->bytecode_chunk->names[name_index];
+        for (Object* o = proto; o && !plan.inner; o = o->get_prototype_raw()) {
+            Shape* sh = o->get_shape();
+            if (!sh || o->has_descriptor_override(name)) return fail_plan(21);
+            const int32_t slot = sh->find_slot(name);
+            if (slot < 0) continue;
+            if (sh->is_accessor_slot(name)) return fail_plan(22);
+            const Value* sv = o->get_shape_slot_unchecked(static_cast<uint32_t>(slot));
+            if (!sv || !sv->is_function()) return fail_plan(23);
+            plan.inner = sv->as_function();
+            plan.holder = o;
+            plan.holder_slot = static_cast<uint32_t>(slot);
+            plan.inner_bits = std::bit_cast<uint64_t>(*sv);
+        }
+        Function* in = plan.inner;
+        if (!in || in->get_function_kind() != Function::FunctionKind::Plain || in->is_arrow() || !in->get_executable() ||
+            !in->get_executable()->bytecode_chunk || in->get_executable()->owner_realm() != g_current_realm) return fail_plan(24);
+        // `apply` must still be the real one: it is not called, and a change to it moves the descriptor epoch.
+        const Value ap = in->get_property("apply");
+        if (!ap.is_function() || !ap.as_function()->is_native() || ap.as_function()->get_name() != "apply") return fail_plan(25);
+        plan.desc_epoch = Object::descriptor_epoch();
+    }
+    const BytecodeChunk& c = plan.inner ? *plan.inner->get_executable()->bytecode_chunk : *exe->bytecode_chunk;
+    if ((c.handlers && !c.handlers->empty()) || c.register_count > kInlineMaxRegs) return fail_plan(1);
+    const uint8_t* code = c.code.data();
+    const uint32_t size = static_cast<uint32_t>(c.code.size());
     Shape* from = nullptr;
     Shape* cur = nullptr;
     insns = 0;
     plan.stores.clear();
     plan.proto_epoch = Object::proto_epoch();
     bool returned = false;
+    std::vector<std::pair<uint32_t, uint32_t>> skipped;
     for (uint32_t pc = 0; pc < size;) {
         if (returned || code[pc] >= static_cast<uint8_t>(Op::kCount)) return fail_plan(3);
         const Op op = static_cast<Op>(code[pc]);
-        if (op_unsupported(op) || op == Op::Throw || branch_offset_pos(op) >= 0) return fail_plan(4);
-        if (config().log) std::fprintf(stderr, "[opt] ctor op %s\n", op_name(op));
+        if (op_unsupported(op) || op == Op::Throw) return fail_plan(4);
+        // Forward branches only (a conditional expression computing a value): the code between a branch and its target runs
+        // on some paths and not on others, and a store there would add its property on some paths only.
+        if (const int bp = branch_offset_pos(op); bp >= 0) {
+            const int32_t off = read_i16(code, pc + bp);
+            if (off <= 0) return fail_plan(4);
+            skipped.push_back({pc + 1 + static_cast<uint32_t>(op_operand_bytes(op)), pc + 1 + static_cast<uint32_t>(op_operand_bytes(op)) + static_cast<uint32_t>(off)});
+        }
         if (op == Op::Return) returned = true;
         if (op == Op::SetNamed) {
+            for (auto& [lo, hi] : skipped) if (pc >= lo && pc < hi) return fail_plan(10);
             const uint32_t fbi = read_u16(code, pc + 4);
             if (fbi >= c.feedback.size()) return fail_plan(5);
             const FeedbackBody& fb = c.feedback[fbi].read();
@@ -1696,13 +1757,15 @@ inline bool Builder::inline_scan(const Function*, const BytecodeChunk& c, uint32
 // graph, the reachable ones listed in `added`), its returns wired to the block after the call. Returns its function
 // number, or -1 (with nothing wired) when the callee does not fit the budgets.
 inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* target, std::vector<int32_t>& added) {
-    const FunctionExecutable* exe = target->get_executable().get();
-    const BytecodeChunk& c = *exe->bytecode_chunk;
-    uint32_t n = 0;
     const bool is_ctor = static_cast<Op>(call.op) == Op::Construct;
+    uint32_t n = 0;
     Graph::CtorPlan plan;
-    if (is_ctor) { if (!ctor_plan(target, plan, n, true)) return -1; }
-    else inline_scan(target, c, n);
+    if (is_ctor && !ctor_plan(target, plan, n, true)) return -1;
+    // The function whose body is inlined: the callee, or the method a forwarding constructor calls.
+    Function* body = plan.inner ? plan.inner : target;
+    const FunctionExecutable* exe = body->get_executable().get();
+    const BytecodeChunk& c = *exe->bytecode_chunk;
+    if (!is_ctor) inline_scan(target, c, n);
     const uint32_t nregs = std::max<uint32_t>(c.register_count, c.parameter_count);
     if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + 3 > config().inline_vars) return -1;
     inline_insns_ += n;
@@ -1723,12 +1786,12 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
     f.cont_block = g_.funcs[fi].block_at[call.pc + call.len];
     f.leaf = leaf;
     f.exe = exe;
-    f.fnp = target;
-    f.by_identity = c.uses_lookup_cache;
+    f.fnp = target;          // what the call site is checked against: the forwarder itself, not the method it forwards to
+    f.by_identity = c.uses_lookup_cache || plan.inner;
     f.lookup = c.lookup_cache.data();
     if (c.uses_lookup_cache) {
         PrivateFeedback* unused = nullptr;
-        inline_instance_caches(c, target, f.lookup, unused);
+        inline_instance_caches(c, body, f.lookup, unused);
     }
     f.sloppy_this = !strict && c.uses_this && !is_ctor;
     if (is_ctor) {
@@ -1887,6 +1950,12 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
         const Graph::CtorPlan& plan = g_.ctors[C.plan];
         epoch_guard(0, plan.proto_epoch);
         thisv = guarded(K::NewObject, Rep::Tagged, fv, -1, 0, reinterpret_cast<uint64_t>(plan.desc));
+        if (plan.inner) {
+            // The forwarded-to method is still what the prototype holds, and `apply` is still the real one.
+            epoch_guard(1, plan.desc_epoch);
+            const int32_t held = emit(K::LoadHolder, Rep::Tagged, -1, -1, plan.holder_slot, reinterpret_cast<uint64_t>(plan.holder));
+            guarded(K::CheckBits, Rep::None, held, -1, 0, plan.inner_bits);
+        }
     } else {
         thisv = resolved ? tagged(value(this_r)) : const_of(Value());
     }
@@ -4470,7 +4539,7 @@ inline bool has_calls(const BytecodeChunk& chunk) {
     for (uint32_t pc = 0; pc < chunk.code.size();) {
         if (chunk.code[pc] >= static_cast<uint8_t>(Op::kCount)) return false;
         const Op op = static_cast<Op>(chunk.code[pc]);
-        if (op == Op::Call || op == Op::CallResolved) return true;
+        if (op == Op::Call || op == Op::CallResolved || op == Op::Construct) return true;
         pc += 1 + static_cast<uint32_t>(op_operand_bytes(op));
     }
     return false;

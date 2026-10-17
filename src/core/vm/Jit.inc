@@ -2827,7 +2827,7 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         }
         JitCode::OptUnit made;
         const bool compiled = opt::compile(chunk, target, &f, made);
-        chunk.inline_state &= ~kInlineRecordCalls;       // the profile has been used
+        if (chunk.opt_entry != 1) chunk.inline_state &= ~kInlineRecordCalls;       // the profile has been used (a function-entry profile is still running)
         if (!compiled) {
             refused.insert({&chunk, target});
             if (!jc || jc->opt_units.empty()) chunk.opt_loops = 1;
@@ -2951,6 +2951,7 @@ void opt_note_call(const BytecodeChunk& chunk, Frame& callee) {
         chunk.opt_calls = 0;
         if (opt::config().log) std::fprintf(stderr, "[opt] armed chunk %p (%zu bytes)\n", static_cast<const void*>(&chunk), n);
         if (opt::has_calls(chunk)) chunk.inline_state |= kInlineRecordCalls;
+        if (opt::config().log) std::fprintf(stderr, "[opt]   has_calls=%d verdict now %u\n", opt::has_calls(chunk), chunk.inline_state);
     }
     callee.code = chunk.ic_feedback->entry_code.get();
 }

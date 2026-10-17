@@ -6770,6 +6770,12 @@ QUANTA_HANDLER Value h_CallResolvedLean(HANDLER_PARAMS) {
     site->fns[site->n] = fn;
     site->ids[site->n] = id;
     site->n++;
+    // What a recorded callee calls is worth knowing too (its body may be inlined): it starts recording from now, instead of
+    // when it has been called often enough to be watched for itself.
+    if (exe && exe->bytecode_chunk) {
+        const BytecodeChunk& callee = *exe->bytecode_chunk;
+        if ((callee.inline_state & kInlineHasOpt) && callee.opt_entry == 0) callee.inline_state |= kInlineRecordCalls;
+    }
     // A new reference to a cell from a chunk's feedback: the collector must see the chunk again (see learn_transition).
     Collector::write_barrier(owner);
     mark_owner_feedback_dirty(owner);
