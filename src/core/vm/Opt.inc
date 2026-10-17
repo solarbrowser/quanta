@@ -80,6 +80,7 @@ enum class K : uint8_t {
     LoadPoly,             // Tagged, a Ptr: the slot of the entry in polys[aux] whose shape word the object has (deopt if none)
     CheckNotNullish,      // Tagged a -> a, deopt when it is undefined or null
     Trap,                 // always deoptimizes: the code after it has never run
+    NewLiteral,           // Tagged: a fresh object literal of the learned template at imm (a LiteralTemplate*), or deopt
     NewObject,            // Tagged a (the constructor): a fresh object of the shape described by imm (NewDesc*), or deopt
     IsNullish,            // Tagged a -> Bool: undefined or null
     LoadLookup,           // Tagged, a name's cached binding (cache entry: imm; aux bits 0-1 the form, bit 8 set when imm is an offset from the frame's cache)
@@ -194,7 +195,7 @@ inline const char* kname(K k) {
         "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF",
         "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag",
         "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll",
-        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "CheckNotNullish", "Trap", "NewObject", "IsNullish"};
+        "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadLookup", "LoadPoly", "CheckNotNullish", "Trap", "NewLiteral", "NewObject", "IsNullish"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -1213,6 +1214,24 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
         B.term.t = B.succs[0];       // the branch target; the fall-through is succs[1]
         B.term.f = B.succs[1];
         ended = true;
+        return true;
+    }
+    case Op::CreateObjectT: {
+        const uint32_t ti = u16(pc + 1);
+        const auto* ic = F().chunk->ic_feedback.get();
+        if (!ic || ti >= ic->literal_templates.size() || !ic->literal_templates[ti].shape) return false;
+        set(acc(), guarded(K::NewLiteral, Rep::Tagged, -1, -1, 0, reinterpret_cast<uint64_t>(&ic->literal_templates[ti])));
+        return true;
+    }
+    case Op::DefineOwn: {
+        // A property of a literal made from a template: the object has its final shape, the value goes in its slot.
+        const uint32_t rcv = reg(pc + 1), fbi = u16(pc + 4);
+        if (!ok_reg(rcv) || fbi >= F().chunk->feedback.size()) return false;
+        const FeedbackBody* fb = F().chunk->feedback[fbi].peek();
+        if (!fb || !fb->lit_shape || !object_value(value(rcv))) return false;
+        const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+        guarded(K::CheckShape, Rep::None, obj, -1, 0, reinterpret_cast<uint64_t>(fb->lit_shape) | JitObjectLayout::kOrdinaryType);
+        emit(K::StoreSlot, Rep::None, obj, tagged(value(acc())), fb->lit_slot);
         return true;
     }
     case Op::JumpIfTrue: case Op::JumpIfFalse: {
@@ -2475,6 +2494,23 @@ inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode
     std::memcpy(&bits, &r, 8);
     return bits;
 }
+// An object literal whose shape the interpreter has learned (Op::CreateObjectT): 0 when the template has lost it.
+inline QUANTA_JIT_ABI uint64_t helper_new_literal(const BytecodeChunk::IcFeedback::LiteralTemplate* t, Context* ctx) noexcept {
+    if (!t->shape) return 0;
+    Object* obj;
+    if (t->count <= 4) {
+        obj = ObjectFactory::create_object_with_slots((t->count + 1u) & ~1u).release();
+    } else {
+        obj = ObjectFactory::create_object().release();
+        obj->reserve_property_slots(t->count);
+    }
+    obj->adopt_literal_shape(t->shape, t->count);
+    Engine::fixup_new_object_realm(obj, ctx);
+    const Value r(obj);
+    uint64_t bits;
+    std::memcpy(&bits, &r, 8);
+    return bits;
+}
 inline QUANTA_JIT_ABI void helper_barrier(Object* obj) noexcept { Collector::write_barrier(obj); }
 inline QUANTA_JIT_ABI void helper_barrier_value(Object* obj, uint64_t bits) noexcept {
     Value v;
@@ -3241,6 +3277,21 @@ inline void Emitter::emit_node(int32_t id) {
     case K::Trap:
         a_.jmp(deopt_label(n.state));
         return;
+    case K::NewLiteral: {
+        Label& dl = deopt_label(n.state);
+        int32_t bytes;
+        save_live(bytes);
+        a_.mov_imm64(abi::A0, n.imm);
+        a_.mov_load(abi::A1, mem(RBX, static_cast<int32_t>(kOffCtx)));
+        call_c(reinterpret_cast<const void*>(&helper_new_literal));
+        restore_live(bytes);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
     case K::CheckNotNullish: {
         const Reg s = use_g(n.a, RAX);
         const Reg d = def_g(id, RAX);
