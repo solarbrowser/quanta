@@ -797,42 +797,54 @@ void register_object_builtins(Context& ctx) {
                 // and the separate get_property just to learn what this already
                 // tells us in one shape probe.
                 bool source_no_overrides = !source_is_proxy && !source_obj->has_any_descriptor_override();
-                std::vector<std::string> all_keys;
-                if (source_is_proxy) {
-                    all_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
-                    if (ctx.has_exception()) return Value();
-                } else {
-                    all_keys = source_obj->get_own_property_keys();
-                }
-
-                // For non-proxy: string-keyed props first, then symbol-keyed props.
-                // For proxy: preserve ownKeys trap order.
-                std::vector<std::string> property_keys;
-                if (!source_is_proxy) {
-                    std::vector<std::string> string_keys, symbol_keys;
-                    for (const std::string& k : all_keys) {
-                        if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0) symbol_keys.push_back(k);
-                        else string_keys.push_back(k);
+                // The same walk the object spread makes: an ordinary source with no index keys, no symbol keys and nothing
+                // in a descriptor map gives its key list straight from its shape, as the interned strings it holds.
+                std::vector<const std::string*> shape_keys;
+                bool use_shape_keys = false;
+                if (source_no_overrides) {
+                    size_t all = 0;
+                    if (source_obj->for_each_own_enumerable_fast([&](const std::string&, uint32_t, bool) { all++; }, true)) {
+                        source_obj->for_each_own_enumerable_fast([&](const std::string& k, uint32_t, bool) { shape_keys.push_back(&k); }, false);
+                        use_shape_keys = shape_keys.size() == all;
                     }
-                    property_keys.insert(property_keys.end(), string_keys.begin(), string_keys.end());
-                    property_keys.insert(property_keys.end(), symbol_keys.begin(), symbol_keys.end());
-                } else {
-                    property_keys = all_keys;
+                }
+                std::vector<std::string> property_keys;
+                if (!use_shape_keys) {
+                    std::vector<std::string> all_keys;
+                    if (source_is_proxy) {
+                        all_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
+                        if (ctx.has_exception()) return Value();
+                    } else {
+                        all_keys = source_obj->get_own_property_keys();
+                    }
+
+                    // For non-proxy: string-keyed props first, then symbol-keyed props.
+                    // For proxy: preserve ownKeys trap order.
+                    if (!source_is_proxy) {
+                        std::vector<std::string> string_keys, symbol_keys;
+                        for (const std::string& k : all_keys) {
+                            if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0) symbol_keys.push_back(k);
+                            else string_keys.push_back(k);
+                        }
+                        property_keys.insert(property_keys.end(), string_keys.begin(), string_keys.end());
+                        property_keys.insert(property_keys.end(), symbol_keys.begin(), symbol_keys.end());
+                    } else {
+                        property_keys = all_keys;
+                    }
                 }
 
-                for (const std::string& prop : property_keys) {
-                    if (prop.size() >= 2 && prop[0] == '_' && prop[1] == '_') continue;
-                    if (prop.size() >= 2 && prop[0] == '[' && prop[1] == '[') continue;
-                    if (prop.size() > 3 && prop[0] == '_' && prop[1] == 'i' && prop[2] == 's') continue;
+                // false: an exception is pending or the assignment failed, and the call returns.
+                auto copy_one = [&](const std::string& prop) -> bool {
+                    if (Object::is_internal_key(prop) || Object::is_marker_key(prop)) return true;
                     Value prop_key = from_prop_key(prop);
                     Value value;
                     bool is_enumerable = true;
                     if (source_is_proxy) {
                         Proxy* source_proxy = static_cast<Proxy*>(source_obj);
                         PropertyDescriptor desc = source_proxy->get_own_property_descriptor_trap(prop_key);
-                        if (ctx.has_exception()) return Value();
-                        if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
-                        if (!desc.is_enumerable()) continue;
+                        if (ctx.has_exception()) return false;
+                        if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) return true;
+                        if (!desc.is_enumerable()) return true;
                         value = source_proxy->get_trap(prop_key);
                     } else if (source_no_overrides && source_obj->try_read_own_data_slot(prop, value)) {
                         // Falls through with is_enumerable left true.
@@ -843,14 +855,20 @@ void register_object_builtins(Context& ctx) {
                         }
                         value = source_obj->get_property(prop);
                     }
-                    if (ctx.has_exception()) return Value();
-                    if (!is_enumerable) continue;
+                    if (ctx.has_exception()) return false;
+                    if (!is_enumerable) return true;
                     bool ok = target_obj->set_property(prop, value);
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) return false;
                     if (!ok) {
                         ctx.throw_type_error("Cannot assign to read only property '" + prop + "' of object");
-                        return Value();
+                        return false;
                     }
+                    return true;
+                };
+                if (use_shape_keys) {
+                    for (const std::string* k : shape_keys) if (!copy_one(*k)) return Value();
+                } else {
+                    for (const std::string& prop : property_keys) if (!copy_one(prop)) return Value();
                 }
             }
 
@@ -1429,9 +1447,7 @@ void register_object_builtins(Context& ctx) {
             bool is_regexp = !is_proxy && obj->get_type() == Object::ObjectType::RegExp;
             for (const auto& prop_name : prop_names) {
                 // Filter internal implementation properties (not user-visible)
-                if (prop_name.size() >= 2 && prop_name[0] == '_' && prop_name[1] == '_') continue;
-                if (prop_name.size() >= 2 && prop_name[0] == '[' && prop_name[1] == '[') continue;
-                if (prop_name.size() > 3 && prop_name[0] == '_' && prop_name[1] == 'i' && prop_name[2] == 's') continue;
+                if (Object::is_internal_key(prop_name) || Object::is_marker_key(prop_name)) continue;
                 if (is_regexp && (prop_name == "source" || prop_name == "global" || prop_name == "ignoreCase" ||
                     prop_name == "multiline" || prop_name == "dotAll" || prop_name == "unicode" ||
                     prop_name == "unicodeSets" || prop_name == "sticky" || prop_name == "flags" ||

@@ -863,6 +863,9 @@ public:
     // The same minus the symbol case, for the enumerations that do carry
     // symbol keys through -- object spread and rest destructuring.
     static bool is_internal_key(const std::string& k);
+    // The two flags the engine keeps as ordinary properties on its own objects (an Error, an ArrayBuffer): hidden from key lists by
+    // exact name, so a script's own `_isMounted` is a property like any other.
+    static bool is_marker_key(const std::string& k) { return k == "_isError" || k == "_isArrayBuffer"; }
     // The same walk for_in_own_keys_fast does, handing each own enumerable
     // key to `fn` as the interned string the shape already holds plus the
     // slot it lives in, so a caller wanting the values too does not go back
