@@ -1303,6 +1303,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             bool inc_fast = dense_fast(this_obj);
+            if (inc_fast && search_element.is_finite_double()) {
+                const double x = search_element.as_finite_double();
+                for (double i = from_index; i < length; i++) {
+                    const Value e = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                    if (e.is_finite_double() && e.as_finite_double() == x) return Value(true);
+                }
+                return Value(false);
+            }
             for (double i = from_index; i < length; i++) {
                 Value element;
                 if (inc_fast) {
@@ -2327,6 +2335,23 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             bool fast = dense_fast(this_obj);
+            if (fast && search_element.is_finite_double()) {
+                // A finite number among elements: only another finite double can equal it, and nothing here can run script.
+                const double x = search_element.as_finite_double();
+                for (double i = start_index; i < length; i++) {
+                    const Value e = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                    if (e.is_finite_double() && e.as_finite_double() == x) return Value(i);
+                }
+                return Value(-1.0);
+            }
+            if (fast && search_element.is_string()) {
+                const String* x = search_element.as_string();
+                for (double i = start_index; i < length; i++) {
+                    const Value e = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                    if (e.is_string() && *e.as_string() == *x) return Value(i);
+                }
+                return Value(-1.0);
+            }
             for (double i = start_index; i < length; i++) {
                 Value element;
                 if (fast) {
@@ -2927,7 +2952,27 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             // leave `items`, where they stay rooted throughout.
             std::vector<uint32_t> order(items.size());
             for (uint32_t i = 0; i < order.size(); i++) order[i] = i;
+            // Without a comparator every comparison converts both sides to strings. When no element can run script doing
+            // so (all primitives), each is converted once and the keys are what is compared.
+            std::vector<std::string> keys;
+            bool keyed = false;
+            if (!compareFn) {
+                keyed = true;
+                for (const Value& v : items) {
+                    if (!(v.is_string() || v.is_number() || v.is_boolean() || v.is_null() || v.is_undefined())) { keyed = false; break; }
+                }
+                if (keyed) {
+                    keys.resize(items.size());
+                    for (size_t i = 0; i < items.size(); i++)
+                        if (!items[i].is_undefined()) keys[i] = sort_default_to_string(ctx, items[i]);
+                }
+            }
             std::stable_sort(order.begin(), order.end(), [&](uint32_t i, uint32_t j) {
+                if (keyed) {
+                    const bool ui = items[i].is_undefined(), uj = items[j].is_undefined();
+                    if (ui || uj) return !ui && uj;
+                    return keys[i].compare(keys[j]) < 0;
+                }
                 return compare(items[i], items[j]) < 0;
             });
             if (ctx.has_exception()) return Value();
