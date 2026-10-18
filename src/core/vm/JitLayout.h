@@ -199,6 +199,7 @@ struct JitObjectLayout {
     static size_t butterfly() { return offsetof(Object, butterfly_); } // Value* to shape slot 0
     static size_t descriptor_type() { return offsetof(PropertyDescriptor, type_); }       // 0: a data descriptor
     static size_t descriptor_value() { return offsetof(PropertyDescriptor, value_); }
+    static size_t function_closure_environment() { return offsetof(Function, closure_environment_); }
     static size_t function_executable() { return offsetof(Function, executable_); }   // FunctionExecutable* (the ref holds only it)
     static constexpr uint64_t kHasDescriptors = Object::kHasDescriptors;
     static constexpr uint64_t kProtoFlagMask = 0x7;                    // flag bits below kHasDescriptors

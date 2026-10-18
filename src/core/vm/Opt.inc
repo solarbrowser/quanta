@@ -281,6 +281,8 @@ struct Config {
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     bool typed = true;                // QUANTA_OPT_TYPED=0: typed array elements are stepped
+    bool small_callee = true;         // QUANTA_OPT_SMALLCALLEE=0: a short function a unit calls is not given a unit
+    bool callee_env = true;           // QUANTA_OPT_CALLENV=0: an inlined callee's reads of enclosing variables are steps
     bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
     uint32_t rt_mask = 127;            // QUANTA_OPT_RTMASK: which generic operations: 1 binary, 2 typeof, 4 get named, 8 set named
     bool direct = true;               // QUANTA_OPT_DIRECT=0: a call from a unit goes through the interpreter's call path
@@ -326,6 +328,8 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_AVOID")) c.avoid_after = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_RECOMPILES")) c.max_recompiles = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_TYPED")) c.typed = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_SMALLCALLEE")) c.small_callee = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_CALLENV")) c.callee_env = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RT")) c.rt = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RTMASK")) c.rt_mask = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_DIRECT")) c.direct = e[0] && e[0] != '0';
@@ -486,15 +490,29 @@ private:
         return -1;
     }
     uint32_t inline_insns_ = 0, inline_vars_ = 0;
+    // The scope chain an inlined callee reads starts at its function's captured environment. A body that keeps no scope of
+    // its own reads it directly; one that runs in an environment of its own with nothing bound in it has that empty scope
+    // as the first hop, which is not there to count.
+    bool callee_env_hops(uint32_t& hops, bool deeper) const {
+        if (!config().callee_env) return false;
+        const BytecodeChunk& c = *F().chunk;
+        if (!c.env_mode) return true;
+        if (c.env && (!c.env->env_params.empty() || !c.env->env_locals.empty())) return false;
+        if (!deeper || hops == 0) return false;
+        hops--;
+        return true;
+    }
     // Whether the register `rcv` is to be taken for a dense array at an indexed access. A loop's entry frame shows what
     // the registers hold; a function entry (and an inlined callee) has no such frame, so it assumes an array and lets a
     // site that proves otherwise deoptimize into the interpreter, which then keeps that site.
     bool dense_array_receiver(uint32_t rcv) {
         if (cf_ == 0 && g_.frame && !g_.fn_entry) {
-            // A receiver the unit itself computed (a property read into a temporary, say) leaves nothing in the entry frame:
-            // the register still holds whatever an earlier iteration or statement put there. The guard on the array decides.
+            // A receiver the unit read from a property (this.table[i]) leaves nothing in the entry frame: the register still holds
+            // whatever an earlier statement put there. The guard on the array decides. One read from an environment slot is
+            // left to the frame: arrays held that way are mostly filled by the loop, and compiling their element accesses lost
+            // time to the guard's deopts.
             const K def = g_.n[value(rcv)].op;
-            if (def != K::LoadReg && def != K::Phi) return true;
+            if (def == K::LoadSlot || def == K::LoadPoly || def == K::LoadHolder) return true;
             const Value& pv = g_.frame->regs[rcv];
             return pv.is_object() && pv.as_object()->is_verified_dense_array();
         }
@@ -1140,21 +1158,23 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         return true;
     }
     case Op::LdaEnvSlot: case Op::LdaEnvSlotStar: {
-        if (cf_ != 0) return false;      // the environments belong to the root's frame
+        uint32_t no_hops = 0;
+        if (cf_ != 0 && !callee_env_hops(no_hops, false)) return false;
         const bool fused = op == Op::LdaEnvSlotStar;
-        const uint32_t slot = reg(pc + 1), nidx = u16(pc + 2);
+        const uint32_t slot = code[pc + 1], nidx = u16(pc + 2);
         const uint32_t dst = fused ? reg(pc + 4) : 0;
         if ((fused && !ok_reg(dst)) || nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
-        const int32_t v = guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        const int32_t v = guarded(K::LoadEnv, Rep::Tagged, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         set(acc(), v);
         if (fused) set(dst, v);
         return true;
     }
     case Op::LdaEnvSlotAt: {
-        if (cf_ != 0) return false;
-        const uint32_t hops = reg(pc + 1), slot = reg(pc + 2), nidx = u16(pc + 3);
+        uint32_t hops = code[pc + 1];
+        if (cf_ != 0 && !callee_env_hops(hops, true)) return false;
+        const uint32_t slot = code[pc + 2], nidx = u16(pc + 3);
         if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
-        set(acc(), guarded(K::LoadEnv, Rep::Tagged, -1, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx])));
+        set(acc(), guarded(K::LoadEnv, Rep::Tagged, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx])));
         return true;
     }
     case Op::StaEnvSlotAt: {
@@ -1512,7 +1532,7 @@ inline bool Builder::translate_block(int32_t blk) {
         if (!translate(in, ended)) {
             if (cf_ != 0) {
                 // A callee is only worth inlining when all of it is ours: there is no register bank to step it in.
-                if (config().log) std::fprintf(stderr, "[opt] callee step %s\n", op_name(static_cast<Op>(in.op)));
+                if (config().log) std::fprintf(stderr, "[opt] callee step %s (env_mode=%d params=%zu locals=%zu hops=%u)\n", op_name(static_cast<Op>(in.op)), F().chunk->env_mode, F().chunk->env ? F().chunk->env->env_params.size() : 0, F().chunk->env ? F().chunk->env->env_locals.size() : 0, static_cast<Op>(in.op) == Op::LdaEnvSlotAt ? F().chunk->code[in.pc + 1] : 0u);
                 if (!g_.failed_site.first) g_.failed_site = {g_.funcs[F().parent].chunk, F().call_pc};
                 return fail("an inlined callee needs a step");
             }
@@ -4573,19 +4593,30 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::LoadEnv: case K::StoreEnv: {
         const bool store = n.op == K::StoreEnv;
+        // A load with an operand reads the scope chain captured by that function (an inlined callee's variables from the
+        // enclosing functions): anything unusual about the chain leaves through the deopt path.
+        const bool from_fn = !store && n.a >= 0;
         Label& dl = deopt_label(n.state);
         Label& via_ctx = new_label();
         Label& have = new_label();
-        Label& slow = store ? dl : new_label();   // a load that misses its slot asks the runtime to find the binding
+        Label& slow = (store || from_fn) ? dl : new_label();   // a load that misses its slot asks the runtime to find the binding
         Label& done = new_label();
         const Reg v = store ? use_g(n.a, RDX) : RDX;
-        a_.cmp_mem_imm(mem(RBX, static_cast<int32_t>(kOffCallInfo)), 0);
-        a_.jcc(CC_E, via_ctx);
-        a_.mov_load(RAX, mem(RBX, static_cast<int32_t>(kOffCurLexEnv)));
-        a_.jmp(have);
-        a_.bind(via_ctx);
-        a_.mov_load(RAX, mem(RBX, static_cast<int32_t>(kOffCtx)));
-        a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(JitEnvLayout::ctx_lexical_environment())));
+        if (from_fn) {
+            const Reg fr = use_g(n.a, RAX);
+            a_.mov(RAX, fr);
+            a_.shl_imm(RAX, 16);
+            a_.shr_imm(RAX, 16);
+            a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(JitObjectLayout::function_closure_environment())));
+        } else {
+            a_.cmp_mem_imm(mem(RBX, static_cast<int32_t>(kOffCallInfo)), 0);
+            a_.jcc(CC_E, via_ctx);
+            a_.mov_load(RAX, mem(RBX, static_cast<int32_t>(kOffCurLexEnv)));
+            a_.jmp(have);
+            a_.bind(via_ctx);
+            a_.mov_load(RAX, mem(RBX, static_cast<int32_t>(kOffCtx)));
+            a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(JitEnvLayout::ctx_lexical_environment())));
+        }
         a_.bind(have);
         a_.test(RAX, RAX);
         a_.jcc(CC_E, slow);
@@ -4625,6 +4656,7 @@ inline void Emitter::emit_node(int32_t id) {
             a_.mov_load(d, mem(base, disp + static_cast<int32_t>(JitEnvLayout::value())));
             a_.bind(done);
             commit_g(id, d);
+            if (from_fn) return;
             const uint64_t key = n.imm;
             const Reg dd = d;
             cold_.push_back([this, &slow, &done, dl_ = &dl, key, dd]() {
