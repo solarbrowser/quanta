@@ -38,6 +38,7 @@
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -232,8 +233,41 @@ inline bool instanceof_quick(const Value& l, const Value& r, bool& out) {
     return true;
 }
 
+// `string + string`, `string + integer` and `integer + string`: the concatenation and nothing else, without the
+// generic operator's conversions. The integer is written as its decimal digits, which is what ToString gives an integral
+// double of this size; anything else (a fraction, an infinity, a big magnitude) is left to the general path.
+inline bool add_strings_fast(const Value& l, const Value& r, Value& out) {
+    auto digits = [](const Value& v, char* buf) -> size_t {
+        if (!v.is_finite_double()) return 0;
+        const double d = v.as_finite_double();
+        if (d != std::floor(d) || d > 1e15 || d < -1e15 || (d == 0 && std::signbit(d))) return 0;
+        const auto res = std::to_chars(buf, buf + 24, static_cast<long long>(d));
+        return static_cast<size_t>(res.ptr - buf);
+    };
+    char buf[24];
+    if (l.is_string()) {
+        String* rs;
+        if (r.is_string()) rs = r.as_string();
+        else if (const size_t n = digits(r, buf)) rs = new String(std::string(buf, n));
+        else return false;
+        out = Value(String::make_concat(l.as_string(), rs));
+        return true;
+    }
+    if (r.is_string()) {
+        if (const size_t n = digits(l, buf)) {
+            out = Value(String::make_concat(new String(std::string(buf, n)), r.as_string()));
+            return true;
+        }
+    }
+    return false;
+}
+
 // Routes through the shared apply_operator so VM and tree-walker semantics can't drift.
 inline Value binary_slow(Context& ctx, BinOp op, const Value& l, const Value& r) {
+    if (op == BinOp::ADD) {
+        Value sum;
+        if (add_strings_fast(l, r, sum)) return sum;
+    }
     if (op == BinOp::STRICT_EQUAL || op == BinOp::STRICT_NOT_EQUAL) {
         const int q = strict_equal_quick(l, r);
         if (q != 2) return Value((q == 1) == (op == BinOp::STRICT_EQUAL));
