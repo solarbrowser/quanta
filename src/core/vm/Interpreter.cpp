@@ -703,6 +703,21 @@ inline bool typed_length_ok(Object* obj) {
     return ok;
 }
 
+// Custom objects whose named reads are the plain object ones (a generator, an iterator): their methods sit on the prototype and
+// nothing about the names is theirs, so a cached prototype entry is as good for them as for an ordinary object.
+inline bool plain_custom_named(const Object* o) {
+    if (o->get_type() != Object::ObjectType::Custom) return false;
+    switch (static_cast<const CustomObjectBase*>(o)->get_custom_kind()) {
+        case CustomObjectBase::CustomKind::Generator: case CustomObjectBase::CustomKind::AsyncGenerator:
+        case CustomObjectBase::CustomKind::AsyncIterator: case CustomObjectBase::CustomKind::ArrayIterator:
+        case CustomObjectBase::CustomKind::StringIterator: case CustomObjectBase::CustomKind::MapIterator:
+        case CustomObjectBase::CustomKind::SetIterator:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // The property cache a megamorphic site falls back to. A site learns at most a few
 // shapes (see FeedbackSlot::kMaxEntries); past that it used to resolve every read
 // from scratch -- two hash lookups per object on the chain, about four hundred
@@ -1009,7 +1024,8 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             : recv_type == Object::ObjectType::RegExp ||
               recv_type == Object::ObjectType::Date ||
               recv_type == Object::ObjectType::Error ||
-              recv_type == Object::ObjectType::Promise;
+              recv_type == Object::ObjectType::Promise ||
+              (recv_type == Object::ObjectType::Custom && plain_custom_named(obj));
     if (rooted && fb && !fb->proto_mega &&
         (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
         !obj->has_descriptor_override(name)) {
@@ -8125,6 +8141,12 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
         } else if (obj->get_type() == Object::ObjectType::Map || obj->get_type() == Object::ObjectType::Set) {
             // The same for a Map or a Set, whose only own name besides the
             // shape's is `size` -- never learned, for the same reason.
+            if (f.feedback_rooted &&
+                inherited_data_entry(f.chunk->feedback[read_u16(code, pc + 4)].read(), obj, acc)) {
+                FUSED_TAIL(6);
+            }
+        } else if (obj->get_type() == Object::ObjectType::Custom && plain_custom_named(obj)) {
+            // A generator or an iterator: `next` and the rest are inherited methods.
             if (f.feedback_rooted &&
                 inherited_data_entry(f.chunk->feedback[read_u16(code, pc + 4)].read(), obj, acc)) {
                 FUSED_TAIL(6);
