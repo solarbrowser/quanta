@@ -55,6 +55,7 @@ protected:
     bool is_shared_ = false;
 
 private:
+    friend struct JitTypedLayout;   // the optimizing tier reads a view's buffer in generated code
     std::shared_ptr<BackingStore> store_;
     bool is_detached_;
     bool is_immutable_ = false;

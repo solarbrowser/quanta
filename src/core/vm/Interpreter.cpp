@@ -8482,6 +8482,24 @@ QUANTA_HANDLER Value h_gen_SetKeyed(HANDLER_PARAMS);
 
 QUANTA_HANDLER Value h_GetKeyedElement(HANDLER_PARAMS);
 
+// An indexed access that just read or wrote a plain typed array: the site remembers the element type, so the optimizing tier can
+// compile the access for it. A site that sees a second kind is marked as having none.
+[[gnu::noinline]] void note_typed_elem_slow(const Frame& f, uint32_t fb, uint8_t kind) {
+    auto* ic = f.chunk->ic_feedback.get();
+    if (!ic || fb >= ic->keyed_feedback.size()) return;
+    KeyedFeedback* kf = ic->keyed(fb);
+    kf->elem_kind = kf->elem_kind == 0 || kf->elem_kind == kind ? kind : static_cast<uint8_t>(0xFF);
+}
+[[gnu::always_inline]] inline void note_typed_elem(const Frame& f, uint32_t fb, const TypedArrayBase* ta) {
+    const uint8_t kind = static_cast<uint8_t>(1 + static_cast<uint8_t>(ta->get_array_type()));
+    auto* ic = f.chunk->ic_feedback.get();
+    if (LIKELY(ic && fb < ic->keyed_feedback.size())) {
+        const KeyedFeedback* kf = ic->keyed_feedback[fb].get();
+        if (LIKELY(kf && kf->elem_kind == kind)) return;
+    }
+    note_typed_elem_slow(f, fb, kind);
+}
+
 // Indexing an array whose density is already known, or a plain typed array, is
 // a bounds check and a load, and this handler is kept to exactly that: it calls
 // nothing, so the compiler gives it no frame to build and tear down around the
@@ -8523,6 +8541,7 @@ QUANTA_HANDLER Value h_GetKeyedElement(HANDLER_PARAMS) {
         if (Object* obj = as_object_like(recv); obj && obj->get_type() == Object::ObjectType::TypedArray) {
             double element;
             if (static_cast<TypedArrayBase*>(obj)->read_plain_number(index, element)) {
+                note_typed_elem(f, read_u16(code, pc + 2), static_cast<TypedArrayBase*>(obj));
                 acc = Value(element);
                 pc += 4;
                 DISPATCH();
@@ -8556,6 +8575,7 @@ QUANTA_HANDLER Value h_SetKeyedFast(HANDLER_PARAMS) {
             }
             if (obj->get_type() == Object::ObjectType::TypedArray &&
                 static_cast<TypedArrayBase*>(obj)->write_plain_number(index, acc.as_finite_double())) {
+                note_typed_elem(f, read_u16(code, pc + 3), static_cast<TypedArrayBase*>(obj));
                 pc += 5;
                 DISPATCH();
             }
@@ -8580,6 +8600,7 @@ QUANTA_HANDLER Value h_SetKeyedElement(HANDLER_PARAMS) {
         if (acc.is_number()) {
             if (Object* obj = as_object_like(recv); obj && obj->get_type() == Object::ObjectType::TypedArray &&
                 static_cast<TypedArrayBase*>(obj)->write_plain_number(index, acc.as_number())) {
+                note_typed_elem(f, read_u16(code, pc + 3), static_cast<TypedArrayBase*>(obj));
                 pc += 5;
                 DISPATCH();
             }

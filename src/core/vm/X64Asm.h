@@ -89,6 +89,17 @@ public:
     void mov_store8_imm(Mem m, uint8_t imm) { rex_rm(false, RAX, m); byte(0xC6); modrm_mem(RAX, m); byte(imm); }
     void mov_store32_imm(Mem m, uint32_t imm) { rex_rm(false, RAX, m); byte(0xC7); modrm_mem(RAX, m); u32(imm); }
     void movzx8_load(Reg dst, Mem m) { rex_rm(false, dst, m); byte(0x0F); byte(0xB6); modrm_mem(dst, m); }
+    void movsx8_load(Reg dst, Mem m) { rex_rm(false, dst, m); byte(0x0F); byte(0xBE); modrm_mem(dst, m); }
+    void movzx16_load(Reg dst, Mem m) { rex_rm(false, dst, m); byte(0x0F); byte(0xB7); modrm_mem(dst, m); }
+    void movsx16_load(Reg dst, Mem m) { rex_rm(false, dst, m); byte(0x0F); byte(0xBF); modrm_mem(dst, m); }
+    // The low byte / word of src into memory. A REX prefix is always present so that SIL and DIL name themselves rather than
+    // DH and BH.
+    void mov_store8(Mem m, Reg src) {
+        byte(static_cast<uint8_t>(0x40 | ((src >> 3) ? 4 : 0) | (m.index >= 0 && (m.index >> 3) ? 2 : 0) | ((m.base >> 3) ? 1 : 0)));
+        byte(0x88);
+        modrm_mem(src, m);
+    }
+    void mov_store16(Mem m, Reg src) { byte(0x66); rex_rm(false, src, m); byte(0x89); modrm_mem(src, m); }
     void movzx8(Reg dst, Reg src) {          // movzx dst32, src8
         // A REX prefix (even an empty one) is what makes SIL/DIL etc. addressable.
         byte(static_cast<uint8_t>(0x40 | ((dst >> 3) << 2) | (src >> 3)));
@@ -188,6 +199,10 @@ public:
     void movups_load(Xmm d, Mem m) { rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x10); modrm_mem(static_cast<Reg>(d), m); }
     void movups_store(Mem m, Xmm s) { rex_rm(false, static_cast<Reg>(s), m); byte(0x0F); byte(0x11); modrm_mem(static_cast<Reg>(s), m); }
     void movsd_load(Xmm d, Mem m) { byte(0xF2); rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x10); modrm_mem(static_cast<Reg>(d), m); }
+    void movss_load(Xmm d, Mem m) { byte(0xF3); rex_rm(false, static_cast<Reg>(d), m); byte(0x0F); byte(0x10); modrm_mem(static_cast<Reg>(d), m); }
+    void movss_store(Mem m, Xmm s) { byte(0xF3); rex_rm(false, static_cast<Reg>(s), m); byte(0x0F); byte(0x11); modrm_mem(static_cast<Reg>(s), m); }
+    void cvtss2sd(Xmm d, Xmm s) { sse(0xF3, 0x5A, d, s); }
+    void cvtsd2ss(Xmm d, Xmm s) { sse(0xF2, 0x5A, d, s); }
     void movsd_store(Mem m, Xmm s) { byte(0xF2); rex_rm(false, static_cast<Reg>(s), m); byte(0x0F); byte(0x11); modrm_mem(static_cast<Reg>(s), m); }
     // d = num % den (signed 32-bit); idiv's fixed registers: num in RAX, den in RCX, remainder in RDX.
     void rem32(Reg rem, Reg num, Reg den) { (void)rem; (void)num; (void)den; cdq(); idiv32(RCX); }

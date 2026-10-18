@@ -14,7 +14,9 @@
 // already point.
 
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/vm/Bytecode.h"
 #include <cstddef>
 #include <memory>
@@ -218,6 +220,21 @@ struct JitObjectLayout {
     // the thread that compiled it (checked at entry), so the address is stable.
     static const uint64_t* proto_epoch_addr() { return &Object::proto_epoch_; }
     static const uint64_t* descriptor_epoch_addr() { return &Object::descriptor_epoch_; }
+};
+
+// A typed array view and the buffer behind it, as generated code reads them.
+struct JitTypedLayout {
+    using TA = TypedArrayBase;
+    static size_t buffer() { return offsetof(TA, buffer_); }                 // shared_ptr<ArrayBuffer>: the first word is the pointer
+    static size_t byte_offset() { return offsetof(TA, byte_offset_); }
+    static size_t length() { return offsetof(TA, length_); }
+    static size_t array_type() { return offsetof(TA, array_type_); }         // a 32-bit enum
+    static size_t length_tracking() { return offsetof(TA, is_length_tracking_); }
+    static size_t buf_store() { return offsetof(ArrayBuffer, store_); }      // shared_ptr<BackingStore>: the first word is the pointer
+    static size_t buf_detached() { return offsetof(ArrayBuffer, is_detached_); }
+    static size_t buf_resizable() { return offsetof(ArrayBuffer, is_resizable_); }
+    static size_t store_data() { return offsetof(ArrayBuffer::BackingStore, data); }
+    static constexpr uint64_t kTypedArrayType = static_cast<uint64_t>(Object::ObjectType::TypedArray);
 };
 
 // Fields of a chunk's name-lookup cache entry (BytecodeChunk::LookupCacheEntry) the generated code reads.

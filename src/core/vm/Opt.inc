@@ -91,6 +91,8 @@ enum class K : uint8_t {
     NewObject,            // Tagged a (the constructor): a fresh object of the shape described by imm (NewDesc*), or deopt
     IsNullish,            // Tagged a -> Bool: undefined or null
     LoadLookup,           // Tagged, a name's cached binding (cache entry: imm; aux bits 0-1 the form, bit 8 set when imm is an offset from the frame's cache)
+    LoadTyped,            // F64: element b (I32) of the typed array a (Ptr), whose element type is aux (TypedArrayBase::ArrayType); deopt unless it is a plain view of that type and the index is inside it
+    StoreTyped,           // F64 c stored at element b (I32) of the typed array a, same conditions; also deopts when the value does not fit the integer type
     Rt,                   // Tagged: one of the interpreter's generic operations (aux: kRt*), operands a, b; runs without a step, may run script, may throw
     CallFn,               // Tagged a (the callee), b (this), c and ins (arguments, aux low byte: their count, the rest: the call's pc in the root): calls a JS function through the interpreter's call path; deopts (to the call) when a is not a function
 };
@@ -222,7 +224,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "Rt", "CallFn"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -235,7 +237,7 @@ inline bool is_pure_removable(K k) {
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
-    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt:
+    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped:
         return false;
     default: return true;
     }
@@ -277,6 +279,7 @@ struct Config {
     uint32_t poly_max = 4;            // QUANTA_OPT_POLY=n: most callees one call site may have and still be inlined (1: monomorphic only)
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
+    bool typed = true;                // QUANTA_OPT_TYPED=0: typed array elements are stepped
     bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
     uint32_t rt_mask = 127;            // QUANTA_OPT_RTMASK: which generic operations: 1 binary, 2 typeof, 4 get named, 8 set named
     bool direct = true;               // QUANTA_OPT_DIRECT=0: a call from a unit goes through the interpreter's call path
@@ -321,6 +324,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_AVOID")) c.avoid_after = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_RECOMPILES")) c.max_recompiles = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_TYPED")) c.typed = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RT")) c.rt = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RTMASK")) c.rt_mask = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_DIRECT")) c.direct = e[0] && e[0] != '0';
@@ -462,6 +466,7 @@ private:
     bool ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc);
     bool block_is_cold(int32_t fi, int32_t blk) const;
     bool native_call(const Insn& in);
+    int typed_kind(uint32_t fb_pc) const;
     bool call_fn(const Insn& in);
     bool numeric_arg(int32_t x) { const Node& nd = g_.n[resolve(x)]; return nd.rep != Rep::Bool && nd.rep != Rep::I32 && nd.op != K::ConstTagged; }
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
@@ -1290,6 +1295,13 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     case Op::GetKeyed: {
         const uint32_t rcv = reg(pc + 1);
         if (!ok_reg(rcv)) return false;
+        if (const int kind = typed_kind(pc + 2); kind >= 0) {
+            if (!object_value(value(rcv)) || !numeric_value(value(acc()))) return false;
+            const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(acc())));
+            const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+            set(acc(), guarded(K::LoadTyped, Rep::F64, obj, idx, static_cast<uint32_t>(kind)));
+            return true;
+        }
         if (!dense_array_receiver(rcv)) return false;
         if (!object_value(value(rcv)) || !numeric_value(value(acc()))) return false;
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(acc())));
@@ -1302,6 +1314,14 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         if (F().ctor) return false;
         const uint32_t rcv = reg(pc + 1), kreg = reg(pc + 2);
         if (!ok_reg(rcv) || !ok_reg(kreg)) return false;
+        if (const int kind = typed_kind(pc + 3); kind >= 0) {
+            if (!object_value(value(rcv)) || !numeric_value(value(kreg)) || !numeric_value(value(acc()))) return false;
+            const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(kreg)));
+            const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+            const int32_t val = num(value(acc()));
+            guarded(K::StoreTyped, Rep::None, obj, idx, static_cast<uint32_t>(kind), 0, val);
+            return true;
+        }
         if (!dense_array_receiver(rcv)) return false;
         if (!object_value(value(rcv)) || !numeric_value(value(kreg))) return false;
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(kreg)));
@@ -1701,6 +1721,31 @@ inline bool Builder::generic_op(const Insn& in) {
     default:
         return false;
     }
+}
+
+// The element type of the typed array the keyed access whose feedback index sits at `fb_pc` has only ever seen, or -1 when
+// there is none the tier compiles (not seen, mixed, a clamped or BigInt array, or a target without the code for it).
+inline int Builder::typed_kind(uint32_t fb_pc) const {
+#ifdef QUANTA_JIT_ARCH_A64
+    (void)fb_pc;
+    return -1;
+#else
+    if (!config().typed) return -1;
+    const auto* ic = F().chunk->ic_feedback.get();
+    if (!ic) return -1;
+    const uint32_t fbi = read_u16(F().chunk->code.data(), fb_pc);
+    if (fbi >= ic->keyed_feedback.size() || !ic->keyed_feedback[fbi]) return -1;
+    const uint8_t k = ic->keyed_feedback[fbi]->elem_kind;
+    if (k == 0 || k == 0xFF) return -1;
+    switch (static_cast<TypedArrayBase::ArrayType>(k - 1)) {
+    case TypedArrayBase::ArrayType::INT8: case TypedArrayBase::ArrayType::UINT8: case TypedArrayBase::ArrayType::INT16:
+    case TypedArrayBase::ArrayType::UINT16: case TypedArrayBase::ArrayType::INT32: case TypedArrayBase::ArrayType::UINT32:
+    case TypedArrayBase::ArrayType::FLOAT32: case TypedArrayBase::ArrayType::FLOAT64:
+        return k - 1;
+    default:
+        return -1;
+    }
+#endif
 }
 
 inline bool Builder::native_call(const Insn& in) {
@@ -2893,8 +2938,13 @@ inline void Builder::cse() {
     };
     std::unordered_map<Key, int32_t, KeyHash> table;
     uint64_t next_epoch = 1;
-    std::vector<uint64_t> end_epoch(nb, 0);
-    auto kind_of = [](K op) {   // 0 not shared, 1 pure, 2 memory-dependent
+    std::vector<uint64_t> end_epoch(nb, 0), end_bepoch(nb, 0);
+    auto kind_of = [](const Node& nd) {   // 0 not shared, 1 pure, 2 memory-dependent, 3 binding-dependent
+        const K op = nd.op;
+        // A variable held in an environment slot (form 0) changes only by an assignment to it, which is a store to the
+        // environment or something that runs script; a global that lives on an object (forms 1 and 2) can be written like any
+        // property, so it is read as memory.
+        if (op == K::LoadLookup) return (nd.aux & 3) == 0 ? 3 : 0;
         switch (op) {
         case K::ConstTagged: case K::ConstF64: case K::ConstBool: case K::ConstI32:
         case K::CheckNum: case K::BoxF64: case K::BoxBool: case K::ToI32: case K::I32ToF64: case K::U32ToF64:
@@ -2904,31 +2954,35 @@ inline void Builder::cse() {
         case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish: case K::CheckBits: case K::IsFn:
             return 1;
         case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen: case K::LoadEnv:
-        case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly:
+        case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadTyped:
             return 2;
         default: return 0;
         }
     };
+    auto breaks_bindings = [](K op) {   // what can assign to an environment slot or run script that can
+        return op == K::Step || op == K::StoreEnv || op == K::CallNative || op == K::CallFn || op == K::Rt;
+    };
     auto breaks_memory = [](K op) {
         return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreReg || op == K::StoreAcc ||
-               op == K::CallNative || op == K::CallFn || op == K::Rt;
+               op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::StoreTyped;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
     std::vector<Frame2> stack;
     auto enter = [&](int32_t blk) {
-        // Epoch at the start of the block.
+        // Epochs at the start of the block.
         uint64_t epoch = next_epoch++;
+        uint64_t bepoch = next_epoch++;
         const Block& B = g_.b[blk];
-        if (B.preds.size() == 1 && idom[blk] == B.preds[0]) epoch = end_epoch[B.preds[0]];
+        if (B.preds.size() == 1 && idom[blk] == B.preds[0]) { epoch = end_epoch[B.preds[0]]; bepoch = end_bepoch[B.preds[0]]; }
         stack.push_back({blk, 0, {}});
         Frame2& fr = stack.back();
         for (int32_t id : g_.b[blk].nodes) {
             Node& nd = g_.n[id];
             if (nd.dead) continue;
             nd.a = resolve(nd.a); nd.b = resolve(nd.b); nd.c = resolve(nd.c);
-            const int kind = kind_of(nd.op);
+            const int kind = kind_of(nd);
             if (kind) {
-                Key k{nd.op, nd.a, nd.b, nd.c, nd.aux, nd.imm, kind == 2 ? epoch : 0};
+                Key k{nd.op, nd.a, nd.b, nd.c, nd.aux, nd.imm, kind == 2 ? epoch : kind == 3 ? bepoch : 0};
                 auto it = table.find(k);
                 if (it != table.end() && !g_.n[it->second].dead) {
                     g_.repl[id] = it->second;
@@ -2938,8 +2992,10 @@ inline void Builder::cse() {
                 if (it == table.end()) { table.emplace(k, id); fr.added.push_back(k); }
             }
             if (breaks_memory(nd.op)) epoch = next_epoch++;
+            if (breaks_bindings(nd.op)) bepoch = next_epoch++;
         }
         end_epoch[blk] = epoch;
+        end_bepoch[blk] = bepoch;
     };
     for (int32_t e : kids[kRoot]) {
         enter(e);
@@ -4088,6 +4144,91 @@ inline void Emitter::emit_node(int32_t id) {
         if (d != RAX) a_.mov(d, RAX);
         commit_g(id, d);
         return;
+    }
+    case K::LoadTyped: case K::StoreTyped: {
+#ifndef QUANTA_JIT_ARCH_A64
+        const bool store = n.op == K::StoreTyped;
+        const Reg o = use_g(n.a, RAX);
+        const Reg i = use_g(n.b, RCX);
+        Xmm x = XMM0;
+        if (store) x = use_x(n.c, XMM0);
+        Label& dl = deopt_label(n.state);
+        const auto type = static_cast<TypedArrayBase::ArrayType>(n.aux);
+        // A plain view of the type this site was built for, inside its buffer, which is neither resizable nor detached.
+        a_.mov_load(RDX, mem(o, static_cast<int32_t>(JitObjectLayout::shape())));
+        a_.and32_imm(RDX, static_cast<int32_t>(JitObjectLayout::kShapeTypeMask));
+        a_.cmp32_imm(RDX, static_cast<int32_t>(JitTypedLayout::kTypedArrayType));
+        a_.jcc(CC_NE, dl);
+        a_.cmp32_mem_imm(mem(o, static_cast<int32_t>(JitTypedLayout::array_type())), static_cast<int32_t>(n.aux));
+        a_.jcc(CC_NE, dl);
+        a_.cmp8_mem_imm(mem(o, static_cast<int32_t>(JitTypedLayout::length_tracking())), 0);
+        a_.jcc(CC_NE, dl);
+        a_.mov_load(RDX, mem(o, static_cast<int32_t>(JitTypedLayout::buffer())));
+        a_.test(RDX, RDX);
+        a_.jcc(CC_E, dl);
+        a_.cmp8_mem_imm(mem(RDX, static_cast<int32_t>(JitTypedLayout::buf_resizable())), 0);
+        a_.jcc(CC_NE, dl);
+        a_.cmp8_mem_imm(mem(RDX, static_cast<int32_t>(JitTypedLayout::buf_detached())), 0);
+        a_.jcc(CC_NE, dl);
+        a_.mov_load(RDX, mem(RDX, static_cast<int32_t>(JitTypedLayout::buf_store())));
+        a_.test(RDX, RDX);
+        a_.jcc(CC_E, dl);
+        a_.mov_load(RDX, mem(RDX, static_cast<int32_t>(JitTypedLayout::store_data())));
+        a_.test(RDX, RDX);
+        a_.jcc(CC_E, dl);
+        a_.mov_load(R11, mem(o, static_cast<int32_t>(JitTypedLayout::byte_offset())));
+        a_.add(RDX, R11);
+        a_.mov32(RCX, i);                                   // the index, zero-extended
+        a_.cmp_load(RCX, mem(o, static_cast<int32_t>(JitTypedLayout::length())));
+        a_.jcc(CC_AE, dl);
+        uint8_t scale = 1;
+        switch (type) {
+        case TypedArrayBase::ArrayType::INT16: case TypedArrayBase::ArrayType::UINT16: scale = 2; break;
+        case TypedArrayBase::ArrayType::INT32: case TypedArrayBase::ArrayType::UINT32: case TypedArrayBase::ArrayType::FLOAT32: scale = 4; break;
+        case TypedArrayBase::ArrayType::FLOAT64: scale = 8; break;
+        default: break;
+        }
+        const Mem at = mem_idx(RDX, RCX, scale, 0);
+        if (!store) {
+            const Xmm d = def_x(id, XMM0);
+            switch (type) {
+            case TypedArrayBase::ArrayType::FLOAT64: a_.movsd_load(d, at); break;
+            case TypedArrayBase::ArrayType::FLOAT32: a_.movss_load(d, at); a_.cvtss2sd(d, d); break;
+            default:
+                switch (type) {
+                case TypedArrayBase::ArrayType::INT8: a_.movsx8_load(RAX, at); break;
+                case TypedArrayBase::ArrayType::UINT8: a_.movzx8_load(RAX, at); break;
+                case TypedArrayBase::ArrayType::INT16: a_.movsx16_load(RAX, at); break;
+                case TypedArrayBase::ArrayType::UINT16: a_.movzx16_load(RAX, at); break;
+                default: a_.mov_load32(RAX, at); break;
+                }
+                a_.xorpd(d, d);
+                if (type == TypedArrayBase::ArrayType::UINT32) a_.cvtsi2sd64(d, RAX);
+                else a_.cvtsi2sd32(d, RAX);
+                break;
+            }
+            commit_x(id, d);
+            return;
+        }
+        switch (type) {
+        case TypedArrayBase::ArrayType::FLOAT64: a_.movsd_store(at, x); break;
+        case TypedArrayBase::ArrayType::FLOAT32: a_.cvtsd2ss(XMM15, x); a_.movss_store(at, XMM15); break;
+        default:
+            // The integer the interpreter's own store takes: a truncation that fits 64 bits, else its general path.
+            a_.cvttsd2si64(RAX, x);
+            a_.mov_imm64(R11, 0x8000000000000000ull);
+            a_.cmp(RAX, R11);
+            a_.jcc(CC_E, dl);
+            if (scale == 1) a_.mov_store8(at, RAX);
+            else if (scale == 2) a_.mov_store16(at, RAX);
+            else a_.mov_store32(at, RAX);
+            break;
+        }
+        return;
+#else
+        fail("typed arrays are not compiled on this target");
+        return;
+#endif
     }
     case K::Rt: {
         const int32_t area = native_args_ * 8;

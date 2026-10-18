@@ -19,6 +19,7 @@ namespace Quanta {
 
 class Context;
 class ArrayBuffer;
+struct JitTypedLayout;
 
 class TypedArrayBase : public Object {
 public:
@@ -36,6 +37,7 @@ public:
         BIGUINT64
     };
 
+    friend struct JitTypedLayout;   // the optimizing tier reads a view's fields in generated code
 protected:
     std::shared_ptr<ArrayBuffer> buffer_;
     size_t byte_offset_;

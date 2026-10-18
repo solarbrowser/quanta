@@ -824,6 +824,10 @@ struct KeyedFeedback {
     bool mega = false;
     // Where the last hit sat, plus one: see find_keyed_entry.
     uint8_t hint = 0;
+    // What an indexed access at this site has found at its receiver: 0 nothing yet, 1 + a TypedArrayBase::ArrayType for a plain
+    // typed array of that type, 0xFF anything else or more than one kind. The optimizing tier compiles an element access for the
+    // kind it names.
+    uint8_t elem_kind = 0;
 
     // SetKeyed-only: mirrors FeedbackBody::TransitionEntry (caches adding a
     // brand-new own property, keyed by the shape BEFORE the add, the
