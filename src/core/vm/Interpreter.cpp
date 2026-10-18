@@ -3025,6 +3025,13 @@ QUANTA_HANDLER Value h_Jump(HANDLER_PARAMS) {
     DISPATCH();
 }
 
+QUANTA_HANDLER Value h_JumpLong(HANDLER_PARAMS) {
+    const int32_t off = static_cast<int32_t>(read_u32(code, pc + 1));
+    pc = static_cast<uint32_t>(static_cast<int64_t>(pc) + 5 + off);
+    if (off < 0 && UNLIKELY(BACK_EDGE_DUE())) [[clang::musttail]] return h_BackEdgeDue(f, pc, acc, regs, code);
+    DISPATCH();
+}
+
 #define BRANCH_HANDLER(name, cond)                                         \
     QUANTA_HANDLER Value name(HANDLER_PARAMS) {                         \
         int16_t off = read_i16(code, pc + 1);                            \
@@ -10094,6 +10101,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaConst)]      = &h_LdaConst;
     t[static_cast<uint8_t>(Op::Return)]        = &h_Return;
     t[static_cast<uint8_t>(Op::Jump)]          = &h_Jump;
+    t[static_cast<uint8_t>(Op::JumpLong)]      = &h_JumpLong;
     t[static_cast<uint8_t>(Op::JumpIfFalse)]   = &h_JumpIf<false>;
     t[static_cast<uint8_t>(Op::JumpIfTrue)]    = &h_JumpIf<true>;
     t[static_cast<uint8_t>(Op::Add)]           = &h_Add;

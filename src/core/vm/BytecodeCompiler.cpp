@@ -4583,20 +4583,42 @@ void drop_shadowed_annexb_fn_vars(std::vector<DeclInfo>& declared,
     declared = std::move(out);
 }
 
+namespace {
+// Set when a jump did not fit in 16 bits, so compile() knows the failure is one a longer encoding fixes.
+thread_local bool g_jump_range_failed = false;
+// While set, new compilers emit jumps in their long form (see BytecodeCompiler::emit_jump).
+thread_local bool g_wide_jumps = false;
+struct WideJumpScope {
+    WideJumpScope() { g_wide_jumps = true; }
+    ~WideJumpScope() { g_wide_jumps = false; }
+};
+}
+
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const ParamList& params,
     bool suspendable, bool is_arrow, bool is_strict,
     const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
     const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain,
     bool needs_self_binding, const EnvSlotHazards* env_slot_hazards) {
-    bool attempted_elision = false;
-    auto chunk = compile_attempt(body, params, suspendable, is_arrow, is_strict, env_bound, outer_with,
-                                 allow_arguments, scope_info, ancestor_chain, needs_self_binding,
-                                 env_slot_hazards, /*elide_arguments=*/true, &attempted_elision);
-    if (chunk || !attempted_elision) return chunk;
-    return compile_attempt(body, params, suspendable, is_arrow, is_strict, env_bound, outer_with,
-                           allow_arguments, scope_info, std::move(ancestor_chain), needs_self_binding,
-                           env_slot_hazards, /*elide_arguments=*/false, &attempted_elision);
+    auto run = [&](bool elide, bool* attempted) {
+        return compile_attempt(body, params, suspendable, is_arrow, is_strict, env_bound, outer_with,
+                               allow_arguments, scope_info, ancestor_chain, needs_self_binding,
+                               env_slot_hazards, elide, attempted);
+    };
+    auto attempts = [&]() {
+        bool attempted_elision = false;
+        auto chunk = run(/*elide=*/true, &attempted_elision);
+        if (chunk || !attempted_elision) return chunk;
+        return run(/*elide=*/false, &attempted_elision);
+    };
+    g_jump_range_failed = false;
+    auto chunk = attempts();
+    if (!chunk && g_jump_range_failed) {
+        // A body whose code is longer than a 16-bit jump reaches: again with every jump in its long form.
+        WideJumpScope wide;
+        chunk = attempts();
+    }
+    return chunk;
 }
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
@@ -5152,6 +5174,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     const bool env_mode = full_env || has_hoisted_decl || !env_resident.empty() ||
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
+    compiler.wide_jumps_ = g_wide_jumps;
     compiler.outer_with_ = outer_with;
     // A `with` anywhere between here and whatever chain was handed down
     // invalidates every hop count in it -- env_depth_ does not count a with's
@@ -7026,7 +7049,7 @@ int jump_offset_at(char kind) {
 }
 
 void BytecodeCompiler::fuse_store_pairs() {
-    if (code_.empty()) return;
+    if (code_.empty() || wide_jumps_) return;
     const size_t n = code_.size();
 
     std::vector<uint32_t> starts;
@@ -8816,7 +8839,25 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     return !failed_;
 }
 
+// A jump's operand is a signed 16-bit distance, which a function with more than 32 KB of code can outrun. Such a function is
+// compiled again with every jump in the long form: an unconditional one is a JumpLong, a conditional one jumps over a short
+// Jump to the JumpLong that carries the real target, so no conditional opcode needs a long variant of its own. The value a
+// jump hands back for patching carries kLongJump when it names a JumpLong's operand.
+constexpr size_t kLongJump = size_t{1} << 62;
+
 size_t BytecodeCompiler::emit_jump(Op op) {
+    if (wide_jumps_) {
+        if (op != Op::Jump) {
+            emit(op);
+            emit_u16(3);                    // taken: to the JumpLong below
+            emit(Op::Jump);
+            emit_u16(5);                    // not taken: over it
+        }
+        emit(Op::JumpLong);
+        const size_t pos = code_.size();
+        emit_u32(0);
+        return pos | kLongJump;
+    }
     emit(op);
     size_t pos = code_.size();
     emit_u16(0);
@@ -8824,10 +8865,17 @@ size_t BytecodeCompiler::emit_jump(Op op) {
 }
 
 bool BytecodeCompiler::patch_jump(size_t operand_pos) {
+    if (operand_pos & kLongJump) {
+        operand_pos &= ~kLongJump;
+        const ptrdiff_t offset = static_cast<ptrdiff_t>(code_.size()) - static_cast<ptrdiff_t>(operand_pos + 4);
+        const uint32_t enc = static_cast<uint32_t>(static_cast<int32_t>(offset));
+        for (int k = 0; k < 4; k++) code_[operand_pos + k] = static_cast<uint8_t>(enc >> (8 * k));
+        return true;
+    }
     // Offset is relative to the pc after the 2-byte operand.
     ptrdiff_t offset = static_cast<ptrdiff_t>(code_.size()) -
                        static_cast<ptrdiff_t>(operand_pos + 2);
-    if (offset < INT16_MIN || offset > INT16_MAX) { failed_ = true; return false; }
+    if (offset < INT16_MIN || offset > INT16_MAX) { failed_ = true; g_jump_range_failed = true; return false; }
     uint16_t enc = static_cast<uint16_t>(static_cast<int16_t>(offset));
     code_[operand_pos] = static_cast<uint8_t>(enc & 0xFF);
     code_[operand_pos + 1] = static_cast<uint8_t>(enc >> 8);
@@ -8835,10 +8883,22 @@ bool BytecodeCompiler::patch_jump(size_t operand_pos) {
 }
 
 bool BytecodeCompiler::emit_jump_back(Op op, size_t target_pc) {
+    if (wide_jumps_) {
+        if (op != Op::Jump) {
+            emit(op);
+            emit_u16(3);
+            emit(Op::Jump);
+            emit_u16(5);
+        }
+        emit(Op::JumpLong);
+        const ptrdiff_t offset = static_cast<ptrdiff_t>(target_pc) - static_cast<ptrdiff_t>(code_.size() + 4);
+        emit_u32(static_cast<uint32_t>(static_cast<int32_t>(offset)));
+        return true;
+    }
     emit(op);
     ptrdiff_t offset = static_cast<ptrdiff_t>(target_pc) -
                        static_cast<ptrdiff_t>(code_.size() + 2);
-    if (offset < INT16_MIN || offset > INT16_MAX) { failed_ = true; return false; }
+    if (offset < INT16_MIN || offset > INT16_MAX) { failed_ = true; g_jump_range_failed = true; return false; }
     emit_u16(static_cast<uint16_t>(static_cast<int16_t>(offset)));
     return true;
 }

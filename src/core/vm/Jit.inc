@@ -1159,6 +1159,7 @@ bool op_unsupported(Op op) {
     case Op::Yield: case Op::YieldStar: case Op::Await: case Op::SettleReturn:
     case Op::GetAsyncIterator: case Op::AsyncIteratorNextOrJump: case Op::AsyncIteratorClose:
     case Op::ReraiseGeneratorReturn:
+    case Op::JumpLong:        // a function long enough to need it is not one the tiers take
         return true;
     default:
         return false;

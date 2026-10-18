@@ -248,7 +248,8 @@ const OpInfo& op_info(Op op) {
         {"LdaEnvSlotAt", 4, 'D'}, {"StaEnvSlotAt", 4, 'D'},
         {"ForInKeyPresent", 3, 'J'},
         {"LdaArgLength", 0, '-'}, {"LdaArgAt", 0, '-'}, {"LdaFrameArgsMarker", 0, '-'},
-        {"CreateObjectT", 2, 'h'}
+        {"CreateObjectT", 2, 'h'},
+        {"JumpLong", 4, 'd'}
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");
@@ -399,6 +400,14 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                                (static_cast<uint32_t>(chunk.code[operand_pc + 2]) << 16) |
                                (static_cast<uint32_t>(chunk.code[operand_pc + 3]) << 24);
                 out << " [" << idx << "] ; " << chunk.constants[idx].to_string();
+                break;
+            }
+            case 'd': {
+                const int32_t off = static_cast<int32_t>(static_cast<uint32_t>(chunk.code[operand_pc]) |
+                                                         (static_cast<uint32_t>(chunk.code[operand_pc + 1]) << 8) |
+                                                         (static_cast<uint32_t>(chunk.code[operand_pc + 2]) << 16) |
+                                                         (static_cast<uint32_t>(chunk.code[operand_pc + 3]) << 24));
+                out << " -> " << (static_cast<int64_t>(operand_pc) + 4 + off);
                 break;
             }
             case 'o': {

@@ -766,6 +766,7 @@ private:
     int env_depth_ = 0;
     std::vector<size_t>* chain_shortcircuit_jumps_ = nullptr;
     bool failed_ = false;
+    bool wide_jumps_ = false;   // jumps in their long form: see emit_jump
 };
 
 // Whether a closure literal (params + body) needs its captured environment

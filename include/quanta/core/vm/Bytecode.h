@@ -502,6 +502,10 @@ enum class Op : uint8_t {
     // one slot store (Interpreter.cpp, h_CreateObjectT).
     CreateObjectT,  // t
 
+    // An unconditional jump with a 32-bit offset (relative to the byte after it). The compiler emits it, and a short
+    // conditional jump over it, only in a function whose code is too long for 16-bit offsets to reach across.
+    JumpLong,
+
     kCount
 };
 
