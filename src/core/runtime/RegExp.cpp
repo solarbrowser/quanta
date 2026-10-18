@@ -2857,6 +2857,59 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     return true;
 }
 
+bool RegExp::split_all(const std::string& str, uint32_t lim, std::vector<SplitPiece>& pieces) {
+    if (backtrack_engine_ || !code_ || lim == 0) return false;
+    resource_exhausted_ = false;
+    SubjectBuffer decode_buffer;
+    std::u16string& decode_scratch = decode_buffer.get();
+    uint64_t subject_id = 0;
+    std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id);
+    std::u16string sanitized;
+    if (unicode_ && has_lone_surrogate(orig)) {
+        sanitized = std::u16string(orig);
+        sanitize_utf16_surrogates(sanitized);
+    }
+    std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
+    const size_t size = subject.size();
+    if (size == 0) return false;
+    pcre2_code* re = static_cast<pcre2_code*>(code_);
+    pcre2_match_data* md = static_cast<pcre2_match_data*>(ensure_match_data());
+    if (!md) return false;
+    pieces.clear();
+    size_t p = 0, q = 0;
+    auto advance = [&](size_t at) {
+        size_t next = at + 1;
+        if (unicode_ && next < size && subject[at] >= 0xD800 && subject[at] <= 0xDBFF &&
+            subject[next] >= 0xDC00 && subject[next] <= 0xDFFF) next++;
+        return next;
+    };
+    while (q < size) {
+        const int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), size, q, kSubjectAlreadyChecked, md,
+                                 resource_exhausted_);
+        if (resource_exhausted_) return false;
+        if (rc < 0) break;
+        PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+        const size_t ms = ov[0];
+        if (ms >= size) break;                      // the spec never tries an index at or past the end
+        const size_t e = std::min<size_t>(ov[1], size);
+        if (e == p) { q = advance(ms); continue; }  // an empty match where the last piece ended
+        pieces.push_back({utf16_to_wtf8(orig.data() + p, ms - p), false});
+        if (pieces.size() == lim) { last_index_ = 0; return true; }
+        p = e;
+        const uint32_t ncap = pcre2_get_ovector_count(md) - 1;
+        for (uint32_t ci = 1; ci <= ncap; ci++) {
+            const size_t cs = ov[2 * ci], ce = ov[2 * ci + 1];
+            if (cs == PCRE2_UNSET || ce == PCRE2_UNSET) pieces.push_back({std::string(), true});
+            else pieces.push_back({utf16_to_wtf8(orig.data() + cs, ce - cs), false});
+            if (pieces.size() == lim) { last_index_ = 0; return true; }
+        }
+        q = p;
+    }
+    pieces.push_back({utf16_to_wtf8(orig.data() + p, size - p), false});
+    last_index_ = 0;
+    return true;
+}
+
 Value RegExp::exec(const std::string& str, const String* cell, const std::u16string* precomputed_units, Context* realm_hint) {
     resource_exhausted_ = false;
     // orig holds the unsanitized units so capture text preserves lone surrogates.

@@ -181,6 +181,12 @@ static bool create_indexed_data_property(Context& ctx, Object* target, double in
     if (target->get_type() == Object::ObjectType::Array &&
         !target->has_index_descriptor() &&
         index >= 0 && index == static_cast<double>(target->element_count())) {
+        // The VM's own append: the same conditions its keyed store clears the way with -- extensible, no index
+        // anywhere on the prototype chain -- and then the two counters and the store.
+        if (target->is_extensible() && target->proto_chain_has_no_indices() &&
+            target->store_dense_element(static_cast<uint32_t>(index), v)) {
+            return true;
+        }
         target->set_element(static_cast<uint32_t>(index), v);
         if (ctx.has_exception()) return false;
         return true;
@@ -2365,6 +2371,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
                            : nullptr;
             if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
+            // The result is filled front to back, one element per source element: room for all of them at once
+            // instead of a regrowth on every append. Only for a source that is dense, so a huge sparse length
+            // does not reserve what it will never fill.
+            if (result->get_type() == Object::ObjectType::Array && dense_fast(this_obj) && length == this_obj->element_count() &&
+                length <= (1u << 24) && result->element_count() == 0) {
+                result->reserve_elements(static_cast<uint32_t>(length));
+            }
 
             for (double k = 0; k < length; k++) {
                 // Re-asked every turn: the callback may have punched a hole,

@@ -1449,6 +1449,22 @@ void register_regexp_builtins(Context& ctx) {
                 return Value(result.release());
             }
 
+            // An ordinary RegExp (nothing on it or its prototype changed since the engine made it) does not need the
+            // spec's attempt at every index: the pieces are the same when the pattern is searched for.
+            if (Object::regexp_proto_protector_intact() && splitter->get_prototype() == Object::watched_regexp_prototype() &&
+                !regexp_has_shortcut_override(splitter)) {
+                if (RegExpObject* reo = RegExpObject::from(splitter); reo && reo->impl()) {
+                    std::vector<RegExp::SplitPiece> pieces;
+                    if (reo->impl()->split_all(str, lim, pieces)) {
+                        for (const RegExp::SplitPiece& piece : pieces) {
+                            result->set_element(length_a++, piece.undefined ? Value() : Value(piece.text));
+                        }
+                        result->set_length(length_a);
+                        return Value(result.release());
+                    }
+                }
+            }
+
             auto advance_index = [&](size_t q) -> size_t {
                 if (!unicode_matching) return q + 1;
                 if (q < str16.size() && str16[q] >= 0xD800 && str16[q] <= 0xDBFF) return q + 2;

@@ -127,6 +127,12 @@ public:
     // replacement can be taken literally.
     bool replace_all_literal(const std::string& str, const std::string& replacement,
                              std::string& out);
+    // What String.prototype.split(regexp) produces, with the pattern searched for rather than tried at every index
+    // (the same pieces: the spec's sticky attempts at q = p, p+1, ... find the leftmost match from p, which is what a
+    // search from p returns). `lim` caps the number of elements. False, with nothing to use, when the pattern is not
+    // on the PCRE2 path or the match ran out of what the limits allow: the caller takes the general algorithm.
+    struct SplitPiece { std::string text; bool undefined = false; };
+    bool split_all(const std::string& str, uint32_t lim, std::vector<SplitPiece>& pieces);
     void compile(const std::string& pattern, const std::string& flags = "");
 
     std::string get_source() const { return pattern_; }
