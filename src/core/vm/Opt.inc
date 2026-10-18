@@ -294,6 +294,7 @@ struct Config {
     uint32_t inline_depth = 3;
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
+    uint32_t max_helper_calls = 32;   // QUANTA_OPT_MAXHELPERCALLS: refuse a region that leaves more calls than this to the call helper
     uint32_t max_step_percent = 12;   // refuse a region in which more than this share of the instructions are plain steps
 };
 inline Config g_config_storage;
@@ -324,6 +325,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_CALLS")) c.allow_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLY")) c.poly_max = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_MAXHELPERCALLS")) c.max_helper_calls = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_AVOID")) c.avoid_after = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_RECOMPILES")) c.max_recompiles = static_cast<uint32_t>(std::atoi(e));
@@ -2612,6 +2614,15 @@ inline void Builder::finalize() {
                 if (g_.n[id].op == K::Step) std::fprintf(stderr, "[opt] step %s\n", op_name(static_cast<Op>(F().chunk->code[g_.n[id].aux])));
     }
     if (insns && steps * 100 > static_cast<size_t>(config().max_step_percent) * insns) fail("too many steps");
+    {
+        // A call the unit makes without inlining it goes through a helper that runs the callee in a nested interpreter loop,
+        // where the interpreter alone would have entered it without one. A region with many of them (a large dispatcher)
+        // spends more on those calls than its compiled code saves.
+        size_t calls = 0;
+        for (int32_t blk : g_.rpo) for (int32_t id : g_.b[blk].nodes) if (g_.n[id].op == K::CallFn) calls++;
+        if (config().log) std::fprintf(stderr, "[opt] %zu calls left to helpers, %zu instructions\n", calls, insns);
+        if (calls > config().max_helper_calls) fail("too many calls left to helpers");
+    }
     // Entering and leaving a unit costs a few dozen instructions; a body that is not much longer than that, with
     // nothing inlined into it, is cheaper to interpret.
     if (g_.fn_entry && !g_.why && g_.inl_count == 0 && insns < config().entry_min_insns && !F().chunk->unit_callee) {
@@ -3297,6 +3308,15 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
                 }
                 Value out;
                 if (VM::inherited_data_entry(*fb, obj, out)) return std::bit_cast<uint64_t>(out);
+                // A property the site has found nowhere on the chain (an optional field): undefined while the chain stands.
+                if (fb->proto_count && !fb->proto_mega) {
+                    const Object* proto0 = obj->get_prototype_raw();
+                    for (uint8_t k = 0; k < fb->proto_count; k++) {
+                        const FeedbackSlot::ProtoEntry& pe = fb->proto_entries[k];
+                        if (pe.absent && pe.receiver_word == word && pe.prototype == proto0 && pe.proto_epoch == Object::proto_epoch())
+                            return std::bit_cast<uint64_t>(Value());
+                    }
+                }
             }
         }
         if (d->is_length && obj->get_type() == Object::ObjectType::TypedArray && VM::typed_length_ok(obj))
