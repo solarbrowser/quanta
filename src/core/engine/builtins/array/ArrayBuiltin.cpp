@@ -10,6 +10,7 @@
 #include "quanta/core/gc/Collector.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
@@ -2348,7 +2349,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 const String* x = search_element.as_string();
                 for (double i = start_index; i < length; i++) {
                     const Value e = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
-                    if (e.is_string() && *e.as_string() == *x) return Value(i);
+                    if (e.is_string() && e.as_string()->str() == x->str()) return Value(i);
                 }
                 return Value(-1.0);
             }
