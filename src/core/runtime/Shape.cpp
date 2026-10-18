@@ -142,7 +142,7 @@ Shape* Shape::transition_accessor(const std::string& key) {
 }
 
 int32_t Shape::find_slot(const std::string& key) const {
-    return slots_.find(key);
+    return slots_.find(key, slot_count_);
 }
 
 std::vector<Shape::PropertyInfo> Shape::properties_in_order() const {

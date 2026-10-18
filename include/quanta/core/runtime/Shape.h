@@ -71,11 +71,11 @@ public:
     // True if `key` names an accessor-kind slot (its value at find_slot(key)
     // is a getter Value; the paired setter Value lives at find_slot(key)+1).
     bool is_accessor_slot(const std::string& key) const {
-        return has_any_accessor_ && slots_.is_accessor(key);
+        return has_any_accessor_ && slots_.is_accessor(key, slot_count_);
     }
     // find_slot + is_accessor_slot from ONE probe: SlotMap keeps both in the
     // same entry, so asking separately hashes the key twice.
-    int32_t find_data_slot(const std::string& key) const { return slots_.find_data(key); }
+    int32_t find_data_slot(const std::string& key) const { return slots_.find_data(key, slot_count_); }
 
     uint32_t slot_count() const { return slot_count_; }
 
@@ -206,11 +206,18 @@ private:
             uint32_t capacity = 0;
             uint32_t count = 0;
 
+            // The largest slot count of any shape that added its key here (see SlotMap::set).
+            uint32_t extent = 0;
+
             OverflowTable() = default;
-            OverflowTable(const OverflowTable& other)
-                : slots(other.capacity ? std::make_unique<Slot[]>(other.capacity) : nullptr),
-                  capacity(other.capacity), count(other.count) {
-                for (uint32_t i = 0; i < capacity; i++) slots[i] = other.slots[i];
+            // The entries whose slot is below `limit`: what a shape that branches off before the table's end can see.
+            OverflowTable* copy_below(uint32_t limit) const {
+                auto* copy = new OverflowTable();
+                for (uint32_t i = 0; i < capacity; i++) {
+                    const Slot& s = slots[i];
+                    if (s.key && (s.packed >> 1) < limit) copy->set(s.key, s.packed >> 1, (s.packed & 1u) != 0);
+                }
+                return copy;
             }
 
             static uint32_t tag_of(const std::string& key) {
@@ -253,7 +260,11 @@ private:
                 }
             }
         };
-        std::unique_ptr<OverflowTable> overflow;
+        // Shared by the shapes of one unbranched run of the chain: each shape that adds a key to the end appends it to the
+        // table its parent has, and sees only the entries below its own slot count (the `limit` of a lookup). A shape that branches off
+        // before the table's end copies the part it can see. Every shape used to hold a copy of its parent's whole table.
+        // Tables are never freed: shapes are immortal, so is whatever they point at.
+        OverflowTable* overflow = nullptr;
         // One bit per key held, from the length and the two end bytes. Four in
         // five of the lookups this map is asked to do are for a key it does
         // not hold, and each of those scanned the inline entries and then
@@ -271,33 +282,20 @@ private:
         }
 
         SlotMap() = default;
-        SlotMap(const SlotMap& other)
-            : inline_entries(other.inline_entries),
-              overflow(other.overflow ? std::make_unique<OverflowTable>(*other.overflow) : nullptr),
-              key_bits_(other.key_bits_) {}
-        SlotMap& operator=(const SlotMap& other) {
-            if (this == &other) return *this;
-            inline_entries = other.inline_entries;
-            overflow = other.overflow ? std::make_unique<OverflowTable>(*other.overflow) : nullptr;
-            key_bits_ = other.key_bits_;
-            return *this;
-        }
-        SlotMap(SlotMap&&) = default;
-        SlotMap& operator=(SlotMap&&) = default;
 
-        int32_t find(const std::string& key) const {
+        int32_t find(const std::string& key, uint32_t limit) const {
             if (!(key_bits_ & key_bit(key))) return -1;
             for (const auto& e : inline_entries) {
                 if (e.in_use && *e.key == key) return static_cast<int32_t>(e.value);
             }
             if (overflow) {
-                if (const auto* slot = overflow->find(key)) return static_cast<int32_t>(slot->packed >> 1);
+                if (const auto* slot = overflow->find(key); slot && (slot->packed >> 1) < limit) return static_cast<int32_t>(slot->packed >> 1);
             }
             return -1;
         }
         // -1 when absent OR when the entry is an accessor pair, which the
         // callers that want a plain readable value must not treat as one.
-        int32_t find_data(const std::string& key) const {
+        int32_t find_data(const std::string& key, uint32_t limit) const {
             if (!(key_bits_ & key_bit(key))) return -1;
             for (const auto& e : inline_entries) {
                 if (e.in_use && *e.key == key) {
@@ -305,19 +303,19 @@ private:
                 }
             }
             if (overflow) {
-                if (const auto* slot = overflow->find(key)) {
+                if (const auto* slot = overflow->find(key); slot && (slot->packed >> 1) < limit) {
                     return (slot->packed & 1u) ? -1 : static_cast<int32_t>(slot->packed >> 1);
                 }
             }
             return -1;
         }
-        bool is_accessor(const std::string& key) const {
+        bool is_accessor(const std::string& key, uint32_t limit) const {
             if (!(key_bits_ & key_bit(key))) return false;
             for (const auto& e : inline_entries) {
                 if (e.in_use && *e.key == key) return e.is_accessor;
             }
             if (overflow) {
-                if (const auto* slot = overflow->find(key)) return (slot->packed & 1u) != 0;
+                if (const auto* slot = overflow->find(key); slot && (slot->packed >> 1) < limit) return (slot->packed & 1u) != 0;
             }
             return false;
         }
@@ -330,8 +328,11 @@ private:
             for (auto& e : inline_entries) {
                 if (!e.in_use) { e.key = key; e.value = value; e.in_use = true; e.is_accessor = is_accessor; return; }
             }
-            if (!overflow) overflow = std::make_unique<OverflowTable>();
+            const uint32_t end = value + (is_accessor ? 2u : 1u);
+            if (!overflow) overflow = new OverflowTable();
+            else if (overflow->extent != value) overflow = overflow->copy_below(value);
             overflow->set(key, value, is_accessor);
+            overflow->extent = end;
         }
     };
     SlotMap slots_;
