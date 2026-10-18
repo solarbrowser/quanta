@@ -735,6 +735,8 @@ private:
     std::vector<LoopScope> loop_stack_;
     std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
     std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
+    std::unordered_set<std::string> hoisted_fn_names_;     // their names: bound by DeclareFunction, so no slot describes them
+    void mark_hoisted_fn(const ASTNode* decl);
     bool allow_arguments_ = false;
     // This body's `arguments` reads compile to LdaArgLength/LdaArgAt and no
     // arguments object exists. Any other mention of the name -- one that has to

@@ -5783,7 +5783,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
         if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
         if (!env_mode) return nullptr;
         if (compiler.chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return nullptr;
-        compiler.hoisted_fn_decls_.insert(stmt.get());
+        compiler.mark_hoisted_fn(stmt.get());
         compiler.chunk_->ensure_closures().push_back(
             compiler.with_ancestor_chain(closure_template_for(stmt.get())));
         compiler.emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
@@ -6329,6 +6329,7 @@ void BytecodeCompiler::finalize_ancestor_chains() {
     auto ambiguous = std::make_shared<std::unordered_set<std::string>>();
     for (const auto& name : env_names_) if (!slots->count(name)) ambiguous->insert(name);
     for (const auto& [name, reg] : locals_) { (void)reg; if (!slots->count(name)) ambiguous->insert(name); }
+    for (const auto& name : hoisted_fn_names_) if (!slots->count(name)) ambiguous->insert(name);
     auto& closures = chunk_->ensure_closures();
     for (const auto& [index, creation_depth] : pending_ancestor_chain_sites_) {
         auto layer = std::make_shared<ClosureScopeChain>();
@@ -6355,7 +6356,17 @@ ClosureTemplate BytecodeCompiler::with_ancestor_chain(ClosureTemplate tmpl) cons
     return tmpl;
 }
 
+void BytecodeCompiler::mark_hoisted_fn(const ASTNode* decl) {
+    hoisted_fn_decls_.insert(decl);
+    if (const Identifier* id = static_cast<const FunctionDeclaration*>(decl)->get_id())
+        hoisted_fn_names_.insert(id->get_name());
+}
+
 bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, uint8_t& slot) const {
+    // DeclareFunction binds the name in this function's own scope, which no
+    // register or env slot here describes -- an outer same-named slot would
+    // otherwise be read in its place.
+    if (hoisted_fn_names_.count(name)) return false;
     // An enclosing function's binding of this name is not this body's `arguments`.
     if (elide_arguments_ && name == "arguments") return false;
     // Starts from env_depth_, not 0: entry_hop measures each layer's
@@ -7713,7 +7724,7 @@ bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     emit(Op::EnterLoopEnv);
     emit_u16(static_cast<uint16_t>(chunk_->ensure_env().loop_envs.size() - 1));
     env_depth_++;
-    hoisted_fn_decls_.insert(branch);
+    mark_hoisted_fn(branch);
     chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(branch)));
     emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
     emit(Op::ExitLoopEnv);
@@ -8975,7 +8986,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (st->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
                 if (!env_mode_) return false;
                 if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
-                hoisted_fn_decls_.insert(st.get());
+                mark_hoisted_fn(st.get());
                 chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(st.get())));
                 emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
             }
@@ -9872,7 +9883,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (s->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
                     if (!env_mode_) return false;
                     if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
-                    hoisted_fn_decls_.insert(s.get());
+                    mark_hoisted_fn(s.get());
                     chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(s.get())));
                     emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
                 }

@@ -246,7 +246,7 @@ const OpInfo& op_info(Op op) {
         {"ThrowSuperDelete", 0, '-'},
         {"LinkExports", 2, 'z'},
         {"LdaEnvSlotAt", 4, 'D'}, {"StaEnvSlotAt", 4, 'D'},
-        {"ForInKeyPresent", 3, 'J'},
+        {"ForInKeyPresent", 3, 'r'},
         {"LdaArgLength", 0, '-'}, {"LdaArgAt", 0, '-'}, {"LdaFrameArgsMarker", 0, '-'},
         {"CreateObjectT", 2, 'h'},
         {"JumpLong", 4, 'd'}
