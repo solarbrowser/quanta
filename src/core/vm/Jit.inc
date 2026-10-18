@@ -2878,7 +2878,7 @@ std::set<std::pair<const BytecodeChunk*, uint32_t>>& opt_refused() {
     return refused;
 }
 
-int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset);
+[[gnu::always_inline]] inline int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset);
 
 int opt_osr(Frame& f, uint32_t target, const Value& acc) {
     const BytecodeChunk& chunk = *f.chunk;
@@ -2929,24 +2929,29 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
 // Runs unit `ui` of `jc` on the frame, entering it at native offset `offset` (the unit's entry for `target`), and sees
 // to what the unit did: finished, an exception to rethrow, or a guard that failed (learned from, and the interpreter
 // takes the frame on from there). Same results as opt_osr.
-int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset) {
-    auto& refused = opt_refused();
+int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, JitRt* rt, uint64_t status);
+
+[[gnu::always_inline]] inline int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset) {
     if (target == 0 && ui < 0xFFFF) { chunk.opt_unit_ix = static_cast<uint16_t>(ui); chunk.opt_unit_off = offset; }
-    if (!opt_can_materialize(f, jc->opt_units[ui])) return 0;
+    JitCode::OptUnit& u = jc->opt_units[ui];
+    if (__builtin_expect(!u.inl.empty() && !opt_can_materialize(f, u), 0)) return 0;
     // Steps inside the optimized code must not start stackless calls; the frame gets its permission back
     // when control returns to the interpreter.
     const bool was_inline_ok = f.inline_ok;
     f.inline_ok = false;
-    const auto entry = jc->opt_units[ui].entry;
-    const uint8_t* base = jc->opt_units[ui].base;
-    JitRt* rt = jc->opt_units[ui].rt.get();
+    JitRt* rt = u.rt.get();
     rt->opt_runs++;
-    const uint64_t t_start = __builtin_expect(opt::config().log, 0) ? cycle_counter() : 0;
-    const uint64_t status = entry(&f, rt, base + offset);
-    if (__builtin_expect(opt::config().log, 0)) rt->opt_cycles += cycle_counter() - t_start;
+    const uint64_t status = u.entry(&f, rt, u.base + offset);
     // The baseline JIT may have replaced the chunk's JitCode while this ran (a nested call compiled it).
     f.inline_ok = was_inline_ok;
-    jc = chunk.jit.get();
+    if (__builtin_expect(status == opt::kStatusFinished, 1)) return 1;
+    return opt_unit_exit(f, chunk, chunk.jit.get(), ui, target, rt, status);
+}
+
+// What is left to do when a unit did not simply finish: an exception to rethrow, or a guard that failed (learned from; the
+// interpreter takes the frame on from there). Same results as opt_osr.
+int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, JitRt* rt, uint64_t status) {
+    auto& refused = opt_refused();
     if (status == opt::kStatusFinished) return 1;
     if (status == opt::kStatusRethrow) {
         std::exception_ptr ep = std::move(jc->pending);
@@ -3016,7 +3021,7 @@ constexpr uint32_t kEntryMaxDepth = 96;
 // interpreter has to carry on with), the interpreter finishes it here, on the frame, before this returns: the frame is
 // made the bottom of its own run by cutting its link to the caller for the duration. False, with nothing done, for
 // anything this does not take -- the caller makes the call the ordinary way.
-bool unit_call_direct(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
+[[gnu::always_inline]] inline bool unit_call_direct(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
     const FunctionExecutable* exe = fn->get_executable().get();
     const BytecodeChunk& chunk = *exe->bytecode_chunk;
     if (chunk.opt_entry != 3) return false;

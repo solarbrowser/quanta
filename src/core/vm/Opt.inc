@@ -26,7 +26,7 @@
 // instruction. So every guard sits before its instruction's side effects.
 
 // Defined in Jit.inc: a call to a function that has a unit of its own, made without the interpreter's dispatch.
-bool unit_call_direct(VM::Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out);
+[[gnu::always_inline]] inline bool unit_call_direct(VM::Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out);
 
 namespace opt {
 
@@ -283,10 +283,10 @@ struct Config {
     uint32_t callfn = 1;              // QUANTA_OPT_CALLFN: 0 a call the tier does not inline stays a step; 1 it is made from the unit; 2 only when feedback names JS functions it reaches
     bool inline_loops = true;         // QUANTA_OPT_LOOPS=0: callees with loops are not inlined
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
-    uint32_t inline_insns = 120;      // largest callee (decoded instructions)
-    uint32_t inline_total = 500;      // all the callees of one unit together
+    uint32_t inline_insns = 250;      // largest callee (decoded instructions)
+    uint32_t inline_total = 1500;      // all the callees of one unit together
     uint32_t inline_depth = 3;
-    uint32_t inline_vars = 56;        // variables the inlined callees add (the deopt scratch buffer is 64 words)
+    uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
     uint32_t max_step_percent = 12;   // refuse a region in which more than this share of the instructions are plain steps
 };
