@@ -2580,7 +2580,7 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     const bool strict = fn->is_strict() || exe.fast_strict;
     uint8_t v = kInlineNever;
     const bool declined = chunk.jit_state == 2 || undecided_loop;
-    if (declined && !chunk.env_mode && chunk.register_count <= kInlineMaxRegs && !fn->is_arrow() &&
+    if (declined && !chunk.env_mode && chunk.register_count <= kInlineMaxRegs &&
         !exe.fast_uses_super && !exe.fast_leaf) {
         v = kInlineOk | (strict ? kInlineStrict : 0) | (exe.fast_uses_this ? kInlineWantsThis : 0);
     } else if (declined && chunk.env_mode && chunk.env && chunk.register_count <= kInlineMaxRegs &&
@@ -2749,6 +2749,8 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     return true;
 }
 
+static const std::string kArrowNewTarget = "__arrow_new_target__";
+
 // Starts a stackless call of `fn` from `f` if everything allows it; true with the callee's
 // frame in `out` (the caller has only to dispatch it), false with nothing touched.
 template <bool NoteCall = true>
@@ -2766,10 +2768,20 @@ template <bool NoteCall = true>
         return inline_call_enter_env(f, fn, exe, chunk, argv, argc, this_value, return_pc, out, verdict);
     Context& ctx = *f.ctx;
     const bool offer_loops = UNLIKELY(verdict & kInlineHasOpt);
+    // An arrow reads the `this` it was created with, not the receiver, and has a new.target only if it captured one;
+    // one that is inside a constructor still waiting for super() is the general path's.
+    const Value* tv = &this_value;
+    Value arrow_this;
+    bool arrow = false;
+    if (UNLIKELY(fn->is_arrow())) {
+        arrow = true;
+        if (UNLIKELY(fn->has_internal_slot(kArrowNewTarget) || (fn->get_closure_context() && fn->get_closure_context()->this_needs_super()))) return false;
+        if (exe.fast_uses_this && fn->has_arrow_this()) { arrow_this = fn->arrow_this(); tv = &arrow_this; }
+    }
     // A call that changes the strictness, needs a boxed `this`, or runs in another realm is the
     // general path's. (this_needs_super: an arrow's super lookup, which the callee would not see.)
     if (UNLIKELY(ctx.this_needs_super() || ctx.is_strict_mode() != ((verdict & kInlineStrict) != 0) ||
-                 ((verdict & (kInlineWantsThis | kInlineStrict)) == kInlineWantsThis && !this_value.is_object() &&
+                 (!arrow && (verdict & (kInlineWantsThis | kInlineStrict)) == kInlineWantsThis && !this_value.is_object() &&
                   !this_value.is_function()) ||
                  exe.owner_realm() != g_current_realm)) {
         return false;
@@ -2796,7 +2808,7 @@ template <bool NoteCall = true>
 
     Value* bank = arena.top;
     Value* regs = bank + 2;
-    bank[0] = this_value;
+    bank[0] = *tv;
     bank[1] = Value();
     init_register_bank(reinterpret_cast<unsigned char*>(regs), nregs);
     const uint32_t copy = std::min<uint32_t>(chunk.parameter_count, argc);
@@ -2823,7 +2835,7 @@ template <bool NoteCall = true>
     callee->code = chunk.code.data();
     callee->constants = chunk.constants.data();
     callee->entry_env = outer_env;
-    callee->this_value = this_value;
+    callee->this_value = *tv;
     callee->env_save_top = 0;
     callee->current_lexical_env = outer_env;
     callee->current_variable_env = outer_env;

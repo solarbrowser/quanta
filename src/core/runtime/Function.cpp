@@ -562,12 +562,15 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
     // A body that reaches `this` through the Context instead (super) needs it
     // written there, which is also the general form's.
     const bool callee_strict = is_strict_ || exe.fast_strict;
-    if (UNLIKELY_NATIVE(is_arrow_ || exe.fast_uses_super || ctx.this_needs_super() ||
-                        ctx.is_strict_mode() != callee_strict ||
-                        (exe.fast_uses_this && !callee_strict &&
-                         !this_value.is_object() && !this_value.is_function()))) {
+    // An arrow has no `this` of its own -- the one it was created with stands in for the receiver -- and no
+    // new.target unless it captured one; with neither of those in play it is called like any other function.
+    if (UNLIKELY_NATIVE(exe.fast_uses_super || ctx.this_needs_super() || ctx.is_strict_mode() != callee_strict ||
+                        (is_arrow_ ? has_internal_slot(kArrowNewTargetKey)
+                                   : (exe.fast_uses_this && !callee_strict &&
+                                      !this_value.is_object() && !this_value.is_function())))) {
         return call_gated_general(ctx, args, this_value);
     }
+    if (is_arrow_ && exe.fast_uses_this && has_arrow_this_) this_value = arrow_this_;
     Environment* outer_env = get_closure_environment();
     if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
     if (!outer_env) outer_env = ctx.get_lexical_environment();
