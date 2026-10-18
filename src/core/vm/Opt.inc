@@ -488,8 +488,12 @@ private:
     // Whether the register `rcv` is to be taken for a dense array at an indexed access. A loop's entry frame shows what
     // the registers hold; a function entry (and an inlined callee) has no such frame, so it assumes an array and lets a
     // site that proves otherwise deoptimize into the interpreter, which then keeps that site.
-    bool dense_array_receiver(uint32_t rcv) const {
+    bool dense_array_receiver(uint32_t rcv) {
         if (cf_ == 0 && g_.frame && !g_.fn_entry) {
+            // A receiver the unit itself computed (a property read into a temporary, say) leaves nothing in the entry frame:
+            // the register still holds whatever an earlier iteration or statement put there. The guard on the array decides.
+            const K def = g_.n[value(rcv)].op;
+            if (def != K::LoadReg && def != K::Phi) return true;
             const Value& pv = g_.frame->regs[rcv];
             return pv.is_object() && pv.as_object()->is_verified_dense_array();
         }
