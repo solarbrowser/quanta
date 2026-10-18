@@ -102,6 +102,17 @@ bool Shape::take_deep_shape(uint32_t width) const {
     return true;
 }
 
+// A node may have more than kMaxTransitions children while the thread has budget for them. The root is the node that needs
+// it: every object starts there, and a program whose objects begin with a few hundred different first properties (a
+// library of classes, each with its own first field) would otherwise find the root full and see every object made after
+// that go to a hash table, for good. The budget is what keeps one-key-per-object patterns bounded.
+bool Shape::take_wide_transition() {
+    static thread_local uint32_t budget = kWideTransitionBudget;
+    if (budget == 0) return false;
+    budget--;
+    return true;
+}
+
 Shape* Shape::transition(const std::string& key) {
     // transition_find() compares by value, no interning needed for the
     // (common) case this child already exists -- only intern() on an
@@ -111,7 +122,7 @@ Shape* Shape::transition(const std::string& key) {
     // allocates anything at all.
     if (Shape* existing = transition_find(transitions_, transitions_is_single_, key)) return existing;
     if (slot_count_ >= kMaxSlots && !take_deep_shape(1)) return nullptr;
-    if (transition_size(transitions_, transitions_is_single_) >= kMaxTransitions) return nullptr;
+    if (transition_size(transitions_, transitions_is_single_) >= kMaxTransitions && !take_wide_transition()) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_));
     auto [result, new_is_single] = transition_insert(transitions_, transitions_is_single_, ikey, std::move(child));
@@ -122,7 +133,7 @@ Shape* Shape::transition(const std::string& key) {
 Shape* Shape::transition_accessor(const std::string& key) {
     if (Shape* existing = transition_find(accessor_transitions_, accessor_transitions_is_single_, key)) return existing;
     if (slot_count_ + 2 > kMaxSlots && !take_deep_shape(2)) return nullptr;
-    if (transition_size(accessor_transitions_, accessor_transitions_is_single_) >= kMaxTransitions) return nullptr;
+    if (transition_size(accessor_transitions_, accessor_transitions_is_single_) >= kMaxTransitions && !take_wide_transition()) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_, /*is_accessor=*/true));
     auto [result, new_is_single] = transition_insert(accessor_transitions_, accessor_transitions_is_single_, ikey, std::move(child));

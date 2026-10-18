@@ -148,6 +148,8 @@ private:
 
     static constexpr uint32_t kMaxTransitions = 128;
     bool take_deep_shape(uint32_t width) const;
+    static bool take_wide_transition();
+    static constexpr uint32_t kWideTransitionBudget = 65536;
 
     Shape* parent_ = nullptr;
     const std::string* added_key_ = nullptr;
