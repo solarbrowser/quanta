@@ -3113,6 +3113,17 @@ static void opt_entry_settled(const BytecodeChunk& chunk, uint8_t state) {
     if (state == 2 && !chunk_has_loop(chunk)) chunk.inline_state &= ~kInlineHasOpt;
 }
 
+// A unit has called this chunk through the interpreter. If the tier turned it down only for being short, it gets another
+// look: from a unit the call is a nested interpreter loop, which a body of its own would avoid.
+void note_unit_callee(const BytecodeChunk& chunk) {
+    chunk.unit_callee = true;
+    if (!chunk.entry_too_small || chunk.opt_entry != 2) return;
+    opt_refused().erase({&chunk, 0});
+    chunk.opt_entry = 0;
+    chunk.opt_calls = 0;
+    chunk.inline_state |= kInlineHasOpt;
+}
+
 int opt_fn_enter(Frame& f) {
     const BytecodeChunk& chunk = *f.chunk;
     if (chunk.opt_entry == 3) {

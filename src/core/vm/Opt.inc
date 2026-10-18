@@ -27,6 +27,7 @@
 
 // Defined in Jit.inc: a call to a function that has a unit of its own, made without the interpreter's dispatch.
 [[gnu::always_inline]] inline bool unit_call_direct(VM::Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out);
+void note_unit_callee(const BytecodeChunk& chunk);
 
 namespace opt {
 
@@ -2580,10 +2581,10 @@ inline void Builder::finalize() {
     if (insns && steps * 100 > static_cast<size_t>(config().max_step_percent) * insns) fail("too many steps");
     // Entering and leaving a unit costs a few dozen instructions; a body that is not much longer than that, with
     // nothing inlined into it, is cheaper to interpret.
-    if (g_.fn_entry && !g_.why && g_.inl_count == 0 && insns < config().entry_min_insns) {
+    if (g_.fn_entry && !g_.why && g_.inl_count == 0 && insns < config().entry_min_insns && !F().chunk->unit_callee) {
         bool loops = false;
         for (int32_t blk : g_.rpo) if (g_.b[blk].loop_header) loops = true;
-        if (!loops) fail("too small to enter");
+        if (!loops) { F().chunk->entry_too_small = true; fail("too small to enter"); }
     }
     // A call the unit has to leave to a step runs on the native stack and through the slow call path, which costs
     // more than the interpreter's own stackless call. A loop pays for that with the iterations around it; a whole
@@ -3192,6 +3193,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     }
     try {
         if (!(g_config_storage.direct && fn->fast_callable() && unit_call_direct(*f, fn, th, args, argc, r))) {
+            if (const FunctionExecutable* e = fn->get_executable().get(); e && e->bytecode_chunk && !e->bytecode_chunk->unit_callee) note_unit_callee(*e->bytecode_chunk);
             const std::span<const Value> call_args(args, argc);
             r = fn->fast_callable() ? fn->call_fast_gate(ctx, call_args, th) : fn->call_register_args(ctx, call_args, th);
         }
