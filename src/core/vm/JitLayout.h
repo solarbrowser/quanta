@@ -162,6 +162,10 @@ struct JitCode {
         // A native function a unit calls directly (helper_call_native): what it may be given, and how many arguments.
         struct NativeDesc { Function* fn = nullptr; uint8_t argc = 0; uint8_t recv = 0; bool any_arg = false; };
         std::vector<std::unique_ptr<NativeDesc>> natives;
+        // A property access the unit makes through the interpreter's generic path (K::Rt): the name, the site's feedback,
+        // the function the access is made for, and the root's pc a throw is reported at.
+        struct RtDesc { const std::string* name = nullptr; FeedbackSlot* slot = nullptr; Function* owner = nullptr; uint32_t pc = 0; };
+        std::vector<std::unique_ptr<RtDesc>> rtdescs;
         std::vector<InlFrame> inl;
         struct InlState { int32_t func = 0; uint32_t pc = 0; std::vector<uint32_t> vars; };   // vars: global variable numbers
         std::vector<InlState> inl_states;       // by deopt state id; func 0 for a state of the root

@@ -1033,6 +1033,10 @@ struct BytecodeChunk {
     mutable uint8_t opt_entry = 0;
     mutable uint8_t opt_loops = 0;     // 1: the tier has declined this chunk's loops, so a call no longer offers them at its first back edge
     mutable uint16_t opt_calls = 0;
+    // The unit of this chunk that starts at pc 0, as a hint for the direct call (Jit.inc: unit_call_direct): its number in the
+    // JitCode's units and its native offset. The call checks the hint against the unit before it trusts it.
+    mutable uint32_t opt_unit_off = 0;
+    mutable uint16_t opt_unit_ix = 0xFFFF;
 
     // A function whose whole body is `return <constant>`, `return this` or
     // `return this.name` is answered without a frame (VM::try_leaf_call). What the

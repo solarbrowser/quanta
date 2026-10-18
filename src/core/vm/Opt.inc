@@ -25,6 +25,9 @@
 // about to run, return status 2": the interpreter resumes at that pc, re-executing the whole
 // instruction. So every guard sits before its instruction's side effects.
 
+// Defined in Jit.inc: a call to a function that has a unit of its own, made without the interpreter's dispatch.
+bool unit_call_direct(VM::Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out);
+
 namespace opt {
 
 constexpr int32_t kMem = -1;      // a variable whose value is the register bank's content
@@ -88,6 +91,8 @@ enum class K : uint8_t {
     NewObject,            // Tagged a (the constructor): a fresh object of the shape described by imm (NewDesc*), or deopt
     IsNullish,            // Tagged a -> Bool: undefined or null
     LoadLookup,           // Tagged, a name's cached binding (cache entry: imm; aux bits 0-1 the form, bit 8 set when imm is an offset from the frame's cache)
+    Rt,                   // Tagged: one of the interpreter's generic operations (aux: kRt*), operands a, b; runs without a step, may run script, may throw
+    CallFn,               // Tagged a (the callee), b (this), c and ins (arguments, aux low byte: their count, the rest: the call's pc in the root): calls a JS function through the interpreter's call path; deopts (to the call) when a is not a function
 };
 
 struct Node {
@@ -199,6 +204,7 @@ struct Graph {
     std::vector<CtorPlan> ctors;
     std::vector<std::unique_ptr<JitCode::OptUnit::NewDesc>> descs;
     std::vector<std::unique_ptr<JitCode::OptUnit::NativeDesc>> natives;
+    std::vector<std::unique_ptr<JitCode::OptUnit::RtDesc>> rtdescs;
     struct Poly { uint8_t n = 0; uint64_t word[4] = {}; uint32_t slot[4] = {}; };
     std::vector<Poly> polys;             // the shapes a polymorphic property read serves
     std::vector<State> states;
@@ -216,7 +222,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "Rt", "CallFn"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -229,7 +235,7 @@ inline bool is_pure_removable(K k) {
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
-    case K::CallNative: case K::CheckBits:
+    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt:
         return false;
     default: return true;
     }
@@ -250,6 +256,7 @@ struct Avoid {
 inline std::map<const BytecodeChunk*, Avoid>& avoid_table() { static std::map<const BytecodeChunk*, Avoid> t; return t; }
 
 // What an optimized unit's entry function returns.
+constexpr uint32_t kRtBinary = 0, kRtTypeof = 1, kRtGetNamed = 2, kRtSetNamed = 3;
 constexpr uint64_t kStatusFinished = 0, kStatusRethrow = 1, kStatusResume = 2, kStatusDeopt = 3;
 
 struct Config {
@@ -260,6 +267,8 @@ struct Config {
     uint32_t max_insns = 4000;
     uint32_t stress = 0;              // QUANTA_OPT_DEOPT_STRESS=N: every Nth guard evaluation deoptimizes (testing)
     uint32_t skip = 0, limit = 0xFFFFFFFFu, seen = 0;   // QUANTA_OPT_SKIP / QUANTA_OPT_LIMIT: bisect which compiles are allowed
+    uint32_t avoid_after = 2;         // QUANTA_OPT_AVOID: failures of one guard before the next build leaves its instruction (or inlined call) to the interpreter
+    uint32_t max_recompiles = 12;     // QUANTA_OPT_RECOMPILES
     uint32_t max_deopts = 40;         // guard failures before a loop is given up on
     bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
     bool cold = true;                 // QUANTA_OPT_COLD=0 keeps never-executed blocks in the region
@@ -268,6 +277,11 @@ struct Config {
     uint32_t poly_max = 4;            // QUANTA_OPT_POLY=n: most callees one call site may have and still be inlined (1: monomorphic only)
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
+    bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
+    uint32_t rt_mask = 127;            // QUANTA_OPT_RTMASK: which generic operations: 1 binary, 2 typeof, 4 get named, 8 set named
+    bool direct = true;               // QUANTA_OPT_DIRECT=0: a call from a unit goes through the interpreter's call path
+    uint32_t callfn = 1;              // QUANTA_OPT_CALLFN: 0 a call the tier does not inline stays a step; 1 it is made from the unit; 2 only when feedback names JS functions it reaches
+    bool inline_loops = true;         // QUANTA_OPT_LOOPS=0: callees with loops are not inlined
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 120;      // largest callee (decoded instructions)
     uint32_t inline_total = 500;      // all the callees of one unit together
@@ -276,8 +290,14 @@ struct Config {
     uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
     uint32_t max_step_percent = 12;   // refuse a region in which more than this share of the instructions are plain steps
 };
-inline Config& config() {
-    static Config c;
+inline Config g_config_storage;
+inline void config_init();
+[[gnu::always_inline]] inline Config& config() {
+    if (__builtin_expect(!g_config_storage.init, 0)) config_init();
+    return g_config_storage;
+}
+inline void config_init() {
+    Config& c = g_config_storage;
     if (!c.init) {
         c.init = true;
         if (const char* e = std::getenv("QUANTA_OPT")) c.enabled = e[0] != '0';
@@ -299,8 +319,18 @@ inline Config& config() {
         if (const char* e = std::getenv("QUANTA_OPT_POLY")) c.poly_max = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_AVOID")) c.avoid_after = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_RECOMPILES")) c.max_recompiles = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_RT")) c.rt = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_RTMASK")) c.rt_mask = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_DIRECT")) c.direct = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_CALLFN")) c.callfn = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_INSNS")) c.inline_insns = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_TOTAL")) c.inline_total = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_VARS")) c.inline_vars = static_cast<uint32_t>(std::atoi(e));
     }
-    return c;
 }
 
 
@@ -432,6 +462,7 @@ private:
     bool ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc);
     bool block_is_cold(int32_t fi, int32_t blk) const;
     bool native_call(const Insn& in);
+    bool call_fn(const Insn& in);
     bool numeric_arg(int32_t x) { const Node& nd = g_.n[resolve(x)]; return nd.rep != Rep::Bool && nd.rep != Rep::I32 && nd.op != K::ConstTagged; }
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
@@ -489,6 +520,8 @@ private:
     bool translate_block(int32_t blk);
     // True when handled natively; false means the caller steps the instruction.
     bool translate(const Insn& in, bool& ended);
+    bool translate_fast(const Insn& in, bool& ended);
+    bool generic_op(const Insn& in);
     bool avoided(uint32_t pc) const { return avoid_ && avoid_->pcs.count(pc); }
     const Avoid* avoid_ = nullptr;
     void step(const Insn& in, bool& ended);
@@ -867,7 +900,14 @@ inline void Builder::step(const Insn& in, bool& ended) {
 // Translation of the opcodes the tier handles itself
 // ===========================================================================
 
+// What the tier cannot compile to machine code it still does not have to step: the interpreter's own generic operations
+// (rt_*) are called with the operands as values, so the unit keeps what it knows about its variables.
 inline bool Builder::translate(const Insn& in, bool& ended) {
+    if (translate_fast(in, ended)) return true;
+    return config().rt && generic_op(in);
+}
+
+inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     const uint8_t* code = F().chunk->code.data();
     const Op op = static_cast<Op>(in.op);
     const uint32_t pc = in.pc;
@@ -1162,6 +1202,12 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
                 (pe.from_descriptor ? pe.desc_epoch == Object::descriptor_epoch() : pe.holder != nullptr))
                 inh = &pe;
         }
+        if (config().log && !own && !array_len && !inh && fb.count == 0 && fb.proto_count >= 1) {
+            const FeedbackBody::ProtoEntry& pe = fb.proto_entries[0];
+            std::fprintf(stderr, "[opt]   proto entry: getter=%d absent=%d setter=%d recv=%d proto=%d epoch_ok=%d (entry %llu now %llu) desc=%d holder=%d mega=%d\n", pe.is_getter, pe.absent, pe.is_setter,
+                         pe.receiver_word != 0, pe.prototype != nullptr, pe.proto_epoch == Object::proto_epoch(), (unsigned long long)pe.proto_epoch,
+                         (unsigned long long)Object::proto_epoch(), pe.from_descriptor, pe.holder != nullptr, fb.proto_mega);
+        }
         if (config().log) std::fprintf(stderr, "[opt] GetNamed pc=%u fb: count=%u mega=%d accessor=%d array_length=%d proto_count=%u\n", pc, fb.count, fb.mega, fb.count ? fb.entries[0].is_accessor : -1, fb.array_length, fb.proto_count);
         if (own_desc) {
             if (!object_value(value(rcv))) return false;
@@ -1371,7 +1417,7 @@ inline bool Builder::translate(const Insn& in, bool& ended) {
                 }
                 return true;
             }
-            return op != Op::Construct && native_call(in);
+            return op == Op::Construct ? call_fn(in) : (native_call(in) || call_fn(in));
         }
         if (!inline_enter(in, callee, ended)) {
             // The blocks of the callee are already wired in: it is all or nothing, so build again without this site.
@@ -1494,6 +1540,14 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
     auto no = [&](int why) {
         if (config().log) std::fprintf(stderr, "[opt] call at pc %u of chunk %p not inlinable: %d (entry state %u, verdict %u, calls %u)\n", in.pc, static_cast<const void*>(g_.funcs[fi].chunk), why, g_.funcs[fi].chunk->opt_entry, g_.funcs[fi].chunk->inline_state, g_.funcs[fi].chunk->opt_calls);
         if (config().log && why == 12) std::fprintf(stderr, "[opt]   sites recorded: %zu\n", g_.funcs[fi].chunk->ic_feedback ? g_.funcs[fi].chunk->ic_feedback->call_sites.size() : 0);
+        if (config().log && g_.funcs[fi].chunk->ic_feedback) {
+            for (const auto& cs : g_.funcs[fi].chunk->ic_feedback->call_sites)
+                if (cs.pc == in.pc) {
+                    std::fprintf(stderr, "[opt]   site n=%u mega=%d callees:", cs.n, cs.mega);
+                    for (uint8_t t = 0; t < cs.n; t++) std::fprintf(stderr, " %s", cs.fns[t] ? cs.fns[t]->get_name().c_str() : "?");
+                    std::fprintf(stderr, "\n");
+                }
+        }
         return false;
     };
     const Func& P = g_.funcs[fi];
@@ -1561,6 +1615,94 @@ constexpr struct { const char* name; uint8_t recv; bool any_arg; uint8_t max_arg
     {"hasOwnProperty", 4, false, 1}, {"push", 2, false, 1}, {"pop", 2, false, 0}, {"sin", 8, false, 1}, {"cos", 8, false, 1},
     {"tan", 8, false, 1}, {"atan", 8, false, 1}, {"atan2", 8, false, 2}, {"exp", 8, false, 1}, {"log", 8, false, 1}};
 
+inline bool Builder::generic_op(const Insn& in) {
+    if (F().no_light) return false;
+    const uint8_t* code = F().chunk->code.data();
+    const Op op = static_cast<Op>(in.op);
+    const uint32_t pc = in.pc;
+    auto reg = [&](uint32_t at) -> uint32_t { return F().var_base + code[at]; };
+    auto ok_reg = [&](uint32_t r) { return r < F().acc_var; };
+    uint32_t root_pc = pc;
+    for (int32_t k = cf_; k > 0; k = g_.funcs[k].parent) root_pc = g_.funcs[k].call_pc;
+    int bop = -1;
+    switch (op) {
+    case Op::Add: bop = static_cast<int>(BinaryExpression::Operator::ADD); break;
+    case Op::Sub: bop = static_cast<int>(BinaryExpression::Operator::SUBTRACT); break;
+    case Op::Mul: bop = static_cast<int>(BinaryExpression::Operator::MULTIPLY); break;
+    case Op::Div: bop = static_cast<int>(BinaryExpression::Operator::DIVIDE); break;
+    case Op::Mod: bop = static_cast<int>(BinaryExpression::Operator::MODULO); break;
+    case Op::Exp: bop = static_cast<int>(BinaryExpression::Operator::EXPONENT); break;
+    case Op::BitAnd: bop = static_cast<int>(BinaryExpression::Operator::BITWISE_AND); break;
+    case Op::BitOr: bop = static_cast<int>(BinaryExpression::Operator::BITWISE_OR); break;
+    case Op::BitXor: bop = static_cast<int>(BinaryExpression::Operator::BITWISE_XOR); break;
+    case Op::Shl: bop = static_cast<int>(BinaryExpression::Operator::LEFT_SHIFT); break;
+    case Op::Sar: bop = static_cast<int>(BinaryExpression::Operator::RIGHT_SHIFT); break;
+    case Op::Shr: bop = static_cast<int>(BinaryExpression::Operator::UNSIGNED_RIGHT_SHIFT); break;
+    case Op::TestEq: bop = static_cast<int>(BinaryExpression::Operator::EQUAL); break;
+    case Op::TestNe: bop = static_cast<int>(BinaryExpression::Operator::NOT_EQUAL); break;
+    case Op::TestStrictEq: bop = static_cast<int>(BinaryExpression::Operator::STRICT_EQUAL); break;
+    case Op::TestStrictNe: bop = static_cast<int>(BinaryExpression::Operator::STRICT_NOT_EQUAL); break;
+    case Op::TestLt: bop = static_cast<int>(BinaryExpression::Operator::LESS_THAN); break;
+    case Op::TestGt: bop = static_cast<int>(BinaryExpression::Operator::GREATER_THAN); break;
+    case Op::TestLe: bop = static_cast<int>(BinaryExpression::Operator::LESS_EQUAL); break;
+    case Op::TestGe: bop = static_cast<int>(BinaryExpression::Operator::GREATER_EQUAL); break;
+    case Op::TestInstanceOf: bop = static_cast<int>(BinaryExpression::Operator::INSTANCEOF); break;
+    case Op::TestIn: bop = static_cast<int>(BinaryExpression::Operator::IN); break;
+    default: break;
+    }
+    if (bop >= 0) {
+        if (!(config().rt_mask & 1)) return false;
+        if (op == Op::TestInstanceOf && !(config().rt_mask & 16)) return false;
+        if (op >= Op::TestEq && op <= Op::TestGe && !(config().rt_mask & 32)) return false;
+        if (op >= Op::Add && op <= Op::Shr && !(config().rt_mask & 64)) return false;
+        const uint32_t r = reg(pc + 1);
+        if (!ok_reg(r)) return false;
+        const int32_t l = tagged(value(r)), rr = tagged(value(acc()));
+        set(acc(), emit(K::Rt, Rep::Tagged, l, rr, kRtBinary, (static_cast<uint64_t>(root_pc) << 8) | static_cast<uint64_t>(bop)));
+        return true;
+    }
+    switch (op) {
+    case Op::TypeOf:
+        if (!(config().rt_mask & 2)) return false;
+        set(acc(), emit(K::Rt, Rep::Tagged, tagged(value(acc())), -1, kRtTypeof, 0));
+        return true;
+    case Op::GetNamed: case Op::GetNamedStar: {
+        if (!(config().rt_mask & 4)) return false;
+        const bool fused = op == Op::GetNamedStar;
+        const uint32_t rcv = reg(pc + 1), nidx = read_u16(code, pc + 2), fbi = read_u16(code, pc + 4);
+        const uint32_t dst = fused ? reg(pc + 6) : 0;
+        if (!ok_reg(rcv) || (fused && !ok_reg(dst)) || nidx >= F().chunk->names.size() || fbi >= F().chunk->feedback.size()) return false;
+        auto d = std::make_unique<JitCode::OptUnit::RtDesc>();
+        d->name = F().chunk->names[nidx];
+        d->slot = const_cast<FeedbackSlot*>(&F().chunk->feedback[fbi]);
+        d->owner = F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr);
+        d->pc = root_pc;
+        JitCode::OptUnit::RtDesc* dp = d.get();
+        g_.rtdescs.push_back(std::move(d));
+        const int32_t v = emit(K::Rt, Rep::Tagged, tagged(value(rcv)), -1, kRtGetNamed, reinterpret_cast<uint64_t>(dp));
+        set(acc(), v);
+        if (fused) set(dst, v);
+        return true;
+    }
+    case Op::SetNamed: {
+        if (!(config().rt_mask & 8) || F().ctor) return false;
+        const uint32_t rcv = reg(pc + 1), nidx = read_u16(code, pc + 2), fbi = read_u16(code, pc + 4);
+        if (!ok_reg(rcv) || nidx >= F().chunk->names.size() || fbi >= F().chunk->feedback.size()) return false;
+        auto d = std::make_unique<JitCode::OptUnit::RtDesc>();
+        d->name = F().chunk->names[nidx];
+        d->slot = const_cast<FeedbackSlot*>(&F().chunk->feedback[fbi]);
+        d->owner = F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr);
+        d->pc = root_pc;
+        JitCode::OptUnit::RtDesc* dp = d.get();
+        g_.rtdescs.push_back(std::move(d));
+        emit(K::Rt, Rep::Tagged, tagged(value(rcv)), tagged(value(acc())), kRtSetNamed, reinterpret_cast<uint64_t>(dp));
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 inline bool Builder::native_call(const Insn& in) {
     if (!config().natives || !g_.frame) return false;
     const auto* fbk = F().chunk->ic_feedback.get();
@@ -1608,6 +1750,59 @@ inline bool Builder::native_call(const Insn& in) {
         return true;
     }
     return false;
+}
+
+// A call the tier does not inline, made without leaving the unit: the callee, receiver and arguments are handed to the
+// interpreter's call path as values, and nothing is written back to the register bank, so what the unit knows about its
+// variables survives the call (a step forgets all of it). The callee may do anything to the heap, which the memory epoch
+// of the common-subexpression pass accounts for. A callee that is not a function deoptimizes to the call before anything
+// has happened; an exception leaves the unit the way a step's does.
+inline bool Builder::call_fn(const Insn& in) {
+    if (!config().callfn || F().no_light) return false;
+    if (config().callfn == 2) {
+        // Only a call the profile has seen reach plain JS functions (not a native, not a site of many callees).
+        bool known = false;
+        if (const auto* fbk = F().chunk->ic_feedback.get())
+            for (const auto& cs : fbk->call_sites)
+                if (cs.pc == in.pc && !cs.mega && cs.n >= 1) {
+                    known = true;
+                    for (uint8_t t = 0; t < cs.n; t++) if (!cs.fns[t] || cs.fns[t]->is_native()) known = false;
+                }
+        if (!known) return false;
+    }
+    const uint8_t* code = F().chunk->code.data();
+    const bool construct = static_cast<Op>(in.op) == Op::Construct;
+    const bool resolved = static_cast<Op>(in.op) == Op::CallResolved;
+    const uint32_t callee_r = F().var_base + code[in.pc + 1];
+    const uint32_t this_r = resolved ? F().var_base + code[in.pc + 2] : 0;
+    const uint32_t start = F().var_base + code[in.pc + (resolved ? 3 : 2)];
+    const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
+    if (argc > 4 || callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
+    // The pc recorded for stack traces is the root's: a callee's own instructions have no frame to name.
+    uint32_t root_pc = in.pc;
+    for (int32_t k = cf_; k > 0; k = g_.funcs[k].parent) root_pc = g_.funcs[k].call_pc;
+    // Every operand is made (converted to a Tagged value) before the call node exists: a conversion emits a node of its
+    // own, and it has to come before the call that uses it.
+    const int32_t calleev = tagged(value(callee_r));
+    const int32_t thisv = resolved ? tagged(value(this_r)) : const_of(Value());
+    const int32_t a0 = argc >= 1 ? tagged(value(start)) : const_of(Value());
+    std::vector<int32_t> rest;
+    for (uint32_t i = 1; i < argc; i++) rest.push_back(tagged(value(start + i)));
+    if (config().log) {
+        std::fprintf(stderr, "[opt] call_fn at pc %u of a %zu-byte chunk (depth %d) ->", in.pc, F().chunk->code.size(), cf_);
+        if (const auto* fbk = F().chunk->ic_feedback.get())
+            for (const auto& cs : fbk->call_sites)
+                if (cs.pc == in.pc)
+                    for (uint8_t t = 0; t < cs.n; t++) {
+                        const FunctionExecutable* e = cs.fns[t] ? cs.fns[t]->get_executable().get() : nullptr;
+                        std::fprintf(stderr, " [%zu bytes%s]", e && e->bytecode_chunk ? e->bytecode_chunk->code.size() : 0, cs.fns[t] && cs.fns[t]->is_native() ? " native" : "");
+                    }
+        std::fprintf(stderr, "\n");
+    }
+    const int32_t id = guarded(K::CallFn, Rep::Tagged, calleev, thisv, argc | (construct ? 0x10u : 0u) | (root_pc << 8), 0, a0);
+    g_.n[id].ins = std::move(rest);
+    set(acc(), id);
+    return true;
 }
 
 // A block that has not run, going by what its property accesses have learned: a site that has seen no receiver of any
@@ -1746,7 +1941,7 @@ inline bool Builder::inline_scan(const Function*, const BytecodeChunk& c, uint32
         if (op_unsupported(op) || op == Op::Throw) return false;
         const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(op));
         const int pos = branch_offset_pos(op);
-        if (pos >= 0 && read_i16(code, pc + pos) < 0) return false;      // no loops
+        if (pos >= 0 && read_i16(code, pc + pos) < 0 && !config().inline_loops) return false;      // no loops
         pc += len;
         insns++;
     }
@@ -2716,7 +2911,7 @@ inline void Builder::cse() {
     };
     auto breaks_memory = [](K op) {
         return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreReg || op == K::StoreAcc ||
-               op == K::CallNative;
+               op == K::CallNative || op == K::CallFn || op == K::Rt;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
     std::vector<Frame2> stack;
@@ -2804,6 +2999,7 @@ inline void dump(const Graph& g, FILE* out) {
                 if (nd.op == K::CheckShape) std::fprintf(out, " 0x%llx", static_cast<unsigned long long>(nd.imm));
                 if (nd.op == K::LoadReg || nd.op == K::StoreReg) std::fprintf(out, " [%u]", nd.aux);
                 if (nd.op == K::Step) std::fprintf(out, " [%u] %s", nd.aux, op_name(static_cast<Op>(g.chunk->code[nd.aux])));
+                if (nd.op == K::Rt) std::fprintf(out, " [rt %u imm %llx]", nd.aux, static_cast<unsigned long long>(nd.imm));
                 if (nd.op == K::ConstF64) { double d; std::memcpy(&d, &nd.imm, 8); std::fprintf(out, " %g", d); }
                 if (nd.op == K::ConstTagged || nd.op == K::ConstBool) std::fprintf(out, " 0x%llx", static_cast<unsigned long long>(nd.imm));
                 if (nd.state >= 0) std::fprintf(out, "  ;state%d@%u(%zu)", nd.state, g.states[nd.state].pc, g.states[nd.state].defs.size());
@@ -2899,6 +3095,116 @@ inline QUANTA_JIT_ABI uint64_t helper_call_native(VM::Frame* f, const JitCode::O
     std::memcpy(&bits, &r, 8);
     return bits == kNo ? kNo - 1 : bits;
 }
+
+// A JS call a unit makes without a step (K::CallFn): the same call path the interpreter's Call handler takes. The result
+// bits, or: all ones, the callee threw (the unit leaves as a step that threw does); all ones minus one, a C++ exception is
+// pending in the code's slot (rethrown on the way out); minus two, the callee is not a function (nothing has happened: the
+// unit deoptimizes to the call, and the interpreter says what is wrong with it).
+inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, uint64_t this_bits, const uint64_t* argv) noexcept {
+    constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1, kNotFn = ~0ull - 2;
+    // The unit wrote the receiver and the arguments as Values into its frame; they are read where they lie.
+    const Value fv = std::bit_cast<Value>(fn_bits);
+    if (!fv.is_function()) return kNotFn;
+    const Value th = std::bit_cast<Value>(this_bits);
+    const uint64_t meta = argv[5];
+    const uint32_t argc = static_cast<uint32_t>(meta & 0x0F);
+    const Value* args = reinterpret_cast<const Value*>(argv);
+    Function* fn = fv.as_function();
+    Context& ctx = *f->ctx;
+    f->instr_pc = static_cast<uint32_t>(meta >> 8);
+    Value r;
+    if (__builtin_expect(meta & 0x10, 0)) {
+        // `new`: h_ConstructPlain's call, new.target set for its duration.
+        const Value old_new_target = ctx.get_new_target();
+        ctx.set_new_target(fv);
+        try {
+            r = fn->construct(ctx, std::span<const Value>(args, argc));
+        } catch (...) {
+            ctx.set_new_target(old_new_target);
+            f->chunk->jit->pending = std::current_exception();
+            return kRethrow;
+        }
+        ctx.set_new_target(old_new_target);
+        if (__builtin_expect(ctx.has_exception(), 0)) { f->acc = Value(); return kThrew; }
+        Collector::safepoint();
+        const uint64_t cbits = std::bit_cast<uint64_t>(r);
+        return cbits >= kNotFn ? kNotFn - 1 : cbits;
+    }
+    try {
+        if (!(g_config_storage.direct && fn->fast_callable() && unit_call_direct(*f, fn, th, args, argc, r))) {
+            const std::span<const Value> call_args(args, argc);
+            r = fn->fast_callable() ? fn->call_fast_gate(ctx, call_args, th) : fn->call_register_args(ctx, call_args, th);
+        }
+    } catch (...) {
+        f->chunk->jit->pending = std::current_exception();
+        return kRethrow;
+    }
+    if (__builtin_expect(ctx.has_exception(), 0)) { f->acc = Value(); return kThrew; }
+    Collector::safepoint();
+    const uint64_t bits = std::bit_cast<uint64_t>(r);
+    return bits >= kNotFn ? kNotFn - 1 : bits;
+}
+
+// The interpreter's generic operations as functions of values (K::Rt). Same results as the handlers: all ones means
+// the operation threw (the unit leaves the way a step that threw does), all ones minus one that a C++ exception is
+// pending in the code's slot. A result that happens to be one of those two is never a Value.
+template <typename Fn>
+[[gnu::always_inline]] inline uint64_t rt_run(VM::Frame* f, uint32_t pc, Fn&& fn) noexcept {
+    constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1;
+    Context& ctx = *f->ctx;
+    f->instr_pc = pc;
+    Value r;
+    try {
+        r = fn(ctx);
+    } catch (...) {
+        f->chunk->jit->pending = std::current_exception();
+        return kRethrow;
+    }
+    if (__builtin_expect(ctx.has_exception(), 0)) { f->acc = Value(); return kThrew; }
+    const uint64_t bits = std::bit_cast<uint64_t>(r);
+    return bits >= kRethrow ? kRethrow - 1 : bits;
+}
+inline QUANTA_JIT_ABI uint64_t helper_rt_binary(VM::Frame* f, uint64_t l, uint64_t r, uint64_t meta) noexcept {
+    static const bool check = std::getenv("QX_RT_CHECK") != nullptr;
+    if (check) {
+        Context& ctx = *f->ctx;
+        const Value lv = std::bit_cast<Value>(l), rv = std::bit_cast<Value>(r);
+        const Value res = VM::binary_slow(ctx, static_cast<BinaryExpression::Operator>(meta & 0xFF), lv, rv);
+        std::fprintf(stderr, "[rt] op=%u l=%016llx r=%016llx -> %016llx\n", unsigned(meta & 0xFF), (unsigned long long)l, (unsigned long long)r, (unsigned long long)std::bit_cast<uint64_t>(res));
+    }
+    return rt_run(f, static_cast<uint32_t>(meta >> 8), [&](Context& ctx) {
+        return VM::binary_slow(ctx, static_cast<BinaryExpression::Operator>(meta & 0xFF), std::bit_cast<Value>(l), std::bit_cast<Value>(r));
+    });
+}
+inline QUANTA_JIT_ABI uint64_t helper_rt_typeof(VM::Frame* f, uint64_t v, uint64_t, uint64_t) noexcept {
+    return rt_run(f, f->instr_pc, [&](Context&) { return std::bit_cast<Value>(v).typeof_op(); });
+}
+inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, uint64_t, uint64_t desc) noexcept {
+    const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
+    // What the interpreter's read handler answers from the site's cache before it asks the general path.
+    const Value rv = std::bit_cast<Value>(recv);
+    if (rv.is_object()) {
+        Object* obj = rv.as_object();
+        if (const FeedbackBody* fb = d->slot->peek()) {
+            const uint64_t word = obj->raw_shape_word();
+            if (!obj->has_any_descriptor_override()) {
+                for (uint8_t k = 0; k < fb->count; k++) {
+                    const FeedbackSlot::Entry& e = fb->entries[k];
+                    if (e.word == word && !e.is_accessor) return std::bit_cast<uint64_t>(*obj->shape_slot_for_cached_index(e.slot_index));
+                }
+                Value out;
+                if (VM::inherited_data_entry(*fb, obj, out)) return std::bit_cast<uint64_t>(out);
+            }
+        }
+    }
+    return rt_run(f, d->pc, [&](Context& ctx) { return VM::get_named(ctx, rv, *d->name, d->slot, d->owner, false); });
+}
+inline QUANTA_JIT_ABI uint64_t helper_rt_setnamed(VM::Frame* f, uint64_t recv, uint64_t val, uint64_t desc) noexcept {
+    const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
+    return rt_run(f, d->pc, [&](Context& ctx) { VM::set_named(ctx, std::bit_cast<Value>(recv), *d->name, std::bit_cast<Value>(val), d->slot, d->owner, false); return Value(); });
+}
+inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_rt_binary), reinterpret_cast<const void*>(&helper_rt_typeof),
+                                         reinterpret_cast<const void*>(&helper_rt_getnamed), reinterpret_cast<const void*>(&helper_rt_setnamed)};
 
 // An inlined `new`: the constructor's object, already of the shape its stores would give it. 0 when the constructor's
 // prototype or the fresh object's shape is not what the unit was built for (the caller deoptimizes to run the `new`).
@@ -3071,6 +3377,7 @@ inline bool Emitter::allocate() {
         if (n.a >= 0 && needs_loc(n.a)) fn(n.a);
         if (n.b >= 0 && needs_loc(n.b)) fn(n.b);
         if (n.c >= 0 && needs_loc(n.c)) fn(n.c);
+        for (int32_t o : n.ins) if (o >= 0 && needs_loc(o)) fn(o);
         if (n.state >= 0) for (auto& [v, d] : g_.states[n.state].defs) if (needs_loc(d)) fn(d);
     };
     auto phi_operand = [&](int32_t succ, int32_t pred) -> std::vector<int32_t> {
@@ -3194,7 +3501,7 @@ inline bool Emitter::allocate() {
     }
     for (int32_t blk : order_)
         for (int32_t id : g_.b[blk].nodes)
-            if (!g_.n[id].dead && g_.n[id].op == K::CallNative && native_args_ < 0) { native_args_ = nslots_; nslots_ += 4; }
+            if (!g_.n[id].dead && (g_.n[id].op == K::CallNative || g_.n[id].op == K::CallFn || g_.n[id].op == K::Rt) && native_args_ < 0) { native_args_ = nslots_; nslots_ += 8; }
 #ifdef QUANTA_JIT_ARCH_A64
     frame_bytes_ = ((nslots_ * 8 + 15) / 16) * 16;
 #else
@@ -3776,6 +4083,104 @@ inline void Emitter::emit_node(int32_t id) {
         call_c(reinterpret_cast<const void*>(&helper_call_native));
         restore_live(bytes);
         a_.cmp_imm(RAX, -1);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::Rt: {
+        const int32_t area = native_args_ * 8;
+        if (n.a >= 0) { const Reg r = use_g(n.a, RAX); a_.mov_store(mem(RSP, area), r); }
+        if (n.b >= 0) { const Reg r = use_g(n.b, RAX); a_.mov_store(mem(RSP, area + 8), r); }
+        int32_t bytes;
+        save_live(bytes);
+        a_.mov(abi::A0, RBX);
+        if (n.a >= 0) a_.mov_load(abi::A1, mem(RSP, bytes + area));
+        if (n.b >= 0) a_.mov_load(abi::A2, mem(RSP, bytes + area + 8));
+        a_.mov_imm64(abi::A3, n.imm);
+        call_c(kRtHelpers[n.aux]);
+        restore_live(bytes);
+        a_.cmp_imm(RAX, -1);
+        {
+            Label& threw = new_label();
+            a_.jcc(CC_E, threw);
+            cold_.push_back([this, &threw]() {
+                a_.bind(threw);
+                a_.mov_imm32(RAX, static_cast<uint32_t>(kStepFinished));
+                a_.jmp(step_exit_);
+            });
+        }
+        a_.cmp_imm(RAX, -2);
+        {
+            Label& rethrow = new_label();
+            a_.jcc(CC_E, rethrow);
+            cold_.push_back([this, &rethrow]() {
+                a_.bind(rethrow);
+                a_.mov_imm32(RAX, static_cast<uint32_t>(kStepRethrow));
+                a_.jmp(step_exit_);
+            });
+        }
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::CallFn: {
+        Label& dl = deopt_label(n.state);
+        // The frame slots at native_args_: [0..3] the arguments, [4] the receiver, [5] the argument count and the pc.
+        const int32_t area = native_args_ * 8;
+        const uint64_t undefined_bits = std::bit_cast<uint64_t>(Value());
+        const uint32_t argc = n.aux & 0x0F;
+        for (uint32_t k = 0; k < 4; k++) {
+            const int32_t operand = k == 0 ? n.c : (k - 1 < n.ins.size() ? n.ins[k - 1] : -1);
+            if (k < argc && operand >= 0) {
+                const Reg r = use_g(operand, RAX);
+                a_.mov_store(mem(RSP, area + k * 8), r);
+            }
+        }
+        {
+            const Reg r = use_g(n.b, RAX);
+            a_.mov_store(mem(RSP, area + 32), r);
+        }
+        a_.mov_imm64(RAX, static_cast<uint64_t>(n.aux));
+        a_.mov_store(mem(RSP, area + 40), RAX);
+        (void)undefined_bits;
+        const Reg callee = use_g(n.a, RAX);
+        if (callee != RAX) a_.mov(RAX, callee);
+        a_.push(RAX);                     // the callee survives the live-register save below (two slots keep the stack aligned)
+        a_.push(RAX);
+        int32_t bytes;
+        save_live(bytes);
+        a_.mov(abi::A0, RBX);
+        a_.mov_load(abi::A1, mem(RSP, bytes));
+        a_.mov_load(abi::A2, mem(RSP, bytes + 2 * kPushBytes + area + 32));
+        a_.lea(abi::A3, mem(RSP, bytes + 2 * kPushBytes + area));
+        call_c(reinterpret_cast<const void*>(&helper_call_fn));
+        restore_live(bytes);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        a_.cmp_imm(RAX, -1);
+        {
+            Label& threw = new_label();
+            a_.jcc(CC_E, threw);
+            cold_.push_back([this, &threw]() {
+                a_.bind(threw);
+                a_.mov_imm32(RAX, static_cast<uint32_t>(kStepFinished));
+                a_.jmp(step_exit_);
+            });
+        }
+        a_.cmp_imm(RAX, -2);
+        {
+            Label& rethrow = new_label();
+            a_.jcc(CC_E, rethrow);
+            cold_.push_back([this, &rethrow]() {
+                a_.bind(rethrow);
+                a_.mov_imm32(RAX, static_cast<uint32_t>(kStepRethrow));
+                a_.jmp(step_exit_);
+            });
+        }
+        a_.cmp_imm(RAX, -3);
         a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
         if (d != RAX) a_.mov(d, RAX);
@@ -4627,6 +5032,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     unit.guards = em.guard_kinds;
     unit.descs = std::move(g.descs);
     unit.natives = std::move(g.natives);
+    unit.rtdescs = std::move(g.rtdescs);
     if (g.funcs.size() > 1) {
         // What a deoptimization inside an inlined callee needs to rebuild the interpreter frames it stands for.
         unit.root_vars = g.acc_var + 1;
@@ -4648,6 +5054,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         unit.inl_scratch_mem.reset(new uint64_t[g.nvars - unit.root_vars]());
         unit.rt->inl_scratch = unit.inl_scratch_mem.get();
     }
+    if (config().log && peek && peek->owner) std::fprintf(stderr, "[opt] compiling function \"%s\"\n", peek->owner->get_name().c_str());
     if (config().log) std::fprintf(stderr, "[opt] compiled loop at pc %u of %u bytes of bytecode -> %zu bytes of code, %zu entries, %u calls inlined\n",
                                    pc, static_cast<unsigned>(chunk.code.size()), bytes.size(), unit.entries.size(), g.inl_count);
     return true;

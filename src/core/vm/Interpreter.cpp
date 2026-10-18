@@ -49,6 +49,9 @@
 #include <tuple>
 #if defined(__SSE2__)
 #include <emmintrin.h>
+#include <signal.h>
+#include <sys/time.h>
+#include <ucontext.h>
 #endif
 #include <optional>
 #include <variant>
@@ -2714,6 +2717,7 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
 
 // Starts a stackless call of `fn` from `f` if everything allows it; true with the callee's
 // frame in `out` (the caller has only to dispatch it), false with nothing touched.
+template <bool NoteCall = true>
 [[gnu::always_inline]] inline bool inline_call_enter(Frame& f, Function* fn, const Value* argv, uint32_t argc,
                                                        const Value& this_value, uint32_t return_pc, Frame*& out) {
     const FunctionExecutable& exe = *fn->get_executable().get();
@@ -2796,7 +2800,7 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     callee->value_words = words;
     if (UNLIKELY(offer_loops)) {
         if (!chunk.opt_loops) callee->osr_budget = 1;
-        if (chunk.opt_entry != 2) opt_note_call(chunk, *callee);
+        if (NoteCall && chunk.opt_entry != 2) opt_note_call(chunk, *callee);
     }
     base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
@@ -10826,6 +10830,9 @@ void jit_trace(const JitCode* code, Visitor& v) {
 
 namespace Quanta::VM {
 void jit_print_stats() {
+#if defined(__linux__) && defined(__x86_64__)
+    jit::prof::print();
+#endif
     jit::print_stats();
 #ifdef QUANTA_OPT_BACKEND
     jit::opt::print_unit_stats();

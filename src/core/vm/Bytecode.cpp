@@ -23,7 +23,7 @@ namespace Quanta {
 // baseline JIT's code pointer and its two small counters, plus the sixteen bytes
 // that say whether the function is a bare `return <constant | this | this.name>`,
 // plus the stackless-call verdict (padded to a word).
-static_assert(sizeof(BytecodeChunk) == 184);
+static_assert(sizeof(BytecodeChunk) == 192);
 #else
 static_assert(sizeof(BytecodeChunk) <= 192);
 #endif

@@ -266,10 +266,82 @@ bool selfcheck() {
     return true;
 }
 
+
+#if defined(__linux__) && defined(__x86_64__)
+// QUANTA_PROF=1: a sampling profile of which JS functions the time goes to, and whether it was spent in generated code.
+// A debugging aid (the profile prints at exit); samples attribute to the function at the top of the call stack.
+namespace prof {
+struct Slot { Function* fn; uint32_t jit, interp; };
+inline Slot g_slots[16384];
+inline uintptr_t g_lo = ~uintptr_t(0), g_hi = 0;
+inline uint32_t g_total = 0, g_total_jit = 0, g_idle = 0;
+inline bool g_on = false;
+inline void handler(int, siginfo_t*, void* uc_) {
+    auto* uc = static_cast<ucontext_t*>(uc_);
+    const uintptr_t rip = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+    const bool in_jit = rip >= g_lo && rip < g_hi;
+    CallStack& cs = CallStack::established();
+    g_total++;
+    if (in_jit) g_total_jit++;
+    if (cs.depth() == 0) { g_idle++; return; }
+    Function* fn = cs.frames()[cs.depth() - 1].function_ptr;
+    uint32_t h = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fn) >> 4) * 2654435761u >> 18;
+    for (uint32_t i = 0; i < 16384; i++) {
+        Slot& sl = g_slots[(h + i) & 16383];
+        if (sl.fn == fn || !sl.fn) { sl.fn = fn; (in_jit ? sl.jit : sl.interp)++; return; }
+    }
+}
+inline void start() {
+    if (g_on) return;
+    g_on = true;
+    struct sigaction sa{};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPROF, &sa, nullptr);
+    itimerval tv{{0, 500}, {0, 500}};
+    setitimer(ITIMER_PROF, &tv, nullptr);
+}
+inline void note_code(void* p, size_t n) {
+    g_lo = std::min(g_lo, reinterpret_cast<uintptr_t>(p));
+    g_hi = std::max(g_hi, reinterpret_cast<uintptr_t>(p) + n);
+}
+inline void print() {
+    if (!g_on) return;
+    itimerval tv{};
+    setitimer(ITIMER_PROF, &tv, nullptr);
+    std::map<const BytecodeChunk*, std::tuple<uint32_t, uint32_t, Function*>> by_chunk;
+    for (const Slot& sl : g_slots) {
+        if (!sl.fn) continue;
+        const FunctionExecutable* exe = sl.fn->get_executable().get();
+        const BytecodeChunk* c = exe ? exe->bytecode_chunk.get() : nullptr;
+        auto& e = by_chunk[c];
+        std::get<0>(e) += sl.jit; std::get<1>(e) += sl.interp;
+        if (!std::get<2>(e)) std::get<2>(e) = sl.fn;
+    }
+    std::vector<std::pair<uint32_t, const BytecodeChunk*>> order;
+    for (auto& kv : by_chunk) order.push_back({std::get<0>(kv.second) + std::get<1>(kv.second), kv.first});
+    std::sort(order.rbegin(), order.rend());
+    std::fprintf(stderr, "[prof] samples=%u in generated code=%u (%.1f%%) idle=%u\n", g_total, g_total_jit, g_total ? 100.0 * g_total_jit / g_total : 0.0, g_idle);
+    for (size_t i = 0; i < order.size() && i < 30; i++) {
+        const BytecodeChunk* c = order[i].second;
+        auto& e = by_chunk[c];
+        Function* fn = std::get<2>(e);
+        std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4zu bytes  entry=%d  %s\n", g_total ? 100.0 * order[i].first / g_total : 0.0,
+                     std::get<0>(e), std::get<1>(e), c ? c->code.size() : 0, c ? c->opt_entry : -1,
+                     fn ? fn->get_name().c_str() : "?");
+    }
+}
+}  // namespace prof
+#endif
+
 void init_once() {
     static bool done = false;
     if (done) return;
     done = true;
+#if defined(__linux__) && defined(__x86_64__)
+    if (std::getenv("QUANTA_PROF")) prof::start();
+#endif
     const char* e = std::getenv("QUANTA_JIT");
     g_cfg.enabled = !(e && (e[0] == '0'));
     g_cfg.opt = true;       // the optimizing tier is on unless QUANTA_OPT=0
@@ -2488,6 +2560,9 @@ bool alloc_exec(const std::vector<uint8_t>& bytes, void*& mem, size_t& size, uin
     mem = p;
     start = static_cast<uint8_t*>(p) + offset;
     g_cfg.mapped_bytes += size;
+#if defined(__linux__) && defined(__x86_64__)
+    prof::note_code(p, size);
+#endif
     return true;
 }
 
@@ -2803,6 +2878,8 @@ std::set<std::pair<const BytecodeChunk*, uint32_t>>& opt_refused() {
     return refused;
 }
 
+int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset);
+
 int opt_osr(Frame& f, uint32_t target, const Value& acc) {
     const BytecodeChunk& chunk = *f.chunk;
     auto& refused = opt_refused();
@@ -2846,6 +2923,15 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         ui = static_cast<long>(jc->opt_units.size() - 1);
         for (auto& [pc, off] : jc->opt_units[ui].entries) if (pc == target) { offset = off; break; }
     }
+    return opt_run_unit(f, chunk, jc, ui, target, offset);
+}
+
+// Runs unit `ui` of `jc` on the frame, entering it at native offset `offset` (the unit's entry for `target`), and sees
+// to what the unit did: finished, an exception to rethrow, or a guard that failed (learned from, and the interpreter
+// takes the frame on from there). Same results as opt_osr.
+int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset) {
+    auto& refused = opt_refused();
+    if (target == 0 && ui < 0xFFFF) { chunk.opt_unit_ix = static_cast<uint16_t>(ui); chunk.opt_unit_off = offset; }
     if (!opt_can_materialize(f, jc->opt_units[ui])) return 0;
     // Steps inside the optimized code must not start stackless calls; the frame gets its permission back
     // when control returns to the interpreter.
@@ -2893,12 +2979,12 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
         const uint64_t site = (static_cast<uint64_t>(gpc) << 16) | static_cast<uint16_t>(evar + 1);
-        if (!opt::config().stress && evar == -2 && av.recompiles < 12) {
+        if (!opt::config().stress && evar == -2 && av.recompiles < opt::config().max_recompiles) {
             // A global epoch moved: the next build reads the new one.
             av.recompiles++;
             jc->opt_units[ui].entries.clear();
             refused.erase({&chunk, target});
-        } else if (!opt::config().stress && evar != -2 && ++av.fails[site] == 2 && av.recompiles < 12) {
+        } else if (!opt::config().stress && evar != -2 && ++av.fails[site] == opt::config().avoid_after && av.recompiles < opt::config().max_recompiles) {
             av.recompiles++;
             if (inlined) av.no_inline.insert({&chunk, site_pc});
             else if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);
@@ -2921,6 +3007,66 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
 }
 #endif
 
+constexpr uint32_t kEntryMaxDepth = 96;
+
+#ifdef QUANTA_OPT_BACKEND
+// A unit calling a function that has a unit of its own (K::CallFn): the callee gets a stackless frame in the arena, the
+// way the interpreter's call handler gives it one, and its unit runs on that frame directly -- no nested dispatch, no
+// entry stop, no search for the unit. Where the unit does not finish the call (a guard failed, or it had steps the
+// interpreter has to carry on with), the interpreter finishes it here, on the frame, before this returns: the frame is
+// made the bottom of its own run by cutting its link to the caller for the duration. False, with nothing done, for
+// anything this does not take -- the caller makes the call the ordinary way.
+bool unit_call_direct(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
+    const FunctionExecutable* exe = fn->get_executable().get();
+    const BytecodeChunk& chunk = *exe->bytecode_chunk;
+    if (chunk.opt_entry != 3) return false;
+    const uint8_t verdict = chunk.inline_state;
+    if (!(verdict & kInlineOk) || (verdict & kInlineEnv)) return false;
+    if (CallStack::established().depth() > kEntryMaxDepth) return false;
+    Frame* cf;
+    if (!inline_call_enter<false>(caller, fn, argv, argc, this_value, 0, cf)) return false;
+    cf->code = chunk.code.data();
+    int r;
+    try {
+        JitCode* jc = chunk.jit.get();
+        const uint16_t ix = chunk.opt_unit_ix;
+        if (jc && jc->opt_state != 2 && jc->owner_thread == &g_thread_marker && ix < jc->opt_units.size() &&
+            !jc->opt_units[ix].entries.empty() && jc->opt_units[ix].entries[0].first == 0 && jc->opt_units[ix].entries[0].second == chunk.opt_unit_off) {
+            cf->pc = 0;
+            cf->acc = Value();
+            r = opt_run_unit(*cf, chunk, jc, ix, 0, chunk.opt_unit_off);
+        } else {
+            r = opt_osr(*cf, 0, Value());
+        }
+    } catch (...) {
+        inline_frame_pop(*cf);
+        throw;
+    }
+    if (r == 1) {
+        out = cf->acc;
+        inline_frame_pop(*cf);
+        return true;
+    }
+    Frame* t = cf;
+    if (r == 3) t = g_osr_target;
+    else if (r == 0) { cf->pc = 0; cf->code = chunk.code.data(); t = cf; }
+    Frame* const saved_caller = cf->caller;
+    cf->caller = nullptr;
+    Value v;
+    try {
+        v = kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code);
+    } catch (...) {
+        cf->caller = saved_caller;
+        inline_frame_pop(*cf);
+        throw;
+    }
+    cf->caller = saved_caller;
+    out = v;
+    inline_frame_pop(*cf);
+    return true;
+}
+#endif
+
 // ---- function-entry units ----
 // A function that has run hot -- not only its loops -- gets a unit of its own, entered at its first instruction.
 // Calls count themselves (opt_note_call, from the stackless call path and the base-frame path); at kEntryArmAt
@@ -2928,7 +3074,6 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
 // whose first instruction is the entry stop (h_OptEntry). The stop counts kEntryCompileAt more calls -- the
 // profile -- and then offers the frame to the tier like a loop's back edge does.
 // The calls a unit does not inline run through a step, on the native stack; a deep chain of them stays with the interpreter.
-constexpr uint32_t kEntryMaxDepth = 96;
 
 #ifdef QUANTA_OPT_BACKEND
 void opt_note_call(const BytecodeChunk& chunk, Frame& callee) {
