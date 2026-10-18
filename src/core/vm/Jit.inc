@@ -271,7 +271,9 @@ bool selfcheck() {
 // QUANTA_PROF=1: a sampling profile of which JS functions the time goes to, and whether it was spent in generated code.
 // A debugging aid (the profile prints at exit); samples attribute to the function at the top of the call stack.
 namespace prof {
-struct Slot { Function* fn; uint32_t jit, interp; };
+// Everything the report needs is copied when a function is first sampled: the collector may free it before
+// the report prints, and a signal handler can read the executable but not allocate.
+struct Slot { Function* fn; uint32_t jit, interp, bytes; int entry; char name[40]; };
 inline Slot g_slots[16384];
 inline uintptr_t g_lo = ~uintptr_t(0), g_hi = 0;
 inline uint32_t g_total = 0, g_total_jit = 0, g_idle = 0;
@@ -288,7 +290,16 @@ inline void handler(int, siginfo_t*, void* uc_) {
     uint32_t h = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fn) >> 4) * 2654435761u >> 18;
     for (uint32_t i = 0; i < 16384; i++) {
         Slot& sl = g_slots[(h + i) & 16383];
-        if (sl.fn == fn || !sl.fn) { sl.fn = fn; (in_jit ? sl.jit : sl.interp)++; return; }
+        if (!sl.fn) {
+            sl.fn = fn;
+            const FunctionExecutable* exe = fn->get_executable().get();
+            const BytecodeChunk* c = exe ? exe->bytecode_chunk.get() : nullptr;
+            sl.bytes = c ? static_cast<uint32_t>(c->code.size()) : 0;
+            sl.entry = c ? static_cast<int>(c->opt_entry) : -1;
+            const std::string& nm = fn->get_name();
+            std::memcpy(sl.name, nm.data(), std::min(nm.size(), sizeof sl.name - 1));
+        }
+        if (sl.fn == fn) { (in_jit ? sl.jit : sl.interp)++; return; }
     }
 }
 inline void start() {
@@ -310,26 +321,14 @@ inline void print() {
     if (!g_on) return;
     itimerval tv{};
     setitimer(ITIMER_PROF, &tv, nullptr);
-    std::map<const BytecodeChunk*, std::tuple<uint32_t, uint32_t, Function*>> by_chunk;
-    for (const Slot& sl : g_slots) {
-        if (!sl.fn) continue;
-        const FunctionExecutable* exe = sl.fn->get_executable().get();
-        const BytecodeChunk* c = exe ? exe->bytecode_chunk.get() : nullptr;
-        auto& e = by_chunk[c];
-        std::get<0>(e) += sl.jit; std::get<1>(e) += sl.interp;
-        if (!std::get<2>(e)) std::get<2>(e) = sl.fn;
-    }
-    std::vector<std::pair<uint32_t, const BytecodeChunk*>> order;
-    for (auto& kv : by_chunk) order.push_back({std::get<0>(kv.second) + std::get<1>(kv.second), kv.first});
-    std::sort(order.rbegin(), order.rend());
+    std::vector<const Slot*> order;
+    for (const Slot& sl : g_slots) if (sl.fn) order.push_back(&sl);
+    std::sort(order.begin(), order.end(), [](const Slot* x, const Slot* y) { return x->jit + x->interp > y->jit + y->interp; });
     std::fprintf(stderr, "[prof] samples=%u in generated code=%u (%.1f%%) idle=%u\n", g_total, g_total_jit, g_total ? 100.0 * g_total_jit / g_total : 0.0, g_idle);
     for (size_t i = 0; i < order.size() && i < 30; i++) {
-        const BytecodeChunk* c = order[i].second;
-        auto& e = by_chunk[c];
-        Function* fn = std::get<2>(e);
-        std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4zu bytes  entry=%d  %s\n", g_total ? 100.0 * order[i].first / g_total : 0.0,
-                     std::get<0>(e), std::get<1>(e), c ? c->code.size() : 0, c ? c->opt_entry : -1,
-                     fn ? fn->get_name().c_str() : "?");
+        const Slot& sl = *order[i];
+        std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
+                     sl.jit, sl.interp, sl.bytes, sl.entry, sl.name);
     }
 }
 }  // namespace prof
