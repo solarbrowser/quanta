@@ -1601,6 +1601,7 @@ private:
     // new.target scrub. pure_native_string_receiver_ says the receiver matters
     // and must itself be a string (a String method reading it in place);
     // otherwise the receiver is ignored (Math.*).
+    uint8_t native_intrinsic_ = 0;
     bool pure_native_ : 1 = false;
     bool pure_native_string_receiver_ : 1 = false;
     bool is_constructor_ : 1 = false;  // Whether this function has [[Construct]] internal method
@@ -1932,6 +1933,9 @@ public:
     // queued job, nothing stored anywhere the call does not own.
     void mark_native_context_safe() { native_captures_ctx_ = false; }
     bool is_pure_native() const { return pure_native_; }
+    // A native the interpreter answers itself for the receivers and arguments it knows (0 none, 1 String.prototype.charCodeAt).
+    uint8_t intrinsic() const { return native_intrinsic_; }
+    void set_intrinsic(uint8_t id) { native_intrinsic_ = id; }
     // The whole of a pure native's call when it qualifies for the short path (see
     // pure_native_): false, with nothing done, when it does not. The caller has
     // already dealt with a construct invocation and a foreign realm.

@@ -1252,6 +1252,17 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             if (fused) set(dst, v);
             return true;
         }
+        // A method of String.prototype read from a string: the site has the function, valid while the descriptor epoch stands.
+        if (!own && !array_len && !inh && fb.prim_valid && !fb.prim_is_getter && fb.prim_value.is_function() &&
+            fb.prim_proto == Context::primitive_prototype(Context::PrimitiveKind::String) && fb.prim_desc_epoch == Object::descriptor_epoch()) {
+            if (!object_value(value(rcv))) return false;
+            guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, 2);
+            epoch_guard(1, fb.prim_desc_epoch);
+            const int32_t v = const_of(fb.prim_value);
+            set(acc(), v);
+            if (fused) set(dst, v);
+            return true;
+        }
         if (!own && !array_len && !inh) return false;
         if (!object_value(value(rcv))) return false;
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
@@ -1722,6 +1733,7 @@ inline bool Builder::generic_op(const Insn& in) {
         d->slot = const_cast<FeedbackSlot*>(&F().chunk->feedback[fbi]);
         d->owner = F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr);
         d->pc = root_pc;
+        d->is_length = *d->name == "length";
         JitCode::OptUnit::RtDesc* dp = d.get();
         g_.rtdescs.push_back(std::move(d));
         const int32_t v = emit(K::Rt, Rep::Tagged, tagged(value(rcv)), -1, kRtGetNamed, reinterpret_cast<uint64_t>(dp));
@@ -1810,6 +1822,7 @@ inline bool Builder::native_call(const Insn& in) {
         d->argc = static_cast<uint8_t>(argc);
         d->recv = rule.recv;
         d->any_arg = rule.any_arg;
+        d->special = name == "charCodeAt" ? 1 : 0;
         JitCode::OptUnit::NativeDesc* dp = d.get();
         g_.natives.push_back(std::move(d));
         guarded(K::CheckFn, Rep::None, tagged(value(callee_r)), -1, 1, reinterpret_cast<uint64_t>(fn));
@@ -3164,6 +3177,13 @@ inline QUANTA_JIT_ABI uint64_t helper_call_native(VM::Frame* f, const JitCode::O
                          ((d->recv & 2) && th.is_object() && th.as_object()->is_array()) ||
                          ((d->recv & 4) && th.is_object() && th.as_object()->get_type() == Object::ObjectType::Ordinary);
     if (!recv_ok) return kNo;
+    if (d->special == 1 && d->argc == 1 && args[0].is_number()) {
+        // s.charCodeAt(i) for a string and a number: the code unit, or NaN past either end.
+        const Value r(th.as_string()->char_code_at_number(args[0].as_number()));
+        uint64_t bits;
+        std::memcpy(&bits, &r, 8);
+        return bits;
+    }
     if (!d->any_arg)
         for (uint32_t i = 0; i < d->argc; i++) {
             const Value& v = args[i];
@@ -3265,6 +3285,7 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
     const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
     // What the interpreter's read handler answers from the site's cache before it asks the general path.
     const Value rv = std::bit_cast<Value>(recv);
+    if (d->is_length && rv.is_string()) return std::bit_cast<uint64_t>(Value(static_cast<double>(rv.as_string()->utf16_length())));
     if (rv.is_object()) {
         Object* obj = rv.as_object();
         if (const FeedbackBody* fb = d->slot->peek()) {
@@ -4797,7 +4818,7 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg d = def_g(id, RAX);
         a_.mov(RCX, s);
         a_.shr_imm(RCX, 48);
-        a_.cmp32_imm(RCX, 0x7FF7);
+        a_.cmp32_imm(RCX, n.aux == 2 ? 0x7FF4 : 0x7FF7);      // aux 2: a string
         a_.jcc(CC_NE, deopt_label(n.state));
         if (d != s) a_.mov(d, s);
         a_.shl_imm(d, 16);

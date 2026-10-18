@@ -1218,6 +1218,7 @@ void register_string_builtins(Context& ctx) {
     // Reads the receiver and an index and returns a number: the context is
     // used for the receiver, argument coercion and throwing, never stored.
     charCodeAt_fn->mark_pure_native(/*needs_string_receiver=*/true);
+    charCodeAt_fn->set_intrinsic(1);
     PropertyDescriptor charCodeAt_desc(Value(charCodeAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("charCodeAt", charCodeAt_desc);

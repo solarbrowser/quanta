@@ -555,6 +555,8 @@ struct FeedbackBody {
     // count, never mirrored in a slot -- so every one of them fell through to
     // the uncached path and paid a string compare there.
     bool array_length = false;
+    // The site has read `length` of a string: the read is the string's UTF-16 length, whatever else the site sees.
+    bool str_length = false;
 
     // SetNamed-only: caches adding a brand-new own property (a shape
     // transition), keyed by the shape BEFORE the add. `proto_epoch` is

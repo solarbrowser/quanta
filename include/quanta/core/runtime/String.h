@@ -9,6 +9,7 @@
 
 #include <new>
 #include <utility>
+#include <cmath>
 #include <string>
 #include <string_view>
 #include <cstdint>
@@ -227,6 +228,13 @@ public:
     // decode from the start every time -- which turns the ordinary
     // `for (i...) s.charCodeAt(i)` scan of a source file into quadratic work.
     [[nodiscard]] int32_t code_unit_at(size_t index) const;
+    // charCodeAt's whole answer for a number index: the code unit, or NaN past either end (NaN index reads as 0).
+    [[nodiscard]] double char_code_at_number(double index) const {
+        const double i = index != index ? 0.0 : std::trunc(index);
+        if (!(i >= 0)) return std::nan("");
+        const int32_t unit = i < 4294967295.0 ? code_unit_at(static_cast<size_t>(i)) : -1;
+        return unit >= 0 ? static_cast<double>(unit) : std::nan("");
+    }
     // Byte offset of UTF-16 index `index`, clamped to the end.
     [[nodiscard]] size_t byte_pos(size_t index) const;
     // The inverse. What a builtin that searched in BYTES has to hand back,

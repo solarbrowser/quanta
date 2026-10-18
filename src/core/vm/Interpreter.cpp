@@ -350,6 +350,7 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
         // value, so every `.length` read used to copy the whole buffer before
         // scanning it, and both halves are O(length).
         if (name == "length") {
+            if (fb_slot && rooted && !(fb && fb->str_length)) fb_slot->ensure().str_length = true;
             return Value(static_cast<double>(prim.as_string()->utf16_length()));
         }
         size_t idx;
@@ -6798,6 +6799,12 @@ QUANTA_HANDLER Value h_CallResolvedPlain(HANDLER_PARAMS) {
             }
             acc = fn->call_fast_gate(ctx, call_args, receiver);
         } else {
+            // s.charCodeAt(i) for a string and a number: no call needed to answer it.
+            if (fn->intrinsic() == 1 && receiver.is_string() && call_args.size() == 1 && call_args[0].is_number()) {
+                acc = Value(receiver.as_string()->char_code_at_number(call_args[0].as_number()));
+                pc += 7;
+                DISPATCH();
+            }
             acc = fn->call_register_args(ctx, call_args, receiver);
         }
         if (UNLIKELY(ctx.has_exception())) [[clang::musttail]] return h_ExceptionAt(f, pc, acc, regs, code);
@@ -8008,6 +8015,20 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
             fb.own_desc_epoch == Object::descriptor_epoch() &&
             as_object_like(receiver) == fb.own_desc_receiver) {
             acc = fb.own_desc_value;
+            FUSED_TAIL(6);
+        }
+    }
+    if (receiver.is_string()) {
+        // A string's `length`, and a method read from String.prototype, answered from what the site has learned: the generic
+        // read below would walk get_named and the primitive-receiver path for either.
+        const FeedbackBody& sfb = f.chunk->feedback[read_u16(code, pc + 4)].read();
+        if (sfb.str_length) {
+            acc = Value(static_cast<double>(receiver.as_string()->utf16_length()));
+            FUSED_TAIL(6);
+        }
+        if (sfb.prim_valid && !sfb.prim_is_getter && sfb.prim_desc_epoch == Object::descriptor_epoch() &&
+            sfb.prim_proto == Context::primitive_prototype(Context::PrimitiveKind::String)) {
+            acc = sfb.prim_value;
             FUSED_TAIL(6);
         }
     }
