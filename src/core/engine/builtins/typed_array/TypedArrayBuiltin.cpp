@@ -796,6 +796,7 @@ void register_typed_array_builtins(Context& ctx) {
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             return Value(static_cast<double>(ta->length()));
         }, 0);
+    length_getter->set_intrinsic(2);
     PropertyDescriptor length_desc;
     length_desc.set_getter(length_getter.release());
     length_desc.set_enumerable(false);

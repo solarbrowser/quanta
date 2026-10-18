@@ -557,6 +557,8 @@ struct FeedbackBody {
     bool array_length = false;
     // The site has read `length` of a string: the read is the string's UTF-16 length, whatever else the site sees.
     bool str_length = false;
+    // Likewise for the `length` of a typed array, while the original getter is what the chain resolves it to.
+    bool ta_length = false;
 
     // SetNamed-only: caches adding a brand-new own property (a shape
     // transition), keyed by the shape BEFORE the add. `proto_epoch` is

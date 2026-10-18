@@ -667,6 +667,42 @@ inline void write_barrier_for(Object* obj, const Value& value) {
     Collector::write_barrier(obj);
 }
 
+// The getter behind %TypedArray%.prototype.length, answered without a call.
+inline bool typed_length_getter(Function* getter, const Value& receiver, Value& out) {
+    if (getter->intrinsic() != 2 || !receiver.is_object() || !receiver.as_object()->is_typed_array()) return false;
+    out = Value(static_cast<double>(static_cast<TypedArrayBase*>(receiver.as_object())->length()));
+    return true;
+}
+
+// Whether `length` read from this typed array is the original getter's answer: the array has nothing of its own that could
+// shadow it and the chain above it still resolves `length` to that getter. The second is worked out once per receiver
+// shape and prototype, and good while no prototype and no descriptor anywhere has changed.
+struct TypedLengthCache { Shape* shape = nullptr; Object* proto = nullptr; uint64_t proto_epoch = 0, desc_epoch = 0; bool ok = false; };
+constinit thread_local TypedLengthCache g_typed_length;
+
+inline bool typed_length_ok(Object* obj) {
+    if (obj->has_any_descriptor_override()) return false;
+    Shape* shape = obj->get_shape();
+    Object* proto = obj->get_prototype_raw();
+    TypedLengthCache& c = g_typed_length;
+    if (c.shape == shape && c.proto == proto && c.proto_epoch == Object::proto_epoch() && c.desc_epoch == Object::descriptor_epoch()) return c.ok;
+    bool ok = false;
+    if (shape && shape->find_slot(std::string("length")) < 0) {
+        for (Object* p = proto; p && p->get_type() == Object::ObjectType::Ordinary; p = p->get_prototype_raw()) {
+            const PropertyDescriptor d = p->get_property_descriptor("length");
+            if (d.is_accessor_descriptor()) {
+                Function* g = d.has_getter() ? as_function(d.get_getter()) : nullptr;
+                ok = g && g->intrinsic() == 2;
+                break;
+            }
+            Shape* ps = p->get_shape();
+            if (d.has_value() || !ps || ps->find_slot(std::string("length")) >= 0) break;   // shadowed by a data property, or not readable
+        }
+    }
+    c = {shape, proto, Object::proto_epoch(), Object::descriptor_epoch(), ok};
+    return ok;
+}
+
 // The property cache a megamorphic site falls back to. A site learns at most a few
 // shapes (see FeedbackSlot::kMaxEntries); past that it used to resolve every read
 // from scratch -- two hash lookups per object on the chain, about four hundred
@@ -874,6 +910,13 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     Object* obj = as_object_like(receiver);
     if (!obj) return get_primitive_named(ctx, receiver, name, fb_slot, owner, rooted);
 
+    // A typed array's `length` is an accessor on the prototype chain; while that is still the original getter the length is
+    // read straight off the array.
+    if (obj->get_type() == Object::ObjectType::TypedArray && name.size() == 6 && name == "length" && typed_length_ok(obj)) {
+        if (fb_slot && rooted && !(fb && fb->ta_length)) fb_slot->ensure().ta_length = true;
+        return Value(static_cast<double>(static_cast<TypedArrayBase*>(obj)->length()));
+    }
+
     // Array.length is always live-computed from elements_ (never reliably
     // mirrored in a shape slot -- push/index-growth never syncs one, only
     // an explicit `arr.length = N` assignment does), so it can never be
@@ -984,6 +1027,8 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 if (pe.is_getter) {
                     if (pe.desc_epoch == cur_epoch) {
                         Function* getter_fn = as_function(as_object_like(pe.cached_value));
+                        Value quick;
+                        if (getter_fn && typed_length_getter(getter_fn, receiver, quick)) return quick;
                         return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
                     }
                     break;
@@ -7939,6 +7984,7 @@ inline bool inherited_data_entry(const FeedbackBody& fb, Object* obj, Value& out
 // in this frame and the handler returns.
 inline int call_cached_getter(Frame& f, uint32_t& pc, Value& acc, Function* getter_fn,
                               const Value& receiver) {
+    if (typed_length_getter(getter_fn, receiver, acc)) return 0;
     f.instr_pc = pc;
     Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
     if (!f.ctx->has_exception()) { acc = result; return 0; }
@@ -8049,7 +8095,12 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
     }
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        if (obj->get_type() == Object::ObjectType::Array) {
+        if (obj->get_type() == Object::ObjectType::TypedArray) {
+            if (f.chunk->feedback[read_u16(code, pc + 4)].read().ta_length && typed_length_ok(obj)) {
+                acc = Value(static_cast<double>(static_cast<TypedArrayBase*>(obj)->length()));
+                FUSED_TAIL(6);
+            }
+        } else if (obj->get_type() == Object::ObjectType::Array) {
             // A dense Array's length is its element count, and `length` can
             // never become an accessor on one, so the count answers the read
             // exactly. A length moved into a descriptor fails the dense check
@@ -8152,6 +8203,7 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
                         if (pe.is_getter) {
                             if (pe.desc_epoch == Object::descriptor_epoch()) {
                                 if (Function* getter_fn = pe.cached_value.as_function()) {
+                                    if (typed_length_getter(getter_fn, receiver, acc)) FUSED_TAIL(6);
                                     f.instr_pc = pc;
                                     Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
                                     if (f.ctx->has_exception()) {
@@ -8242,6 +8294,7 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
                     if (pe.is_getter) {
                         if (pe.desc_epoch == Object::descriptor_epoch()) {
                             if (Function* getter_fn = pe.cached_value.as_function()) {
+                                if (typed_length_getter(getter_fn, receiver, acc)) FUSED_TAIL(6);
                                 f.instr_pc = pc;
                                 Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
                                 if (f.ctx->has_exception()) {
