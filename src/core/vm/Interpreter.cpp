@@ -50,6 +50,9 @@
 #include <tuple>
 #if defined(__SSE2__)
 #include <emmintrin.h>
+#endif
+// The sampling profiler (Jit.inc, QUANTA_PROF) needs these, and only builds where they exist.
+#if defined(__linux__) && defined(__x86_64__)
 #include <signal.h>
 #include <sys/time.h>
 #include <ucontext.h>
