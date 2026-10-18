@@ -2951,6 +2951,7 @@ QUANTA_HANDLER Value h_LdaConstWide(HANDLER_PARAMS) {
     DISPATCH();
 }
 
+QUANTA_HANDLER Value h_ExceptionAt(HANDLER_PARAMS);
 QUANTA_HANDLER Value h_ReturnInline(HANDLER_PARAMS);
 
 // The return of a frame that holds more than its registers: the call environment is undone, and a
@@ -3001,7 +3002,12 @@ QUANTA_HANDLER Value h_Return(HANDLER_PARAMS) {
     Collector::safepoint();
     if (f.osr_budget < 0) {
         const int r = osr_try(f, pc, acc);
-        if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, pc, acc, regs, code); }
+        if (r == 1) {
+            acc = f.acc;
+            // A unit that left because something it called threw has finished the frame with the exception pending.
+            if (UNLIKELY(f.ctx->has_exception())) [[clang::musttail]] return h_ExceptionAt(f, f.instr_pc, acc, regs, code);
+            [[clang::musttail]] return h_Return(f, pc, acc, regs, code);
+        }
         if (r == 2) { pc = f.pc; acc = f.acc; }
         if (r == 3) { Frame* t = g_osr_target; [[clang::musttail]] return kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code); }
     }
@@ -3045,7 +3051,11 @@ QUANTA_HANDLER Value h_JumpIfSlow(HANDLER_PARAMS) {
             Collector::safepoint();
             if (__builtin_expect(--f.osr_budget < 0, 0)) {
                 const int r = osr_try(f, pc, acc);
-                if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, pc, acc, regs, code); }
+                if (r == 1) {
+                    acc = f.acc;
+                    if (UNLIKELY(f.ctx->has_exception())) [[clang::musttail]] return h_ExceptionAt(f, f.instr_pc, acc, regs, code);
+                    [[clang::musttail]] return h_Return(f, pc, acc, regs, code);
+                }
                 if (r == 2) { pc = f.pc; acc = f.acc; }
                 if (r == 3) { Frame* t = g_osr_target; [[clang::musttail]] return kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code); }
             }
@@ -10045,7 +10055,11 @@ QUANTA_HANDLER Value h_OptEntry(HANDLER_PARAMS) {
     code = f.chunk->code.data();
     f.code = code;
     const int r = opt_fn_enter(f);
-    if (r == 1) { acc = f.acc; [[clang::musttail]] return h_Return(f, 0, acc, regs, code); }
+    if (r == 1) {
+        acc = f.acc;
+        if (UNLIKELY(f.ctx->has_exception())) [[clang::musttail]] return h_ExceptionAt(f, f.instr_pc, acc, regs, code);
+        [[clang::musttail]] return h_Return(f, 0, acc, regs, code);
+    }
     if (r == 3) { Frame* t = g_osr_target; [[clang::musttail]] return kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code); }
     if (r == 2) { pc = f.pc; acc = f.acc; }
     [[clang::musttail]] return kHandlers[code[pc]](f, pc, acc, regs, code);
@@ -10497,6 +10511,9 @@ template <bool Fast>
                 this_value, (!Fast && initial_acc) ? *initial_acc : Value(), 0, 0, 0, this_resolved};
     FrameLinkScope frame_link(&chunk, &frame.instr_pc, owner);
     frame.call_info = call_info;
+    // A function that is only ever called from native code (a forwarder's `apply`, a callback) never meets the stackless
+    // call that decides what the optimizing tier may do with it; the verdict is asked for here instead.
+    if (UNLIKELY(chunk.inline_state == 0) && owner && owner->get_executable()) inline_classify(*owner->get_executable(), chunk, owner);
     if (UNLIKELY(chunk.inline_state & kInlineHasOpt)) {
         if (!chunk.opt_loops) frame.osr_budget = 1;
         if (chunk.opt_entry != 2) opt_note_call(chunk, frame);

@@ -93,6 +93,15 @@ std::pair<Shape*, bool> Shape::transition_insert(void*& table, bool is_single,
     return {raw, false};
 }
 
+// Whether a shape `width` slots past the soft cap may be made: the chain is not at its hard cap and the thread still has
+// budget for shapes this deep.
+bool Shape::take_deep_shape(uint32_t width) const {
+    static thread_local uint32_t budget = kDeepShapeBudget;
+    if (slot_count_ + width > kMaxChainSlots || budget == 0) return false;
+    budget--;
+    return true;
+}
+
 Shape* Shape::transition(const std::string& key) {
     // transition_find() compares by value, no interning needed for the
     // (common) case this child already exists -- only intern() on an
@@ -101,7 +110,7 @@ Shape* Shape::transition(const std::string& key) {
     // first child), so a leaf shape (the common terminal case) never
     // allocates anything at all.
     if (Shape* existing = transition_find(transitions_, transitions_is_single_, key)) return existing;
-    if (slot_count_ >= kMaxSlots) return nullptr;
+    if (slot_count_ >= kMaxSlots && !take_deep_shape(1)) return nullptr;
     if (transition_size(transitions_, transitions_is_single_) >= kMaxTransitions) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_));
@@ -112,7 +121,7 @@ Shape* Shape::transition(const std::string& key) {
 
 Shape* Shape::transition_accessor(const std::string& key) {
     if (Shape* existing = transition_find(accessor_transitions_, accessor_transitions_is_single_, key)) return existing;
-    if (slot_count_ + 2 > kMaxSlots) return nullptr;
+    if (slot_count_ + 2 > kMaxSlots && !take_deep_shape(2)) return nullptr;
     if (transition_size(accessor_transitions_, accessor_transitions_is_single_) >= kMaxTransitions) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_, /*is_accessor=*/true));

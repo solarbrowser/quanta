@@ -132,6 +132,13 @@ public:
     // moves to dictionary mode. Public so an enumeration that walks a shape
     // can size a frame-local buffer to it instead of allocating.
     static constexpr uint32_t kMaxSlots = 128;
+    // A chain may grow past kMaxSlots, up to this, for objects that really have that many named fields (a class with a few
+    // hundred members): kMaxSlots objects' worth of properties live in shape slots and are cached like any other, instead of
+    // the whole object falling to a hash table. Every shape past kMaxSlots copies a table of that depth, so the number of
+    // them across the thread is bounded (kDeepShapeBudget), which keeps a program that fills many objects with computed
+    // keys at the old behaviour once the budget is spent.
+    static constexpr uint32_t kMaxChainSlots = 1024;
+    static constexpr uint32_t kDeepShapeBudget = 4096;
 
 private:
     static constinit thread_local Shape* root_instance_;
@@ -140,6 +147,7 @@ private:
     Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor = false);
 
     static constexpr uint32_t kMaxTransitions = 128;
+    bool take_deep_shape(uint32_t width) const;
 
     Shape* parent_ = nullptr;
     const std::string* added_key_ = nullptr;
