@@ -54,7 +54,8 @@ public:
     void fulfill(const Value& value);
     void reject(const Value& reason);
     
-    Promise* then(Function* on_fulfilled, Function* on_rejected = nullptr);
+    // `child`, when given, is the promise the reaction settles (a native promise made by the caller) instead of a new one.
+    Promise* then(Function* on_fulfilled, Function* on_rejected = nullptr, Promise* child = nullptr);
     Promise* catch_method(Function* on_rejected);
     Promise* finally_method(Function* on_finally);
     

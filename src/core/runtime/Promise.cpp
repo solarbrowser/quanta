@@ -283,7 +283,7 @@ void Promise::report_unhandled_rejections() {
     }
 }
 
-Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
+Promise* Promise::then(Function* on_fulfilled, Function* on_rejected, Promise* given_child) {
     Collector::write_barrier(this);
     mark_handled();
     Context* exec_ctx = get_exec_ctx(engine_, context_);
@@ -298,8 +298,11 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
 
     // Create child promise — inherit parent's context so closure propagation works
     // correctly when promises are created inside nested function scopes.
-    auto child_obj = ObjectFactory::create_promise(call_ctx);
-    Promise* child = static_cast<Promise*>(child_obj.release());
+    Promise* child = given_child;
+    if (!child) {
+        auto child_obj = ObjectFactory::create_promise(call_ctx);
+        child = static_cast<Promise*>(child_obj.release());
+    }
 
     if (state_ == PromiseState::PENDING) {
         then_records_.push_back({on_fulfilled, on_rejected, child});

@@ -432,6 +432,12 @@ void register_promise_builtins(Context& ctx) {
             Function* cap_resolve = cap.resolve;
             Function* cap_reject = cap.reject;
 
+            // The ordinary case: the reaction settles the child itself, so no wrapper functions are made.
+            if (fast_child) {
+                promise->then(on_fulfilled, on_rejected, fast_child);
+                return result_promise;
+            }
+
             // PerformPromiseThen's "Identity"/"Thrower" defaults: with no real handler,
             // forward the value/reason to the capability unchanged rather than skipping it.
             auto ful_wrapper = ObjectFactory::create_native_function("",
