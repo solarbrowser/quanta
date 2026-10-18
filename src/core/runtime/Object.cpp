@@ -4414,7 +4414,6 @@ std::unique_ptr<Object> create_boolean(bool value) {
 std::unique_ptr<Object> create_error(const std::string& message) {
     auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
 
-    error_obj->set_property("_isError", Value(true));
     return std::unique_ptr<Object>(error_obj.release());
 }
 

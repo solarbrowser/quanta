@@ -32,7 +32,6 @@ Error::Error(Type type, const std::string& message, const std::string& filename,
 }
 
 void Error::initialize_properties() {
-    set_property("_isError", Value(true), PropertyAttributes::None);
     set_property("name", Value(type_to_name(error_type_)), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Only set message as own property when non-empty; when message is "" it means
