@@ -3299,6 +3299,9 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
                 if (VM::inherited_data_entry(*fb, obj, out)) return std::bit_cast<uint64_t>(out);
             }
         }
+        // A site that has seen too many shapes: the cache all such sites share.
+        Value shared;
+        if (d->slot->peek() && d->slot->peek()->mega && VM::mega_probe(obj, d->name, shared)) return std::bit_cast<uint64_t>(shared);
     }
     return rt_run(f, d->pc, [&](Context& ctx) { return VM::get_named(ctx, rv, *d->name, d->slot, d->owner, false); });
 }

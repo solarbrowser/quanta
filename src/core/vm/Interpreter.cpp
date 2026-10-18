@@ -699,7 +699,7 @@ struct MegaEntry {
     uint64_t epoch = 0;
     uint64_t generation = ~0ull;
     uint32_t slot = 0;
-    enum Kind : uint8_t { Unusable = 0, Own = 1, ProtoSlot = 2 } kind = Unusable;
+    enum Kind : uint8_t { Unusable = 0, Own = 1, ProtoSlot = 2, Absent = 3 } kind = Unusable;
 };
 constexpr size_t kMegaEntries = 2048;
 constinit thread_local MegaEntry g_mega[kMegaEntries];
@@ -746,6 +746,10 @@ inline bool mega_probe(const Object* obj, const std::string* name, Value& out) {
         out = *slot;
         return true;
     }
+    if (e.kind == MegaEntry::Absent && e.proto == obj->get_prototype_raw() && e.epoch == Object::proto_epoch()) {
+        out = Value();
+        return true;
+    }
     return false;
 }
 
@@ -774,14 +778,20 @@ inline void mega_learn(Object* obj, const std::string* name) {
     if (own >= 0) {
         if (shape->find_data_slot(*name) >= 0) { fresh.kind = MegaEntry::Own; fresh.slot = static_cast<uint32_t>(own); }
     } else {
+        // The first holder of the name along the chain, or the end of the chain: a read that finds nothing is as
+        // cacheable as one that finds a slot, for as long as the chain is as it was (proto_epoch).
         Object* p = proto0;
-        for (int depth = 0; p && depth < 16; depth++, p = p->get_prototype_raw()) {
+        int depth = 0;
+        for (; p && depth < 16; depth++, p = p->get_prototype_raw()) {
             if (p->get_type() != Object::ObjectType::Ordinary) break;
             Shape* ps = p->get_shape();
-            if (!ps || p->has_any_descriptor_override()) break;
+            if (!ps) break;
             const int32_t at = ps->find_slot(*name);
-            if (at < 0) continue;                                   // not here: look further up
-            if (ps->find_data_slot(*name) >= 0) {                  // a data property; an accessor ends the search
+            if (at < 0) {
+                if (p->has_any_descriptor_override() && p->find_descriptor_override(*name)) break;   // the name lives in its map
+                continue;                                                                           // not here: look further up
+            }
+            if (!p->has_any_descriptor_override() && ps->find_data_slot(*name) >= 0) {   // a data property; an accessor ends the search
                 fresh.kind = MegaEntry::ProtoSlot;
                 fresh.proto = proto0;
                 fresh.holder = p;
@@ -789,6 +799,11 @@ inline void mega_learn(Object* obj, const std::string* name) {
                 fresh.slot = static_cast<uint32_t>(at);
             }
             break;
+        }
+        if (!p && depth <= 16) {
+            fresh.kind = MegaEntry::Absent;
+            fresh.proto = proto0;
+            fresh.epoch = Object::proto_epoch();
         }
     }
     e = fresh;
