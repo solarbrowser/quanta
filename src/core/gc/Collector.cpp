@@ -1673,6 +1673,12 @@ void Collector::safepoint_slow() {
         if (!barriers_disabled() && !grown_enough && ++cycle_count % major_interval() != 0) {
             run_minor_collection();
         } else {
+            static const bool why = env_flag("QUANTA_GC_PROFILE");
+            if (why) {
+                std::fprintf(stderr, "[gc-prof] major because %s: since_major=%zuKB live=%zuKB needed=%zuKB interval=%zu\n",
+                             grown_enough ? (pending_pressure ? "env-pressure" : "growth") : "interval",
+                             Heap::bytes_since_major() / 1024, live / 1024, growth_needed / 1024, static_cast<size_t>(major_interval()));
+            }
             run_major_slice(next_slice_budget());
         }
     }
