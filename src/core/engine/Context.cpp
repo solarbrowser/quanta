@@ -1328,7 +1328,7 @@ void Environment::create_uninitialized_binding_interned(const std::string* key, 
     // Same refusal as create_uninitialized_binding: re-creating would clear
     // the initialized flag and the const mark of a binding already made.
     if (BindingSlot* slot = slots_.create_interned_if_absent(key)) {
-        *slot = BindingSlot{Value(), is_mutable, false, false};
+        *slot = BindingSlot{Value(), is_mutable, false, false, /*lexical=*/true};
     }
 }
 

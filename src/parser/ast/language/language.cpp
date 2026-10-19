@@ -646,6 +646,22 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
     return Value(function.release());
 }
 
+// Annex B.3.3: the block's function also becomes the value of the enclosing var of the same name, when there is
+// one (it is made when the function or program starts, and is left out where something in scope already owns the
+// name). False when there is no such var: the function then stays in its block.
+static bool annexb_copy_to_var(Context& ctx, const std::string& name, const Value& function_value) {
+    Environment* var_env = ctx.get_variable_environment();
+    if (!var_env) return false;
+    if (var_env->get_type() == Environment::Type::Object && var_env->get_binding_object()) {
+        Object* global_object = var_env->get_binding_object();
+        if (!global_object->has_own_property(name)) return false;
+        global_object->set_property(name, function_value);
+        return !ctx.has_exception();
+    }
+    if (!var_env->has_own_binding(name)) return false;
+    return var_env->set_binding(name, function_value);
+}
+
 // FunctionDeclaration's own second half: instantiate, then bind the name where
 // the environment shape says it belongs. Shared with Op::DeclareFunction.
 Value declare_function(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_borrowed) {
@@ -681,6 +697,17 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_bor
         bool use_lexical = shadows_arguments ||
             ((ctx.is_strict_mode() || tpl.is_generator || tpl.is_async) &&
              ctx.get_lexical_environment() != ctx.get_variable_environment());
+        if (!use_lexical && tpl.annexb != ClosureTemplate::AnnexB::None) {
+            // The block always has the function as a binding of its own, which the function's body and the rest of
+            // the block see (and may assign) independently of the var; the var gets a copy where there is one.
+            if (!ctx.create_lexical_binding(function_name, function_value, true)) {
+                ctx.create_lexical_binding_force(function_name, function_value);
+            }
+            if (tpl.annexb == ClosureTemplate::AnnexB::CopyOut) {
+                annexb_copy_to_var(ctx, function_name, function_value);
+            }
+            return Value();
+        }
         if (use_lexical) {
             if (!ctx.create_lexical_binding(function_name, function_value, true)) {
                 ctx.create_lexical_binding_force(function_name, function_value);

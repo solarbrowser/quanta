@@ -296,6 +296,7 @@ void Program::hoist_declarations(Context& ctx) {
     if (ctx.has_exception()) return;
 
     hoist_var_declarations(ctx);
+    hoist_annexb_block_functions(ctx);
     // A script gets a lexical environment of its own for let/const; an eval
     // already runs in one the caller made, so its bindings are created there
     // rather than behind a second scope. Either way they exist before the
@@ -317,6 +318,10 @@ void Program::hoist_declarations(Context& ctx) {
         if (fn->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
             const auto* ex = static_cast<const ExportStatement*>(fn);
             fn = ex->is_declaration_export() ? ex->get_declaration() : nullptr;
+        }
+        // `l: function f(){}` hoists like a bare declaration.
+        while (fn && fn->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+            fn = static_cast<const LabeledStatement*>(fn)->get_statement();
         }
         if (fn && fn->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
             declare_function(ctx, closure_template_for(fn));
@@ -393,6 +398,49 @@ Value Program::evaluate(Context& ctx) {
     // engine to hand them to.
     ctx.throw_type_error("Internal: script could not be compiled");
     return Value();
+}
+
+void Program::hoist_annexb_block_functions(Context& ctx) {
+    if (ctx.is_strict_mode()) return;
+    const bool is_eval = ctx.get_type() == Context::Type::Eval;
+    if (!is_eval && ctx.get_type() != Context::Type::Global) return;
+    std::vector<const ASTNode*> raw;
+    raw.reserve(statements_.size());
+    std::unordered_set<std::string> top_functions;
+    for (const auto& st : statements_) {
+        raw.push_back(st.get());
+        if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+            if (const Identifier* id = static_cast<const FunctionDeclaration*>(st.get())->get_id()) {
+                top_functions.insert(id->get_name());
+            }
+        }
+    }
+    const auto found = BytecodeCompiler::annexb_block_functions(raw, {});
+    if (found.names.empty()) return;
+
+    Environment* var_env = ctx.get_variable_environment();
+    const bool global_var_env = var_env && var_env->get_type() == Environment::Type::Object &&
+                                var_env->get_binding_object();
+    for (const std::string& name : found.names) {
+        if (top_functions.count(name)) continue;   // the function's own hoisting makes the binding
+        // A direct eval: a scope between the eval and the variable environment that already binds the name
+        // keeps the function in its block.
+        if (is_eval) {
+            bool taken = false;
+            for (Environment* env = ctx.get_lexical_environment(); env && env != var_env; env = env->get_outer()) {
+                if (env->get_type() != Environment::Type::Object && env->has_own_binding(name)) { taken = true; break; }
+            }
+            if (taken) continue;
+        }
+        if (global_var_env) {
+            Environment* lexical = ctx.get_script_global_lexical_env();
+            if (lexical && lexical->has_own_binding(name)) continue;   // HasLexicalDeclaration
+            Object* global_object = var_env->get_binding_object();
+            if (!global_object->has_own_property(name) && !global_object->is_extensible()) continue;   // CanDeclareGlobalVar
+        }
+        const bool exists = is_eval && var_env ? var_env->has_own_binding(name) : var_already_bound(ctx, name);
+        if (!exists) ctx.create_var_binding(name, Value(), true);
+    }
 }
 
 void Program::hoist_var_declarations(Context& ctx) {

@@ -42,7 +42,12 @@ public:
         bool in_eval_context = false;
         bool eval_in_function_code = false;  // true if eval is called from inside a function/method
         bool eval_in_method_code = false;    // true if eval is called from inside a method with [[HomeObject]]
-        bool in_substatement_body = false;   
+        bool in_substatement_body = false;
+        // While a label's body is parsed: whether the first label of this chain stood where a declaration is
+        // not allowed (the body of an if or a loop). Labels in front of a labelled function keep that answer;
+        // label_body_index is the token a label's body starts at, which a following label is recognised by.
+        size_t label_body_index = SIZE_MAX;
+        bool label_chain_in_substatement = false;   
         bool in_switch_case_list = false;   
         bool in_block_context = false;      
         int loop_depth = 0;

@@ -2217,6 +2217,18 @@ bool Lexer::is_at_line_start() const {
         if (ch == '\n' || ch == '\r') {
             return true;  
         }
+        // A block comment before it: only whitespace and block comments may precede an HTML close comment on its
+        // line, and a block comment holding a line break counts as the line's start itself.
+        if (ch == '/' && check_pos > 0 && source()[check_pos - 1] == '*') {
+            const size_t open = source().rfind("/*", check_pos - 1);
+            if (open == std::string::npos) return false;
+            for (size_t i = open; i < check_pos; i++) {
+                const char c = source()[i];
+                if (c == '\n' || c == '\r') return true;
+            }
+            check_pos = open;
+            continue;
+        }
         if (!is_whitespace(ch)) {
             return false;  
         }

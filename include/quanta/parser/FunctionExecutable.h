@@ -590,6 +590,11 @@ struct ClosureTemplate {
     bool needs_outer_env = true;       // closure_needs_outer_environment, or the
                                        // unconditional pin the other forms always took
     bool body_is_strict = false;       // "use strict" directive in the body itself
+    // Annex B.3.3 for a function declared in a block of sloppy code: CopyOut also assigns the function to the
+    // enclosing var of the same name when the block is entered; BlockOnly (the extension would collide with a
+    // lexical binding) leaves it in the block. None is every other declaration.
+    enum class AnnexB : uint8_t { None, CopyOut, BlockOnly };
+    AnnexB annexb = AnnexB::None;
     bool has_direct_eval = false;
     uint32_t declared_length = 0;
     // What the enclosing function's own compile pass exposes of its outer-

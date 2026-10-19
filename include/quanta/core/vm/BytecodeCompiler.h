@@ -33,6 +33,8 @@ class ClassDeclaration;
 // Every field here only ever shifts a *prediction*, never a real binding:
 // Environment::inline_slot_interned re-validates by name regardless, so a
 // wrong count here costs only the fast path, never correctness.
+class FunctionDeclaration;
+
 struct EnvSlotHazards {
     // Number of `__closure_<name>` bindings Function.cpp:1040-1060's sweep
     // will actually create for this call (usually 0 or 1 -- the class's own
@@ -255,6 +257,18 @@ public:
                                                  // EnvSlotHazards's own doc comment. Null (the default) means
                                                  // "nothing known," same as every field left at its default.
                                                  const EnvSlotHazards* env_slot_hazards = nullptr);
+
+    // Annex B.3.3: the function declarations nested in blocks, switch cases and if clauses of sloppy code whose name
+    // also becomes a var of the enclosing function, script or eval, because declaring it as a var would not collide
+    // with anything. `nodes` are those declarations; `names` the distinct names, in order of first appearance.
+    // `statements` are the body's top-level statements; `parameter_names` the function's parameters, which keep the
+    // extension off a name they already own.
+    struct AnnexBBlockFunctions {
+        std::unordered_set<const FunctionDeclaration*> nodes;
+        std::vector<std::string> names;
+    };
+    static AnnexBBlockFunctions annexb_block_functions(const std::vector<const ASTNode*>& statements,
+                                                       const std::unordered_set<std::string>& parameter_names);
 
     // What compile() runs, once with `arguments` reads compiled against the
     // frame's argument list when the body allows it, and again without that if
@@ -672,6 +686,10 @@ private:
     bool outer_with_ = false;
     // Annex B if/label function declarations that did get a var binding.
     std::unordered_set<std::string> annexb_fn_vars_;
+    // The block-nested declarations that copy out to a var (annexb_block_functions().nodes).
+    std::unordered_set<const FunctionDeclaration*> annexb_nodes_;
+    bool annexb_analyzed_ = false;   // annexb_nodes_ is the whole truth for this code (sloppy functions, scripts)
+    ClosureTemplate::AnnexB annexb_template_mode(const ASTNode* declaration) const;
     bool emit_return_completion(bool has_argument, bool already_awaited);
     bool emit_loop_escape(bool is_continue, const std::string& label);
     void emit_iterator_closes_above(size_t from);

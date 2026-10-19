@@ -2354,6 +2354,10 @@ private:
 
     void check_use_strict_directive(Context& ctx);
     void hoist_var_declarations(Context& ctx);
+    // Annex B.3.3.2/B.3.3.3: the vars that the block-nested function declarations of sloppy script or eval code
+    // also introduce, created undefined before the first statement runs unless something in scope already owns
+    // the name.
+    void hoist_annexb_block_functions(Context& ctx);
     void scan_for_var_declarations(ASTNode* node, Context& ctx);
     void hoist_lexical_declarations(Context& ctx);
     // GlobalDeclarationInstantiation's CanDeclareGlobalFunction/CanDeclareGlobalVar

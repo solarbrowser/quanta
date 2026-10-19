@@ -5536,7 +5536,7 @@ static bool seed_scope_bindings(Environment* env, const std::vector<BytecodeChun
             if (keys[i] == keys[j]) return false;
     for (size_t i = 0; i < vars.size(); i++) {
         const auto& v = vars[i];
-        Environment::BindingSlot slot = v.is_lexical ? Environment::BindingSlot{Value(), !v.is_const, false, false}
+        Environment::BindingSlot slot = v.is_lexical ? Environment::BindingSlot{Value(), !v.is_const, false, false, true}
                                                      : Environment::BindingSlot{Value(), true, true, false};
         if (v.is_lexical && v.is_const) slot.const_binding = true;
         if (carried && v.copy_forward) { slot.value = carried[i]; slot.initialized = true; }

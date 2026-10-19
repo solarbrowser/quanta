@@ -52,6 +52,16 @@ FixedArray<const std::string*> intern_name_pool(std::vector<std::string> names) 
     return FixedArray<const std::string*>::from(std::move(keys));
 }
 
+// The function declaration a top-level statement stands for, looking through any labels in front of it: `l: function f(){}`
+// declares f exactly as a bare declaration does.
+const FunctionDeclaration* top_level_function(const ASTNode* statement) {
+    while (statement && statement->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+        statement = static_cast<const LabeledStatement*>(statement)->get_statement();
+    }
+    return statement && statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION
+               ? static_cast<const FunctionDeclaration*>(statement) : nullptr;
+}
+
 struct DeclInfo {
     std::string name;
     bool is_lexical;  // let/const: needs a TDZ-seeded register
@@ -4559,6 +4569,268 @@ bool BytecodeCompiler::expression_suspends(const ASTNode* node) {
     return contains_suspend(node);
 }
 
+namespace {
+
+// Names a statement list declares lexically in its own scope: let, const, class and using, and every function
+// declaration (a block's functions are lexical in it, even the ones that also copy out to a var).
+void collect_scope_lexicals(const std::vector<const ASTNode*>& statements,
+                            std::unordered_map<std::string, int>& out) {
+    auto add_pattern = [&](const ASTNode* pattern) {
+        std::vector<std::string> bound;
+        static_cast<const DestructuringAssignment*>(pattern)->collect_bound_names(bound);
+        for (const auto& n : bound) if (!n.empty()) out[n]++;
+    };
+    for (const ASTNode* st : statements) {
+        while (st && st->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+            st = static_cast<const LabeledStatement*>(st)->get_statement();
+        }
+        if (!st) continue;
+        switch (st->get_type()) {
+            case ASTNode::Type::VARIABLE_DECLARATION: {
+                const auto* vd = static_cast<const VariableDeclaration*>(st);
+                if (vd->get_kind() == VariableDeclarator::Kind::VAR) break;
+                for (const auto& d : vd->get_declarations()) {
+                    if (!d->get_id()) continue;
+                    if (!d->get_id()->get_name().empty()) { out[d->get_id()->get_name()]++; continue; }
+                    const ASTNode* init = d->get_init();
+                    if (init && init->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                        init = static_cast<const AssignmentExpression*>(init)->get_left();
+                    }
+                    if (init && init->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) add_pattern(init);
+                }
+                break;
+            }
+            case ASTNode::Type::CLASS_DECLARATION: {
+                const auto* cd = static_cast<const ClassDeclaration*>(st);
+                if (cd->get_id() && !cd->get_id()->get_name().empty()) out[cd->get_id()->get_name()]++;
+                break;
+            }
+            case ASTNode::Type::USING_DECLARATION:
+                for (const auto& b : static_cast<const UsingDeclaration*>(st)->get_bindings()) {
+                    if (!b.name.empty()) out[b.name]++;
+                }
+                break;
+            case ASTNode::Type::FUNCTION_DECLARATION: {
+                const auto* fd = static_cast<const FunctionDeclaration*>(st);
+                if (fd->get_id() && !fd->get_id()->get_name().empty()) out[fd->get_id()->get_name()]++;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
+class AnnexBScan {
+public:
+    AnnexBScan(const std::unordered_set<std::string>& params, BytecodeCompiler::AnnexBBlockFunctions& result)
+        : params_(params), result_(result) {}
+
+    // The function body's own statements: its top-level functions are var-scoped and not candidates, its lexical
+    // names are the outermost scope a candidate could collide with.
+    void scan_top(const std::vector<const ASTNode*>& statements) {
+        std::unordered_map<std::string, int> top;
+        for (const ASTNode* st : statements) {
+            if (!st) continue;
+            std::vector<const ASTNode*> one{st};
+            std::unordered_map<std::string, int> names;
+            collect_scope_lexicals(one, names);
+            // A top-level function is a var of the body, not a lexical one.
+            const ASTNode* inner = st;
+            while (inner && inner->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+                inner = static_cast<const LabeledStatement*>(inner)->get_statement();
+            }
+            if (inner && inner->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;
+            for (const auto& [n, c] : names) top[n] += c;
+        }
+        scopes_.push_back(std::move(top));
+        for (const ASTNode* st : statements) {
+            const ASTNode* inner = st;
+            while (inner && inner->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+                inner = static_cast<const LabeledStatement*>(inner)->get_statement();
+            }
+            if (inner && inner->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;
+            walk(st, /*own_scope=*/-1);
+        }
+        scopes_.pop_back();
+    }
+
+private:
+    const std::unordered_set<std::string>& params_;
+    BytecodeCompiler::AnnexBBlockFunctions& result_;
+    std::vector<std::unordered_map<std::string, int>> scopes_;
+
+    // `own_scope` is the index of the scope the declaration sits directly in (so the declaration itself can be
+    // discounted there), or -1 for a clause that is not a block (an if clause, a labelled body).
+    void consider(const FunctionDeclaration* fd, int own_scope) {
+        if (fd->is_async() || fd->is_generator() || !fd->get_id()) return;
+        const std::string& name = fd->get_id()->get_name();
+        if (name.empty() || params_.count(name)) return;
+        for (size_t i = 0; i < scopes_.size(); i++) {
+            auto it = scopes_[i].find(name);
+            if (it == scopes_[i].end()) continue;
+            const int others = it->second - (static_cast<int>(i) == own_scope ? 1 : 0);
+            if (others > 0) return;
+        }
+        if (result_.nodes.insert(fd).second) {
+            bool seen = false;
+            for (const auto& n : result_.names) if (n == name) { seen = true; break; }
+            if (!seen) result_.names.push_back(name);
+        }
+    }
+
+    void walk_list(const std::vector<std::unique_ptr<ASTNode>>& list) {
+        std::vector<const ASTNode*> raw;
+        raw.reserve(list.size());
+        for (const auto& s : list) raw.push_back(s.get());
+        std::unordered_map<std::string, int> names;
+        collect_scope_lexicals(raw, names);
+        scopes_.push_back(std::move(names));
+        const int me = static_cast<int>(scopes_.size()) - 1;
+        for (const ASTNode* st : raw) {
+            const ASTNode* inner = st;
+            while (inner && inner->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+                inner = static_cast<const LabeledStatement*>(inner)->get_statement();
+            }
+            if (inner && inner->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                consider(static_cast<const FunctionDeclaration*>(inner), me);
+            } else {
+                walk(st, me);
+            }
+        }
+        scopes_.pop_back();
+    }
+
+    // A statement that is the body of a loop or the clause of an if: not a block of its own unless it is one.
+    void walk_clause(const ASTNode* st) {
+        if (!st) return;
+        if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+            consider(static_cast<const FunctionDeclaration*>(st), -1);
+            return;
+        }
+        walk(st, -1);
+    }
+
+    void walk(const ASTNode* st, int) {
+        if (!st) return;
+        switch (st->get_type()) {
+            case ASTNode::Type::BLOCK_STATEMENT:
+                walk_list(static_cast<const BlockStatement*>(st)->get_statements());
+                break;
+            case ASTNode::Type::IF_STATEMENT: {
+                const auto* n = static_cast<const IfStatement*>(st);
+                walk_clause(n->get_consequent());
+                walk_clause(n->get_alternate());
+                break;
+            }
+            case ASTNode::Type::LABELED_STATEMENT:
+                walk_clause(static_cast<const LabeledStatement*>(st)->get_statement());
+                break;
+            case ASTNode::Type::WHILE_STATEMENT:
+                walk(static_cast<const WhileStatement*>(st)->get_body(), -1);
+                break;
+            case ASTNode::Type::DO_WHILE_STATEMENT:
+                walk(static_cast<const DoWhileStatement*>(st)->get_body(), -1);
+                break;
+            case ASTNode::Type::WITH_STATEMENT:
+                walk(static_cast<const WithStatement*>(st)->get_body(), -1);
+                break;
+            case ASTNode::Type::FOR_STATEMENT: {
+                const auto* n = static_cast<const ForStatement*>(st);
+                std::unordered_map<std::string, int> head;
+                if (n->get_init()) {
+                    std::vector<const ASTNode*> one{n->get_init()};
+                    collect_scope_lexicals(one, head);
+                }
+                scopes_.push_back(std::move(head));
+                walk(n->get_body(), -1);
+                scopes_.pop_back();
+                break;
+            }
+            case ASTNode::Type::FOR_IN_STATEMENT:
+            case ASTNode::Type::FOR_OF_STATEMENT: {
+                const ASTNode* left;
+                const ASTNode* body;
+                int decl_kind;
+                if (st->get_type() == ASTNode::Type::FOR_IN_STATEMENT) {
+                    const auto* n = static_cast<const ForInStatement*>(st);
+                    left = n->get_left(); body = n->get_body(); decl_kind = n->get_left_decl_kind();
+                } else {
+                    const auto* n = static_cast<const ForOfStatement*>(st);
+                    left = n->get_left(); body = n->get_body(); decl_kind = n->get_left_decl_kind();
+                }
+                std::unordered_map<std::string, int> head;
+                if (left && left->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                    std::vector<const ASTNode*> one{left};
+                    collect_scope_lexicals(one, head);
+                } else if (left && left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT && decl_kind > 0) {
+                    std::vector<std::string> bound;
+                    static_cast<const DestructuringAssignment*>(left)->collect_bound_names(bound);
+                    for (const auto& n : bound) if (!n.empty()) head[n]++;
+                }
+                scopes_.push_back(std::move(head));
+                walk(body, -1);
+                scopes_.pop_back();
+                break;
+            }
+            case ASTNode::Type::TRY_STATEMENT: {
+                const auto* n = static_cast<const TryStatement*>(st);
+                walk(n->get_try_block(), -1);
+                if (const ASTNode* cc = n->get_catch_clause()) {
+                    const auto* clause = static_cast<const CatchClause*>(cc);
+                    // A plain catch parameter may be redeclared by a var (B.3.4); a pattern's names may not.
+                    std::unordered_map<std::string, int> param;
+                    if (const ASTNode* pat = clause->get_destructuring_pattern()) {
+                        std::vector<std::string> bound;
+                        static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+                        for (const auto& b : bound) if (!b.empty()) param[b]++;
+                    }
+                    scopes_.push_back(std::move(param));
+                    walk(clause->get_body(), -1);
+                    scopes_.pop_back();
+                }
+                walk(n->get_finally_block(), -1);
+                break;
+            }
+            case ASTNode::Type::SWITCH_STATEMENT: {
+                const auto* n = static_cast<const SwitchStatement*>(st);
+                std::vector<const ASTNode*> all;
+                for (const auto& c : n->get_cases()) {
+                    for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) all.push_back(s.get());
+                }
+                std::unordered_map<std::string, int> names;
+                collect_scope_lexicals(all, names);
+                scopes_.push_back(std::move(names));
+                const int me = static_cast<int>(scopes_.size()) - 1;
+                for (const ASTNode* s : all) {
+                    const ASTNode* inner = s;
+                    while (inner && inner->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+                        inner = static_cast<const LabeledStatement*>(inner)->get_statement();
+                    }
+                    if (inner && inner->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                        consider(static_cast<const FunctionDeclaration*>(inner), me);
+                    } else {
+                        walk(s, me);
+                    }
+                }
+                scopes_.pop_back();
+                break;
+            }
+            default:
+                break;
+        }
+    }
+};
+
+}  // namespace
+
+BytecodeCompiler::AnnexBBlockFunctions BytecodeCompiler::annexb_block_functions(
+        const std::vector<const ASTNode*>& statements, const std::unordered_set<std::string>& parameter_names) {
+    AnnexBBlockFunctions result;
+    AnnexBScan(parameter_names, result).scan_top(statements);
+    return result;
+}
+
 // Annex B B.3.3: the var-scoped binding an if/label function declaration would
 // create is not created at all when a lexical declaration or a parameter
 // already owns the name. Dropping the entry here is what keeps the closure out
@@ -4688,6 +4960,41 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     if (!prescan_declarations(body, declared)) return nullptr;
     std::unordered_set<std::string> annexb_fn_vars;
     drop_shadowed_annexb_fn_vars(declared, param_names, annexb_fn_vars);
+
+    // Annex B.3.3: a function declared in a block of sloppy code is also a var of the enclosing function, unless
+    // that would collide with something. The var exists from the start, undefined, and lives in the environment so
+    // that the block can assign it by name when it is entered.
+    BytecodeCompiler::AnnexBBlockFunctions annexb_block;
+    if (!is_strict && body->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
+        !static_cast<const BlockStatement*>(body)->has_use_strict_directive()) {
+        const auto* body_block = static_cast<const BlockStatement*>(body);
+        std::vector<const ASTNode*> statements;
+        std::unordered_set<std::string> top_functions;
+        for (const auto& st : body_block->get_statements()) {
+            statements.push_back(st.get());
+            if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                if (const Identifier* id = static_cast<const FunctionDeclaration*>(st.get())->get_id()) {
+                    top_functions.insert(id->get_name());
+                }
+            }
+        }
+        std::unordered_set<std::string> reserved(param_names.begin(), param_names.end());
+        if (has_rest) reserved.insert(rest_name);
+        reserved.insert("arguments");
+        annexb_block = BytecodeCompiler::annexb_block_functions(statements, reserved);
+        // The if-clause and labelled forms the prescan listed are among the declarations just analysed.
+        declared.erase(std::remove_if(declared.begin(), declared.end(),
+                                      [](const DeclInfo& i) { return i.is_annexb_fn; }), declared.end());
+        annexb_fn_vars.clear();
+        for (const auto& name : annexb_block.names) {
+            if (top_functions.count(name)) continue;
+            bool have = false;
+            for (const auto& info : declared) {
+                if (info.name == name && !info.is_lexical && !info.is_catch_param && !info.is_annexb_fn) { have = true; break; }
+            }
+            if (!have) declared.push_back({name, /*is_lexical=*/false, /*is_const=*/false});
+        }
+    }
 
     // Every const in `declared` that is assigned somewhere in `body`, computed
     // once instead of walking the whole body again per name below (a body
@@ -5173,6 +5480,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
         env_resident.insert(info.name);
         selective = true;
     }
+    if (!full_env) {
+        for (const auto& name : annexb_block.names) {
+            if (env_resident.insert(name).second) selective = true;
+        }
+    }
     const bool env_mode = full_env || has_hoisted_decl || !env_resident.empty() ||
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
@@ -5187,6 +5499,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     for (const auto& info : declared) if (info.is_class) compiler.class_decl_names_.insert(info.name);
     if (needs_self_binding && env_slot_hazards) compiler.self_name_ = env_slot_hazards->self_name;
     compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
+    compiler.annexb_nodes_ = std::move(annexb_block.nodes);
+    compiler.annexb_analyzed_ = !is_strict && body->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
+                                !static_cast<const BlockStatement*>(body)->has_use_strict_directive();
     // Every lexically declared name, known before a single instruction is
     // emitted. Learning it while compiling made the answer depend on source
     // order: a reference written ABOVE the block that declares the name saw
@@ -5239,6 +5554,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
             for (const auto& bn : bound) compiler.global_decl_count_[bn]++;
         }
         compiler.sibling_safe_names_ = compute_sibling_safe_names({body});
+        // A block function of the same name binds in its block as well as in the var: two declarations, so reads
+        // of the name resolve by walking the scopes and not through the var's slot.
+        for (const auto& name : annexb_block.names) {
+            compiler.global_decl_count_[name]++;
+            compiler.sibling_safe_names_.erase(name);
+        }
     }
     // flat_slot_counter mirrors the actual runtime seeding order of the
     // function's own (depth-0) Environment: params first (in param_names
@@ -5802,12 +6123,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     // right order. Block-nested declarations (Annex B territory) still bail
     // in compile_statement.
     for (const auto& stmt : block->get_statements()) {
-        if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+        const FunctionDeclaration* fn = top_level_function(stmt.get());
+        if (!fn) continue;
         if (!env_mode) return nullptr;
         if (compiler.chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return nullptr;
-        compiler.mark_hoisted_fn(stmt.get());
+        compiler.mark_hoisted_fn(fn);
         compiler.chunk_->ensure_closures().push_back(
-            compiler.with_ancestor_chain(closure_template_for(stmt.get())));
+            compiler.with_ancestor_chain(closure_template_for(fn)));
         compiler.emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
     }
 
@@ -6067,6 +6389,16 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         }
     }
     compiler.script_mode_ = true;
+    // Annex B.3.3 for script and eval code: which block-nested functions also copy out to a var. The var itself is
+    // hoisted (or refused) by the program when it starts, where the global and the caller's scopes are in hand.
+    {
+        std::vector<const ASTNode*> raw;
+        raw.reserve(statements.size());
+        for (const auto& st : statements) raw.push_back(st.get());
+        compiler.annexb_nodes_ = annexb_block_functions(raw, {}).nodes;
+        compiler.annexb_analyzed_ = true;
+        compiler.annexb_fn_vars_.clear();
+    }
     // No implicit `arguments` object exists up here, so the name is an
     // ordinary chain lookup -- which is exactly what an eval inside a function
     // needs to reach its caller's.
@@ -6155,6 +6487,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         if (st->get_type() == ASTNode::Type::USING_DECLARATION) { script_has_using = true; break; }
     }
     FinallyScope script_escaped;
+    for (const auto& st : statements) {
+        // `l: function f(){}` is hoisted with the other top-level functions; the label then has nothing left to run.
+        if (const FunctionDeclaration* labelled = top_level_function(st.get())) {
+            if (st.get() != labelled) compiler.hoisted_fn_decls_.insert(labelled);
+        }
+    }
     auto emit_statements = [&]() -> bool {
         for (const auto& st : statements) {
             if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;  // pre-evaluated
@@ -6515,6 +6853,15 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         declare_fresh = true;
         is_const = vd->get_kind() == VariableDeclarator::Kind::CONST;
         is_lexical = vd->get_kind() != VariableDeclarator::Kind::VAR;
+        // Annex B.3.5: `for (var a = init in obj)` evaluates the initializer once, before the object expression.
+        if (is_for_in && !is_lexical && d->get_init() && !var_name.empty()) {
+            if (!compile_expression(d->get_init())) return false;
+            if (is_named_evaluation_rhs(d->get_init())) {
+                emit(Op::SetFunctionNameIfUnnamed);
+                emit_u16(add_name(var_name));
+            }
+            emit_write_local(var_name, /*is_declaration=*/false);
+        }
     } else if (left->get_type() == ASTNode::Type::IDENTIFIER) {
         var_name = static_cast<const Identifier*>(left)->get_name();
     } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT ||
@@ -7730,6 +8077,15 @@ void BytecodeCompiler::emit_completion_store() {
     emit_u8(static_cast<uint8_t>(completion_reg_));
 }
 
+// What a block-nested function declaration does when its block is entered; see ClosureTemplate::AnnexB. Only code
+// whose declarations were analysed says anything but None.
+ClosureTemplate::AnnexB BytecodeCompiler::annexb_template_mode(const ASTNode* declaration) const {
+    if (!annexb_analyzed_) return ClosureTemplate::AnnexB::None;
+    const auto* fd = static_cast<const FunctionDeclaration*>(declaration);
+    if (fd->is_async() || fd->is_generator()) return ClosureTemplate::AnnexB::None;
+    return annexb_nodes_.count(fd) ? ClosureTemplate::AnnexB::CopyOut : ClosureTemplate::AnnexB::BlockOnly;
+}
+
 bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     if (!branch || branch->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
         return compile_statement(branch);
@@ -7739,7 +8095,7 @@ bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     const Identifier* id = static_cast<const FunctionDeclaration*>(branch)->get_id();
     if (!id || id->get_name().empty()) return false;
     const std::string& name = id->get_name();
-    if (annexb_fn_vars_.count(name)) {
+    if (!annexb_analyzed_ && annexb_fn_vars_.count(name)) {
         chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(branch)));
         emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
         emit_write_local(name, /*is_declaration=*/false);
@@ -7754,7 +8110,9 @@ bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     emit_u16(static_cast<uint16_t>(chunk_->ensure_env().loop_envs.size() - 1));
     env_depth_++;
     mark_hoisted_fn(branch);
-    chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(branch)));
+    ClosureTemplate tmpl = closure_template_for(branch);
+    tmpl.annexb = annexb_template_mode(branch);
+    chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
     emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
     emit(Op::ExitLoopEnv);
     env_depth_--;
@@ -9016,7 +9374,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (!env_mode_) return false;
                 if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
                 mark_hoisted_fn(st.get());
-                chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(st.get())));
+                ClosureTemplate tmpl = closure_template_for(st.get());
+                tmpl.annexb = annexb_template_mode(st.get());
+                chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
                 emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
             }
             bool has_using = false;
@@ -9913,7 +10273,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (!env_mode_) return false;
                     if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
                     mark_hoisted_fn(s.get());
-                    chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(s.get())));
+                    ClosureTemplate tmpl = closure_template_for(s.get());
+                    tmpl.annexb = annexb_template_mode(s.get());
+                    chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
                     emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
                 }
             }

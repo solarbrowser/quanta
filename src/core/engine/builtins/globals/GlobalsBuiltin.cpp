@@ -923,8 +923,10 @@ void register_global_builtins(Context& ctx) {
                             Environment* env = lex_env;
                             while (env && env != var_env) {
                                 if (env->get_type() != Environment::Type::Object) {
+                                    // Only a lexical declaration collides: a catch clause's parameter, the one
+                                    // other thing a block scope holds, may be redeclared by a var (B.3.4).
                                     for (const auto& vname : var_names) {
-                                        if (env->has_own_binding(vname)) {
+                                        if (env->has_lexical_declaration(vname)) {
                                             ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
                                             return Value();
                                         }

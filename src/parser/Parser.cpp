@@ -3957,9 +3957,12 @@ namespace { void append_declarator_names(const VariableDeclarator* d, std::vecto
 // list would otherwise have to deep-copy every statement in the switch to
 // build it.
 static std::string find_block_lexical_duplicate(const std::vector<ASTNode*>& stmts,
-                                                bool function_body_scope = false) {
+                                                bool function_body_scope = false,
+                                                bool sloppy_plain_function_duplicates = false) {
     std::vector<std::string> lexical;
     std::vector<std::string> vars;
+    // Annex B.3.2.4: in sloppy code two plain function declarations of one name may share a block.
+    std::unordered_set<std::string> plain_functions;
 
     for (ASTNode* stmt : stmts) {
         if (!stmt) continue;
@@ -3970,6 +3973,9 @@ static std::string find_block_lexical_duplicate(const std::vector<ASTNode*>& stm
             auto* fn = static_cast<FunctionDeclaration*>(stmt);
             if (fn->get_id()) {
                 (function_body_scope ? vars : lexical).push_back(fn->get_id()->get_name());
+                if (sloppy_plain_function_duplicates && !function_body_scope && !fn->is_async() && !fn->is_generator()) {
+                    plain_functions.insert(fn->get_id()->get_name());
+                }
             }
         } else if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
             auto* cls = static_cast<ClassDeclaration*>(stmt);
@@ -3988,9 +3994,27 @@ static std::string find_block_lexical_duplicate(const std::vector<ASTNode*>& stm
         }
     }
 
+    // Both must be plain functions; a function beside a let, a class or an async or generator function of the
+    // same name is still a collision. `plain_functions` only records the names that have a plain function, so count
+    // how many of each name's declarations are not one.
+    std::unordered_map<std::string, int> plain_count;
+    if (!plain_functions.empty()) {
+        for (ASTNode* stmt : stmts) {
+            if (stmt && stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                auto* fn = static_cast<FunctionDeclaration*>(stmt);
+                if (fn->get_id() && !fn->is_async() && !fn->is_generator()) plain_count[fn->get_id()->get_name()]++;
+            }
+        }
+    }
     for (size_t i = 0; i < lexical.size(); i++)
         for (size_t j = i + 1; j < lexical.size(); j++)
-            if (lexical[i] == lexical[j]) return lexical[i];
+            if (lexical[i] == lexical[j]) {
+                int total = 0;
+                for (const auto& l : lexical) if (l == lexical[i]) total++;
+                auto it = plain_count.find(lexical[i]);
+                if (it != plain_count.end() && it->second == total) continue;
+                return lexical[i];
+            }
 
     for (const auto& l : lexical)
         for (const auto& v : vars)
@@ -4160,7 +4184,7 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         std::vector<ASTNode*> stmt_view;
         stmt_view.reserve(statements.size());
         for (const auto& s : statements) stmt_view.push_back(s.get());
-        std::string dup = find_block_lexical_duplicate(stmt_view, is_function_body);
+        std::string dup = find_block_lexical_duplicate(stmt_view, is_function_body, !options_.strict_mode);
         if (!dup.empty()) {
             add_error("Identifier '" + dup + "' has already been declared");
             return nullptr;
@@ -5336,7 +5360,9 @@ std::unique_ptr<ASTNode> Parser::parse_with_statement() {
     }
 
     if (!check_substatement_restrictions()) return nullptr;
+    options_.in_substatement_body = true;
     auto body = parse_statement();
+    options_.in_substatement_body = false;
     if (!body) {
         add_error("Expected statement for with body");
         return nullptr;
@@ -6513,9 +6539,14 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
             add_error("SyntaxError: Duplicate label '" + label + "'");
             return nullptr;
         }
+        const bool continues_chain = current_token_index_ == options_.label_body_index;
         advance();
         advance();
         options_.active_labels.insert(label);
+        const bool chain_in_substatement =
+            continues_chain ? options_.label_chain_in_substatement : options_.in_substatement_body;
+        const size_t saved_label_body_index = options_.label_body_index;
+        const bool saved_chain_in_sub = options_.label_chain_in_substatement;
 
         // Peek through all labels to find the actual statement type for loop_labels tracking
         {
@@ -6545,23 +6576,9 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                         add_error("SyntaxError: Generator declarations are not allowed as labeled statements");
                         return nullptr;
                     }
-                    // labeled function: only 1 total level allowed via Annex B
-                    size_t label_count = 0;
-                    size_t ci = current_token_index_;
-                    while (ci + 1 < tokens_.size() &&
-                           tokens_[ci].get_type() == TokenType::IDENTIFIER &&
-                           tokens_[ci + 1].get_type() == TokenType::COLON) {
-                        label_count++;
-                        ci += 2;
-                        while (ci < tokens_.size() &&
-                               (tokens_[ci].get_type() == TokenType::NEWLINE ||
-                                tokens_[ci].get_type() == TokenType::WHITESPACE ||
-                                tokens_[ci].get_type() == TokenType::COMMENT))
-                            ci++;
-                    }
-                    if (label_count + (int)options_.active_labels.size() > 1 ||
-                        options_.loop_depth > 0 || options_.strict_mode ||
-                        options_.in_substatement_body) {
+                    // A labelled function (Annex B.3.2): any depth of labels in front of it, but not as the body of
+                    // a loop or an if.
+                    if (options_.loop_depth > 0 || options_.strict_mode || chain_in_substatement) {
                         add_error("SyntaxError: Function declarations not allowed in this context");
                         return nullptr;
                     }
@@ -6598,7 +6615,11 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
             }
         }
         options_.in_substatement_body = true;
+        options_.label_body_index = current_token_index_;
+        options_.label_chain_in_substatement = chain_in_substatement;
         auto statement = parse_statement();
+        options_.label_body_index = saved_label_body_index;
+        options_.label_chain_in_substatement = saved_chain_in_sub;
         options_.in_substatement_body = false;
         if (!statement) {
             add_error("Expected statement after label");
@@ -11284,7 +11305,7 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
             auto* cc = static_cast<CaseClause*>(c.get());
             for (const auto& s : cc->get_consequent()) all_stmts.push_back(s.get());
         }
-        std::string dup = find_block_lexical_duplicate(all_stmts);
+        std::string dup = find_block_lexical_duplicate(all_stmts, false, !options_.strict_mode);
         if (!dup.empty()) {
             add_error("Identifier '" + dup + "' has already been declared");
             return nullptr;
