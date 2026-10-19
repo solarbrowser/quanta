@@ -106,7 +106,6 @@ void register_date_builtins(Context& ctx) {
         {"toTimeString", Date::toTimeString, 0},
         {"toISOString", Date::toISOString, 0},
         {"toUTCString", Date::toUTCString, 0},
-        {"toGMTString", Date::toGMTString, 0},
         {"toJSON", Date::toJSON, 1},
         {"toLocaleString", Date::toLocaleString, 0},
         {"toLocaleDateString", Date::toLocaleDateString, 0},
@@ -118,6 +117,9 @@ void register_date_builtins(Context& ctx) {
         date_prototype->set_property_descriptor(e.name,
             PropertyDescriptor(Value(fn.release()), PropertyAttributes::BuiltinFunction));
     }
+    // B.2.4.3: the same function object as toUTCString, not a twin of it.
+    date_prototype->set_property_descriptor("toGMTString",
+        PropertyDescriptor(date_prototype->get_property("toUTCString"), PropertyAttributes::BuiltinFunction));
 
     Symbol* to_prim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
     if (to_prim_sym) {

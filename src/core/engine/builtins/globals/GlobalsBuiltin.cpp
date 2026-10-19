@@ -1414,32 +1414,8 @@ void register_global_builtins(Context& ctx) {
 
     auto escape_fn = ObjectFactory::create_native_function("escape",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (args.empty()) {
-                return Value(std::string("undefined"));
-            }
-
             std::string input;
-            Value arg = args[0];
-            if (arg.is_object()) {
-                Object* obj = arg.as_object();
-                Value toString_method = obj->get_property("toString");
-                if (toString_method.is_function()) {
-                    try {
-                        Function* func = toString_method.as_function();
-                        Value result = func->call(ctx, {}, arg);
-                        if (ctx.has_exception()) {
-                            return Value();
-                        }
-                        input = result.to_string();
-                    } catch (...) {
-                        return Value();
-                    }
-                } else {
-                    input = arg.to_string();
-                }
-            } else {
-                input = arg.to_string();
-            }
+            if (!(args.empty() ? Value() : args[0]).to_string_checked(ctx, input)) return Value();
             std::string result;
 
             // Convert UTF-8 string to UTF-16 code units
@@ -1499,7 +1475,7 @@ void register_global_builtins(Context& ctx) {
             }
 
             return Value(result);
-        });
+        }, 1);
     ctx.get_lexical_environment()->create_binding("escape", Value(escape_fn.get()), false);
     if (ctx.get_global_object()) {
         PropertyDescriptor escape_desc(Value(escape_fn.get()), PropertyAttributes::BuiltinFunction);
@@ -1509,32 +1485,8 @@ void register_global_builtins(Context& ctx) {
 
     auto unescape_fn = ObjectFactory::create_native_function("unescape",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (args.empty()) {
-                return Value(std::string("undefined"));
-            }
-
             std::string input;
-            Value arg = args[0];
-            if (arg.is_object()) {
-                Object* obj = arg.as_object();
-                Value toString_method = obj->get_property("toString");
-                if (toString_method.is_function()) {
-                    try {
-                        Function* func = toString_method.as_function();
-                        Value result = func->call(ctx, {}, arg);
-                        if (ctx.has_exception()) {
-                            return Value();
-                        }
-                        input = result.to_string();
-                    } catch (...) {
-                        return Value();
-                    }
-                } else {
-                    input = arg.to_string();
-                }
-            } else {
-                input = arg.to_string();
-            }
+            if (!(args.empty() ? Value() : args[0]).to_string_checked(ctx, input)) return Value();
             auto hex_to_num = [](char c) -> int {
                 if (c >= '0' && c <= '9') return c - '0';
                 if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -1611,7 +1563,7 @@ void register_global_builtins(Context& ctx) {
             }
 
             return Value(result);
-        });
+        }, 1);
     ctx.get_lexical_environment()->create_binding("unescape", Value(unescape_fn.get()), false);
     if (ctx.get_global_object()) {
         PropertyDescriptor unescape_desc(Value(unescape_fn.get()), PropertyAttributes::BuiltinFunction);

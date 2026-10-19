@@ -1759,213 +1759,44 @@ void register_string_builtins(Context& ctx) {
     string_constructor->set_property("concat", Value(string_concat_static.release()));
 
 
-    // Helper lambda for HTML escaping attribute values (per ES6 spec: only escape ")
-    auto html_escape_attr = [](const std::string& s) -> std::string {
-        std::string result;
-        for (char c : s) {
-            if (c == '"') result += "&quot;";
-            else result += c;
-        }
-        return result;
+    // B.2.2.2 CreateHTML: RequireObjectCoercible(string), ToString(string), then the attribute's ToString when the
+    // tag has one, in that order, each able to throw.
+    struct HtmlMethod { const char* name; const char* tag; const char* attribute; };
+    static constexpr HtmlMethod kHtmlMethods[] = {
+        {"anchor", "a", "name"}, {"big", "big", nullptr}, {"blink", "blink", nullptr}, {"bold", "b", nullptr},
+        {"fixed", "tt", nullptr}, {"fontcolor", "font", "color"}, {"fontsize", "font", "size"},
+        {"italics", "i", nullptr}, {"link", "a", "href"}, {"small", "small", nullptr},
+        {"strike", "strike", nullptr}, {"sub", "sub", nullptr}, {"sup", "sup", nullptr},
     };
-
-    auto anchor_fn = ObjectFactory::create_native_function("anchor",
-        [html_escape_attr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            Value this_value = receiver;
-
-            // RequireObjectCoercible
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call String.prototype.anchor on null or undefined");
-                return Value();
-            }
-
-            std::string str = this_value.to_string();
-            std::string name = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
-            return Value(std::string("<a name=\"") + name + "\">" + str + "</a>");
-        }, 1);
-    PropertyDescriptor anchor_desc(Value(anchor_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("anchor", anchor_desc);
-
-    auto big_fn = ObjectFactory::create_native_function("big",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<big>") + str + "</big>");
-        }, 0);
-    PropertyDescriptor big_desc(Value(big_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("big", big_desc);
-
-    auto blink_fn = ObjectFactory::create_native_function("blink",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<blink>") + str + "</blink>");
-        }, 0);
-    PropertyDescriptor blink_desc(Value(blink_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("blink", blink_desc);
-
-    auto bold_fn = ObjectFactory::create_native_function("bold",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<b>") + str + "</b>");
-        }, 0);
-    PropertyDescriptor bold_desc(Value(bold_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("bold", bold_desc);
-
-    auto fixed_fn = ObjectFactory::create_native_function("fixed",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<tt>") + str + "</tt>");
-        }, 0);
-    PropertyDescriptor fixed_desc(Value(fixed_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("fixed", fixed_desc);
-
-    auto fontcolor_fn = ObjectFactory::create_native_function("fontcolor",
-        [html_escape_attr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            std::string color = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
-            return Value(std::string("<font color=\"") + color + "\">" + str + "</font>");
-        }, 1);
-    PropertyDescriptor fontcolor_desc(Value(fontcolor_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("fontcolor", fontcolor_desc);
-
-    auto fontsize_fn = ObjectFactory::create_native_function("fontsize",
-        [html_escape_attr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            std::string size = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
-            return Value(std::string("<font size=\"") + size + "\">" + str + "</font>");
-        }, 1);
-    PropertyDescriptor fontsize_desc(Value(fontsize_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("fontsize", fontsize_desc);
-
-    auto italics_fn = ObjectFactory::create_native_function("italics",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<i>") + str + "</i>");
-        }, 0);
-    PropertyDescriptor italics_desc(Value(italics_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("italics", italics_desc);
-
-    auto link_fn = ObjectFactory::create_native_function("link",
-        [html_escape_attr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            std::string url = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
-            return Value(std::string("<a href=\"") + url + "\">" + str + "</a>");
-        }, 1);
-    PropertyDescriptor link_desc(Value(link_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("link", link_desc);
-
-    auto small_fn = ObjectFactory::create_native_function("small",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<small>") + str + "</small>");
-        }, 0);
-    PropertyDescriptor small_desc(Value(small_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("small", small_desc);
-
-    auto strike_fn = ObjectFactory::create_native_function("strike",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<strike>") + str + "</strike>");
-        }, 0);
-    PropertyDescriptor strike_desc(Value(strike_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("strike", strike_desc);
-
-    auto sub_fn = ObjectFactory::create_native_function("sub",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<sub>") + str + "</sub>");
-        }, 0);
-    PropertyDescriptor sub_desc(Value(sub_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("sub", sub_desc);
-
-    auto sup_fn = ObjectFactory::create_native_function("sup",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            Value this_value = receiver;
-            if (this_value.is_null() || this_value.is_undefined()) {
-                ctx.throw_type_error("Cannot call method on null or undefined");
-                return Value();
-            }
-            std::string str = this_value.to_string();
-            return Value(std::string("<sup>") + str + "</sup>");
-        }, 0);
-    PropertyDescriptor sup_desc(Value(sup_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("sup", sup_desc);
+    for (const HtmlMethod& method : kHtmlMethods) {
+        auto fn = ObjectFactory::create_native_function(method.name,
+            [method](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                bool ok = false;
+                std::string str = get_string_this(ctx, receiver, ok);
+                if (!ok || ctx.has_exception()) return Value();
+                std::string out = std::string("<") + method.tag;
+                if (method.attribute) {
+                    Value attribute = args.empty() ? Value() : args[0];
+                    std::string text;
+                    if (attribute.is_undefined()) text = "undefined";
+                    else if (attribute.is_null()) text = "null";
+                    else {
+                        text = string_this_coerce(ctx, attribute, ok);
+                        if (!ok || ctx.has_exception()) return Value();
+                    }
+                    out += std::string(" ") + method.attribute + "=\"";
+                    for (char c : text) {
+                        if (c == '"') out += "&quot;";
+                        else out += c;
+                    }
+                    out += "\"";
+                }
+                out += ">" + str + "</" + method.tag + ">";
+                return Value(std::move(out));
+            }, method.attribute ? 1 : 0);
+        string_prototype->set_property_descriptor(method.name,
+            PropertyDescriptor(Value(fn.release()), PropertyAttributes::BuiltinFunction));
+    }
 
     // AnnexB: String.prototype.substr(start, length)
     auto substr_fn = ObjectFactory::create_native_function("substr",
@@ -1974,7 +1805,11 @@ void register_string_builtins(Context& ctx) {
             if (receiver.is_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             String* self = this_value.is_string() ? this_value.as_string() : nullptr;
             std::string owned;
-            if (!self) owned = this_value.to_string();
+            if (!self) {
+                bool ok = false;
+                owned = get_string_this(ctx, this_value, ok);
+                if (!ok || ctx.has_exception()) return Value();
+            }
             const std::string& str = self ? self->str() : owned;
             // Spec uses UTF-16 code unit positions, not byte positions.
             int64_t size = static_cast<int64_t>(self ? self->utf16_length() : utf16_length(str));
@@ -2003,7 +1838,7 @@ void register_string_builtins(Context& ctx) {
             intStart = std::min(intStart, size);
 
             int64_t intLength;
-            if (args.size() > 1) {
+            if (args.size() > 1 && !args[1].is_undefined()) {
                 double length_val = args[1].to_number();
                 // ToIntegerOrInfinity
                 if (std::isnan(length_val)) {
