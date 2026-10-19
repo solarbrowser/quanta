@@ -58,6 +58,13 @@ void BytecodeChunk::drop_feedback() const {
     if (ic_feedback) {
         for (auto& kfb : ic_feedback->keyed_feedback) kfb.reset();
         for (auto& t : ic_feedback->literal_templates) { t.shape = nullptr; t.runs = 0; t.refused = false; }
+        // The functions a call site has seen are cells of the realm that ran it; left in place they keep that
+        // realm's closures, its global object and everything the host stored there alive past its teardown.
+        for (auto& cs : ic_feedback->call_sites) {
+            cs.n = 0;
+            for (auto& fn : cs.fns) fn = nullptr;
+            for (auto& id : cs.ids) id = nullptr;
+        }
     }
 }
 
