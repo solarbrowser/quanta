@@ -67,3 +67,5 @@ Thumbs.db
 
 # Log files
 *.log
+build-pgo/
+!tools/pgo/corpus/*.js

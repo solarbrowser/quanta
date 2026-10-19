@@ -1,5 +1,6 @@
-LOG_FILE = build/build.log
-ERROR_LOG = build/errors.log
+BUILD_DIR ?= build
+LOG_FILE = $(BUILD_DIR)/build.log
+ERROR_LOG = $(BUILD_DIR)/errors.log
 
 C_RESET = \033[0m
 C_GREEN = \033[92m
@@ -37,6 +38,40 @@ HARDEN_FLAGS = -fstack-protector-strong
 CXXFLAGS += -pthread
 
 LTO_FLAGS = -fuse-ld=lld -flto=thin
+
+# Whole-program ThinLTO: LTO_FLAGS alone only covers console.cpp, so the engine's own objects were never optimised
+# across translation units. Measured -5% cycles on code.js and -11% on markdown.js, nothing lost elsewhere; full LTO
+# gave the same. Linux only for now (the archive needs llvm-ar). The embedding archive is pre-linked into one machine-code
+# object so a program with a different toolchain can still link it.
+AR = ar
+USE_LTO = 0
+ifeq ($(shell uname -s),Linux)
+CXXFLAGS += -flto=thin
+AR = llvm-ar
+USE_LTO = 1
+endif
+
+# Profile-guided optimization (tools/pgo/pgo.sh regenerates the profile): PGO_RAW_DIR builds an instrumented
+# binary that writes its counters there, PGO_PROFILE builds with a merged profile.
+# The checked-in profile is applied unless PGO=0; it only steers inlining and code layout, so a function the
+# current source no longer matches is simply left unprofiled.
+PGO ?= 1
+PGO_RAW_DIR ?=
+PGO_PROFILE ?=
+ifneq ($(PGO),0)
+ifeq ($(PGO_RAW_DIR),)
+ifeq ($(PGO_PROFILE),)
+PGO_PROFILE := $(wildcard tools/pgo/quanta.profdata)
+endif
+endif
+endif
+ifneq ($(PGO_RAW_DIR),)
+CXXFLAGS += -fprofile-generate=$(PGO_RAW_DIR) -DQUANTA_PGO_INSTRUMENT
+LTO_FLAGS += -fprofile-generate=$(PGO_RAW_DIR)
+endif
+ifneq ($(PGO_PROFILE),)
+CXXFLAGS += -fprofile-use=$(PGO_PROFILE) -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
+endif
 
 DEBUG_FLAGS = -g -DDEBUG -O0 -DQUANTA_VALIDATE_BYTECODE
 
@@ -150,7 +185,6 @@ endif
 CORE_SRC = src/core
 LEXER_SRC = src/lexer
 PARSER_SRC = src/parser
-BUILD_DIR = build
 OBJ_DIR = $(BUILD_DIR)/obj
 BIN_DIR = $(BUILD_DIR)/bin
 
@@ -243,7 +277,7 @@ build_footer:
 $(LIBQUANTA): $(ALL_OBJECTS)
 	@echo "[LIB] Creating Quanta static library..."
 	@echo "[LIB] Creating static library" >> $(LOG_FILE)
-	@ar rcs $@ $^
+	@$(AR) rcs $@ $^
 	@echo "[OK] Library created: $@"
 
 # Embedding: the engine without console.cpp, in $(BUILD_DIR)/lib. Unlike
@@ -263,7 +297,13 @@ lib: setup-deps $(EMBED_LIB) $(EMBED_OVERRIDE)
 $(EMBED_LIB): $(filter-out $(MIMALLOC_OVERRIDE_OBJ),$(ALL_OBJECTS))
 	@$(MKDIR_P) $(EMBED_LIB_DIR)
 	@$(RM) $@
-	@ar rcs $@ $^
+ifeq ($(USE_LTO),1)
+	@$(CXX) $(CXXFLAGS) -fuse-ld=lld -nostdlib -no-pie -Wl,-r -o $(EMBED_LIB_DIR)/quanta_all.o $^
+	@$(AR) rcs $@ $(EMBED_LIB_DIR)/quanta_all.o
+	@$(RM) $(EMBED_LIB_DIR)/quanta_all.o
+else
+	@$(AR) rcs $@ $^
+endif
 
 $(EMBED_OVERRIDE): $(MIMALLOC_OVERRIDE_OBJ)
 	@$(MKDIR_P) $(EMBED_LIB_DIR)

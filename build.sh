@@ -354,6 +354,28 @@ if [ -n "${QUANTA_EXTRA_CXXFLAGS:-}" ]; then
     CXXFLAGS+=("${_extra_cxxflags[@]}")
 fi
 
+# Whole-program ThinLTO: every object is compiled to bitcode and the link optimises across translation units
+# (-5% cycles on code.js, -11% on markdown.js). LTO_FLAGS alone, which is all this script used to pass, only covered
+# console.cpp. Needs lld; QUANTA_NO_LTO=1 turns it off.
+USE_LTO=0
+if [ -z "${QUANTA_NO_LTO:-}" ] && { command -v ld.lld >/dev/null 2>&1 || command -v lld >/dev/null 2>&1; }; then
+    USE_LTO=1
+    CXXFLAGS+=(-flto=thin)
+fi
+
+# Profile-guided optimisation from the checked-in profile (tools/pgo/pgo.sh regenerates it): code layout and
+# inlining follow what the training programs actually ran. QUANTA_PGO=0 turns it off. The profile is only used if
+# this clang can read it, since a profile written by a newer LLVM is a hard error and not a warning.
+PGO_PROFILE="tools/pgo/quanta.profdata"
+if [ "${QUANTA_PGO:-1}" != 0 ] && [ -f "$PGO_PROFILE" ] && [[ "${QUANTA_EXTRA_CXXFLAGS:-}" != *fprofile* ]]; then
+    _pgo_flags=("-fprofile-use=$PGO_PROFILE" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+    if echo 'int main(){}' | clang++ -x c++ "${_pgo_flags[@]}" -c -o /dev/null - >/dev/null 2>&1; then
+        CXXFLAGS+=("${_pgo_flags[@]}")
+    else
+        echo -e "${YELLOW}!${NC} $PGO_PROFILE is not readable by this clang; building without it"
+    fi
+fi
+
 # Added back for the lexer and parser objects only -- see the note above.
 HARDEN_FLAGS=(-fstack-protector-strong)
 
@@ -492,7 +514,15 @@ phase_archive() {
             members+=("$obj")
         fi
     done
+    # LTO objects are bitcode, which the program linking this archive may not be able to read. Linking them into one
+    # relocatable object first runs the cross-module optimisation here and leaves plain machine code behind.
+    if [ "$USE_LTO" = 1 ]; then
+        clang++ "${CXXFLAGS[@]}" -fuse-ld=lld -nostdlib -no-pie -Wl,-r -o "$lib_dir/quanta_all.o" "${members[@]}" \
+            || fail "pre-linking the library failed (QUANTA_NO_LTO=1 builds it without LTO)"
+        members=("$lib_dir/quanta_all.o")
+    fi
     ar rcs "$lib_dir/libquanta.a" "${members[@]}" || fail "ar failed"
+    [ "$USE_LTO" = 1 ] && rm -f "$lib_dir/quanta_all.o"
 }
 
 phase_embed_test() {

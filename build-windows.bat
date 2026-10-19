@@ -68,6 +68,17 @@ if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
     set "TARGET_FLAGS=--target=aarch64-pc-windows-msvc"
 )
 set "CXXFLAGS=%TARGET_FLAGS% -fno-stack-protector -std=c++20 -Wall -O3 %ARCH_FLAGS% -DQUANTA_VERSION=\"2.0.0.alpha\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize %SIMD_FLAGS% -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+REM Profile-guided optimisation. A profile names functions by their mangled symbol, and the MSVC ABI mangles
+REM differently from the Itanium ABI the Linux/macOS profile (tools\pgo\quanta.profdata) was recorded with, so
+REM that one matches nothing here: Windows reads its own tools\pgo\quanta-windows.profdata. Record it with
+REM   set QUANTA_PGO_GEN=1 && build-windows.bat      (instrumented build, writes build\pgo-raw\*.profraw when run)
+REM then llvm-profdata merge -o tools\pgo\quanta-windows.profdata build\pgo-raw\*.profraw.
+REM QUANTA_PGO=0 builds without the profile.
+if "%QUANTA_PGO_GEN%"=="1" (
+    set "CXXFLAGS=%CXXFLAGS% -fprofile-generate=build/pgo-raw -DQUANTA_PGO_INSTRUMENT"
+) else if not "%QUANTA_PGO%"=="0" if exist tools\pgo\quanta-windows.profdata (
+    set "CXXFLAGS=%CXXFLAGS% -fprofile-use=tools/pgo/quanta-windows.profdata -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+)
 set "HARDEN=-fstack-protector-strong"
 set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include"
 REM advapi32/bcrypt/psapi/user32 are mimalloc's, and are the list its own
