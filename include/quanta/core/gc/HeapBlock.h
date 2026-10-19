@@ -81,16 +81,16 @@ public:
         if (idx == SIZE_MAX) return false;
         const size_t word = idx / 64;
         const uint64_t bit = static_cast<uint64_t>(1) << (idx % 64);
-        if (!(h_.alloc_bitmap[word] & bit)) return false;
-        if (h_.mark_bitmap[word] & bit) return false;
-        h_.mark_bitmap[word] |= bit;
+        if (!(h_.bm[word].alloc & bit)) return false;
+        if (h_.bm[word].mark & bit) return false;
+        h_.bm[word].mark |= bit;
         return true;
     }
 
     bool test_mark(const void* p) const {
         const size_t idx = slot_index(p);
         if (idx == SIZE_MAX) return false;
-        return (h_.mark_bitmap[idx / 64] >> (idx % 64)) & 1;
+        return (h_.bm[idx / 64].mark >> (idx % 64)) & 1;
     }
     void set_mark(const void* p);
     void clear_marks();
@@ -109,9 +109,9 @@ public:
     template <typename Fn>
     void for_each_cell(Fn&& fn) {
         for (uint32_t i = 0; i < h_.bump_cursor; i++) {
-            if (!((h_.alloc_bitmap[i / 64] >> (i % 64)) & 1)) continue;
+            if (!((h_.bm[i / 64].alloc >> (i % 64)) & 1)) continue;
             void* cell = payload_start() + static_cast<size_t>(i) * h_.cell_size;
-            fn(cell, ((h_.mark_bitmap[i / 64] >> (i % 64)) & 1) != 0);
+            fn(cell, ((h_.bm[i / 64].mark >> (i % 64)) & 1) != 0);
         }
     }
 
@@ -127,7 +127,7 @@ public:
     void for_each_dead_cell(Fn&& fn) {
         uint32_t word_count = (h_.bump_cursor + 63) / 64;
         for (uint32_t w = 0; w < word_count; w++) {
-            uint64_t dead_bits = h_.alloc_bitmap[w] & ~h_.mark_bitmap[w];
+            uint64_t dead_bits = h_.bm[w].alloc & ~h_.bm[w].mark;
             while (dead_bits) {
                 uint32_t bit = static_cast<uint32_t>(__builtin_ctzll(dead_bits));
                 dead_bits &= dead_bits - 1;
@@ -140,21 +140,24 @@ public:
 
 private:
     struct Header {
+        // What a trace edge reads first, and nothing else it needs is further away: the slot index (a multiply by the magic and
+        // a bound check against the capacity), then the allocated and marked bits of that slot's word, side by side. Marking a
+        // cell of 64 bytes or more touches this one cache line; with the two bitmaps apart it took three.
+        // ceil(2^32 / cell_size), so the slot index of a cell is a multiply and a shift instead of a divide. The size classes
+        // are not powers of two, so the divide was a real one, and it sits on the path every traced edge and every mark bit
+        // takes.
+        uint32_t   cell_size_magic;
+        uint32_t   capacity;
+        struct Bits { uint64_t alloc; uint64_t mark; };
+        Bits       bm[kBitmapWords];
         Heap*      heap;
         HeapBlock* next;
         // First bitmap word that may hold a free slot below bump_cursor.
         uint32_t   scan_word;
         uint32_t   pad_;
         uint32_t   cell_size;
-        uint32_t   capacity;
         uint32_t   bump_cursor;
         uint32_t   free_count;
-        // ceil(2^32 / cell_size), so the slot index of a cell is a multiply
-        // and a shift instead of a divide. The size classes are not powers of
-        // two, so the divide was a real one, and it sits on the path every
-        // traced edge and every mark bit takes. Fits the padding cell_kind
-        // and segment already leave, so the header does not grow.
-        uint32_t   cell_size_magic;
         CellKind   cell_kind;
         HeapSegment segment;
         // Whether this block is on its heap's dirty list -- see Heap's
@@ -164,8 +167,6 @@ private:
         // Set once a cell has been retired (poison mode): a freed slot of this block is never handed out
         // again, which is the point of retiring one.
         bool       no_reuse;
-        uint64_t   alloc_bitmap[kBitmapWords];
-        uint64_t   mark_bitmap[kBitmapWords];
         uint64_t   remembered_bitmap[kBitmapWords];
     };
 

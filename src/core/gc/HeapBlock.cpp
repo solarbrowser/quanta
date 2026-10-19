@@ -32,8 +32,7 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
     // A recycled region arrives with whatever the last block left here.
     h.in_dirty_list = false;
     h.no_reuse = false;
-    std::memset(h.alloc_bitmap, 0, sizeof(h.alloc_bitmap));
-    std::memset(h.mark_bitmap, 0, sizeof(h.mark_bitmap));
+    std::memset(h.bm, 0, sizeof(h.bm));
     std::memset(h.remembered_bitmap, 0, sizeof(h.remembered_bitmap));
     return block;
 }
@@ -46,7 +45,7 @@ void* HeapBlock::try_allocate() {
         // the sweep touched long ago, where the constructor's first store to a cold line costs nothing.
         uint32_t w = h_.scan_word;
         uint64_t free_bits;
-        while (!(free_bits = ~h_.alloc_bitmap[w])) w++;
+        while (!(free_bits = ~h_.bm[w].alloc)) w++;
         idx = static_cast<size_t>(w) * 64 + static_cast<size_t>(__builtin_ctzll(free_bits));
         assert(idx < h_.bump_cursor && "free_count promised a free slot below the bump cursor");
         h_.scan_word = w;
@@ -56,7 +55,7 @@ void* HeapBlock::try_allocate() {
     } else {
         return nullptr;
     }
-    h_.alloc_bitmap[idx / 64] |= (1ULL << (idx % 64));
+    h_.bm[idx / 64].alloc |= (1ULL << (idx % 64));
     return payload_start() + idx * h_.cell_size;
 }
 
@@ -64,11 +63,11 @@ void HeapBlock::free_cell(void* p) {
     size_t idx = slot_index(p);
     assert(idx != SIZE_MAX && "free of pointer outside block payload");
     uint64_t bit = 1ULL << (idx % 64);
-    assert((h_.alloc_bitmap[idx / 64] & bit) && "double free of heap cell");
-    h_.alloc_bitmap[idx / 64] &= ~bit;
+    assert((h_.bm[idx / 64].alloc & bit) && "double free of heap cell");
+    h_.bm[idx / 64].alloc &= ~bit;
     // Marks are sticky across minor collections: a recycled slot must not
     // inherit the dead cell's old-generation status.
-    h_.mark_bitmap[idx / 64] &= ~bit;
+    h_.bm[idx / 64].mark &= ~bit;
     h_.remembered_bitmap[idx / 64] &= ~bit;
     if (idx / 64 < h_.scan_word) h_.scan_word = static_cast<uint32_t>(idx / 64);
     h_.free_count++;
@@ -79,8 +78,8 @@ void HeapBlock::retire_cell(void* p) {
     assert(idx != SIZE_MAX);
     h_.no_reuse = true;
     uint64_t bit = 1ULL << (idx % 64);
-    h_.alloc_bitmap[idx / 64] &= ~bit;
-    h_.mark_bitmap[idx / 64] &= ~bit;
+    h_.bm[idx / 64].alloc &= ~bit;
+    h_.bm[idx / 64].mark &= ~bit;
     h_.remembered_bitmap[idx / 64] &= ~bit;
     h_.free_count++;
 }
@@ -89,13 +88,13 @@ void HeapBlock::retire_cell(void* p) {
 bool HeapBlock::is_allocated(const void* p) const {
     size_t idx = slot_index(p);
     if (idx == SIZE_MAX) return false;
-    return (h_.alloc_bitmap[idx / 64] >> (idx % 64)) & 1;
+    return (h_.bm[idx / 64].alloc >> (idx % 64)) & 1;
 }
 
 void* HeapBlock::cell_containing(const void* p) {
     size_t idx = slot_index(p);
     if (idx == SIZE_MAX) return nullptr;
-    if (!((h_.alloc_bitmap[idx / 64] >> (idx % 64)) & 1)) return nullptr;
+    if (!((h_.bm[idx / 64].alloc >> (idx % 64)) & 1)) return nullptr;
     return payload_start() + idx * h_.cell_size;
 }
 
@@ -104,11 +103,11 @@ void* HeapBlock::cell_containing(const void* p) {
 void HeapBlock::set_mark(const void* p) {
     size_t idx = slot_index(p);
     if (idx == SIZE_MAX) return;
-    h_.mark_bitmap[idx / 64] |= (1ULL << (idx % 64));
+    h_.bm[idx / 64].mark |= (1ULL << (idx % 64));
 }
 
 void HeapBlock::clear_marks() {
-    std::memset(h_.mark_bitmap, 0, sizeof(h_.mark_bitmap));
+    for (auto& b : h_.bm) b.mark = 0;
 }
 
 bool HeapBlock::test_and_set_remembered(const void* p) {
