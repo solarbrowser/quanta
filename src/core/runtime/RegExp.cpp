@@ -813,7 +813,9 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
                 }
             }
             if (!is_valid) {
-                // Unknown escape: output literal char (not the backslash)
+                // Unknown escape: output literal char (not the backslash). A hyphen inside a class keeps its
+                // backslash, or PCRE reads the neighbours as a range: [:\- ] must not become [:- ].
+                if (in_char_class && next == '-') result += '\\';
                 result += next;
                 i += 2;
                 continue;

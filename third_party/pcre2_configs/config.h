@@ -14,7 +14,7 @@
 #define SUPPORT_JIT 1
 
 #define PCRE2_EXPORT
-#define LINK_SIZE               2
+#define LINK_SIZE               3
 #define HEAP_LIMIT              20000000
 #define MATCH_LIMIT             10000000
 #define MATCH_LIMIT_DEPTH       10000000

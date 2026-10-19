@@ -9897,6 +9897,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     break;
                 }
             }
+            // What the discriminant established holds on every path into a case; whatever a test or a body
+            // learns about `this` holds only on the path that ran it, and a later case is entered by a jump.
+            const bool switch_entry_this_valid = this_cache_valid_;
             std::vector<SwitchLiteralCase> sorted_literals;
             const SwitchFastKind fast_kind = classify_switch_literals(cases, sorted_literals);
             if (fast_kind != SwitchFastKind::None) {
@@ -9911,6 +9914,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 for (size_t i = 0; i < cases.size(); i++) {
                     const auto* cc = static_cast<const CaseClause*>(cases[i].get());
                     if (cc->is_default()) continue;
+                    this_cache_valid_ = switch_entry_this_valid;
                     if (!compile_expression(cc->get_test())) return false;
                     emit(Op::TestStrictEq);
                     emit_u8(static_cast<uint8_t>(disc_reg));
@@ -9935,6 +9939,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     switch_body_depth_--;
                     return false;
                 }
+                this_cache_valid_ = switch_entry_this_valid;
                 for (const auto& s : cc->get_consequent()) {
                     if (!compile_statement(s.get())) { switch_body_depth_--; return false; }
                 }
