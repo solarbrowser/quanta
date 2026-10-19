@@ -76,13 +76,6 @@ D['dayjs']=("dayjs/dayjs.min.js","""
 var d=LIB;
 for(var r=0;r<20000;r++){ var x=d('2024-03-10T12:00:00Z').add(r,'minute'); chk(x.format('YYYY-MM-DD HH:mm'));chk(x.diff(d('2020-01-01T00:00:00Z'),'day'));chk(x.startOf('week').valueOf()); }
 """)
-D['mathjs']=("mathjs/lib/browser/math.js","""
-var math=LIB;
-for(var r=0;r<12;r++){ var A=math.matrix(math.range(0,40).toArray().map(function(i){return math.range(0,40).toArray().map(function(j){return ((i*7+j*3+r)%11)+(i==j?20:0)})}));
- chk(math.det(A));chk(math.multiply(A,A).get([3,4]));chk(math.inv(A).get([1,2]));chk(math.evaluate('sqrt(3^2 + 4^2) + sin(pi/6) * 2'));
- chk(math.evaluate('f(x)=x^2+3x+'+r).toString());chk(math.format(math.complex(2,3).mul(math.complex(1,r)))); chk(math.parse('a*b+c/d-e^f').toString());
- chk(math.mean([1,2,3,4,5,r]));chk(math.std([1,2,3,4,5,r]));chk(math.factorial(10+r%5));chk(math.simplify('2x+3x+x*0+'+r).toString());chk(math.unit(5+r,'km').to('mile').toString()); }
-""")
 # source for parser drivers
 CODE="""(function(){var s='';for(var i=0;i<120;i++){s+='function f'+i+'(a,b){var x={p:a,q:[1,2,3],r:function(z){return z*'+i+'}};for(var k=0;k<10;k++){if(a>b){x.p+=k}else{x.q.push(k)}} return `t${a}-${b}` + x.r(3) + (a?b:0);}\\nclass C'+i+' extends Object{constructor(a){super();this.a=a} m(){return this.a+'+i+'} static s(){return async()=>{await 1}}}\\n';}return s;})()"""
 for k in ('acorn','esprima'):
