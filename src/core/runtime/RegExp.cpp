@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/RegExpBacktrack.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/Realm.h"
 #include "utf8proc.h"
 #include <pcre2.h>
 #include <vector>
@@ -265,6 +266,7 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
       global_(false), ignore_case_(false), multiline_(false),
       unicode_(false), sticky_(false), dotall_(false), unicode_sets_(false),
       has_indices_(false), last_index_(0) {
+    realm_id_ = static_cast<uint16_t>(current_realm().id());
     parse_flags(flags);
     do_compile();
 }
@@ -274,7 +276,9 @@ RegExp::RegExp(const RegExp& o, CloneTag)
       global_(o.global_), ignore_case_(o.ignore_case_), multiline_(o.multiline_),
       unicode_(o.unicode_), sticky_(o.sticky_), dotall_(o.dotall_),
       unicode_sets_(o.unicode_sets_), has_indices_(o.has_indices_), last_index_(0),
-      named_groups_(o.named_groups_), backtrack_engine_(o.backtrack_engine_) {}
+      named_groups_(o.named_groups_), backtrack_engine_(o.backtrack_engine_) {
+    realm_id_ = static_cast<uint16_t>(current_realm().id());
+}
 
 std::string RegExp::flags_string() const {
     std::string result;
@@ -741,6 +745,8 @@ static std::string fix_optional_backrefs(const std::string& pat) {
     return result;
 }
 
+static size_t count_capture_groups(const std::string& p);
+
 std::string RegExp::preprocess_pattern(const std::string& pat) const {
     std::string result;
     result.reserve(pat.size() * 2);
@@ -762,14 +768,57 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
                 }
             }
 
-            // \c followed by non-letter → literal backslash + c + char (Annex B)
-            if (next == 'c' && i+2 < pat.size()) {
-                char ctrl = pat[i+2];
+            // Inside a class, \c followed by a digit or underscore is a control character (Annex B ClassControlLetter).
+            if (in_char_class && next == 'c' && i + 2 < pat.size() &&
+                ((pat[i+2] >= '0' && pat[i+2] <= '9') || pat[i+2] == '_')) {
+                char hex[16];
+                std::snprintf(hex, sizeof hex, "\\x{%X}", static_cast<unsigned>(pat[i+2]) % 32u);
+                result += hex;
+                i += 3;
+                continue;
+            }
+            // \c followed by non-letter, or by nothing → literal backslash + c (Annex B)
+            if (next == 'c') {
+                const char ctrl = i + 2 < pat.size() ? pat[i+2] : '\0';
                 if (!((ctrl >= 'a' && ctrl <= 'z') || (ctrl >= 'A' && ctrl <= 'Z'))) {
                     result += "\\\\c";
                     i += 2;
                     continue;
                 }
+            }
+
+            // Annex B.1.2 DecimalEscape: \N is a backreference only when the pattern has at least N capturing
+            // groups. Otherwise it is a legacy octal escape (up to three digits, value at most 0377), and \8 or \9
+            // is just the digit.
+            if (!in_char_class && next >= '1' && next <= '9') {
+                size_t end = i + 1;
+                size_t n = 0;
+                while (end < pat.size() && pat[end] >= '0' && pat[end] <= '9' && n < 100000) {
+                    n = n * 10 + static_cast<size_t>(pat[end] - '0');
+                    end++;
+                }
+                if (n <= count_capture_groups(pat)) {
+                    result.append(pat, i, end - i);
+                    i = end;
+                    continue;
+                }
+                if (next >= '8') {
+                    result += next;
+                    i += 2;
+                    continue;
+                }
+                unsigned value = 0;
+                size_t k = i + 1;
+                while (k < pat.size() && k < i + 4 && pat[k] >= '0' && pat[k] <= '7' &&
+                       value * 8 + static_cast<unsigned>(pat[k] - '0') <= 0377) {
+                    value = value * 8 + static_cast<unsigned>(pat[k] - '0');
+                    k++;
+                }
+                char hex[16];
+                std::snprintf(hex, sizeof hex, "\\x{%X}", value);
+                result += hex;
+                i = k;
+                continue;
             }
 
             // Shorthand class (\w, \d, \s etc.) followed by '-' in char class → escape the hyphen
@@ -827,6 +876,14 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
             continue;
         }
 
+        // Annex B: a range whose end is a class escape (\d, \w, \s and their complements) is not a range; the hyphen
+        // is a character of its own (the case with the escape first is handled where the escape is read).
+        if (in_char_class && ch == '-' && i + 2 < pat.size() && pat[i+1] == '\\' &&
+            std::strchr("dDsSwW", pat[i+2])) {
+            result += "\\-";
+            i++;
+            continue;
+        }
         // [^] is ES "match any character" (empty negated class); replace for PCRE2
         if (ch == '[' && !in_char_class && i + 2 < pat.size() && pat[i+1] == '^' && pat[i+2] == ']') {
             result += "[\\s\\S]";
@@ -2736,6 +2793,13 @@ static bool subject_has_lone_surrogate(const String* cell, std::u16string_view u
     return has_lone_surrogate(units);
 }
 
+void RegExp::note_legacy_match(const std::string& subject, const String* cell,
+                               const size_t* pairs, size_t n_pairs) const {
+    Realm& realm = current_realm();
+    if (legacy_features_ && realm_id_ == static_cast<uint16_t>(realm.id())) realm.legacy_regexp_match(subject, cell, pairs, n_pairs);
+    else realm.legacy_regexp_invalidate();
+}
+
 bool RegExp::test(const std::string& str, const String* cell) {
     resource_exhausted_ = false;
     SubjectBuffer decode_buffer;
@@ -2773,13 +2837,25 @@ bool RegExp::test(const std::string& str, const String* cell) {
 
     bool found = false;
     size_t match_end = 0;
+    std::vector<size_t> bt_pairs;   // the fallback engine's groups, in the PCRE2 ovector's shape
 
     if (backtrack_engine_) {
         BacktrackMatch bm;
         found = backtrack_engine_->exec(subject, start, sticky_, bm,
                                         subject_is_sanitized ? 0 : subject_id);
         if (bm.exhausted) resource_exhausted_ = true;
-        if (found) match_end = bm.end;
+        if (found) {
+            match_end = bm.end;
+            const uint32_t groups = backtrack_engine_->capture_count();
+            bt_pairs.assign((groups + 1) * 2, SIZE_MAX);
+            bt_pairs[0] = bm.start;
+            bt_pairs[1] = bm.end;
+            for (uint32_t g = 1; g <= groups; g++) {
+                if (bm.captures[g].first < 0) continue;
+                bt_pairs[2 * g] = static_cast<size_t>(bm.captures[g].first);
+                bt_pairs[2 * g + 1] = static_cast<size_t>(bm.captures[g].second);
+            }
+        }
     } else {
         if (!code_) return false;
         pcre2_code* re = static_cast<pcre2_code*>(code_);
@@ -2793,9 +2869,13 @@ bool RegExp::test(const std::string& str, const String* cell) {
         if (found) {
             PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
             if (sticky_ && ov[0] != start) found = false;
-            else match_end = ov[1];
+            else {
+                match_end = ov[1];
+                note_legacy_match(str, cell, ov, pcre2_get_ovector_count(md));
+            }
         }
     }
+    if (found && backtrack_engine_) note_legacy_match(str, cell, bt_pairs.data(), bt_pairs.size() / 2);
 
     if (found && (global_ || sticky_)) {
         last_index_ = static_cast<int>(match_end);
@@ -2828,6 +2908,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     if (!md) return false;
 
     out.clear();
+    std::vector<size_t> last_match_pairs;   // the last match, for the legacy statics
     size_t copied = 0;   // how much of `orig` is already in `out`
     size_t pos = 0;      // where the next search starts
     while (pos <= subject.size()) {
@@ -2836,6 +2917,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
         if (rc < 0) break;
         PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
         const size_t ms = ov[0], me = ov[1];
+        last_match_pairs.assign(ov, ov + pcre2_get_ovector_count(md) * 2);
         out += utf16_to_wtf8(orig.data() + copied, ms - copied);
         out += replacement;
         copied = me;
@@ -2854,6 +2936,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
         }
     }
     out += utf16_to_wtf8(orig.data() + copied, orig.size() - copied);
+    if (!last_match_pairs.empty()) note_legacy_match(str, nullptr, last_match_pairs.data(), last_match_pairs.size() / 2);
     // The general path leaves it here too: the exec that finally fails resets it.
     last_index_ = 0;
     return true;
@@ -2879,6 +2962,10 @@ bool RegExp::split_all(const std::string& str, uint32_t lim, std::vector<SplitPi
     if (!md) return false;
     pieces.clear();
     size_t p = 0, q = 0;
+    std::vector<size_t> last_match_pairs;   // the last match, for the legacy statics
+    auto record = [&]() {
+        if (!last_match_pairs.empty()) note_legacy_match(str, nullptr, last_match_pairs.data(), last_match_pairs.size() / 2);
+    };
     auto advance = [&](size_t at) {
         size_t next = at + 1;
         if (unicode_ && next < size && subject[at] >= 0xD800 && subject[at] <= 0xDBFF &&
@@ -2894,21 +2981,23 @@ bool RegExp::split_all(const std::string& str, uint32_t lim, std::vector<SplitPi
         const size_t ms = ov[0];
         if (ms >= size) break;                      // the spec never tries an index at or past the end
         const size_t e = std::min<size_t>(ov[1], size);
+        last_match_pairs.assign(ov, ov + pcre2_get_ovector_count(md) * 2);
         if (e == p) { q = advance(ms); continue; }  // an empty match where the last piece ended
         pieces.push_back({utf16_to_wtf8(orig.data() + p, ms - p), false});
-        if (pieces.size() == lim) { last_index_ = 0; return true; }
+        if (pieces.size() == lim) { last_index_ = 0; record(); return true; }
         p = e;
         const uint32_t ncap = pcre2_get_ovector_count(md) - 1;
         for (uint32_t ci = 1; ci <= ncap; ci++) {
             const size_t cs = ov[2 * ci], ce = ov[2 * ci + 1];
             if (cs == PCRE2_UNSET || ce == PCRE2_UNSET) pieces.push_back({std::string(), true});
             else pieces.push_back({utf16_to_wtf8(orig.data() + cs, ce - cs), false});
-            if (pieces.size() == lim) { last_index_ = 0; return true; }
+            if (pieces.size() == lim) { last_index_ = 0; record(); return true; }
         }
         q = p;
     }
     pieces.push_back({utf16_to_wtf8(orig.data() + p, size - p), false});
     last_index_ = 0;
+    record();
     return true;
 }
 
@@ -3001,6 +3090,7 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
         return Value::null();
     }
     if (advances) last_index_ = static_cast<int>(match_end);
+    note_legacy_match(str, cell, saved.data(), saved.size() / 2);
 
     auto slice = [&](size_t from, size_t to) -> std::string {
         return utf16_to_wtf8(orig.data() + from, to - from);
@@ -3122,6 +3212,9 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
 }
 
 void RegExp::compile(const std::string& pattern, const std::string& flags) {
+    // A pattern or flags that do not compile throw and leave this RegExp as it was, so the new one is built first
+    // (the compiled program is cached, which makes the real compile below a lookup).
+    { RegExp probe(pattern, flags); }
     pattern_ = pattern;
     global_ = ignore_case_ = multiline_ = unicode_ = sticky_ = dotall_ = unicode_sets_ = has_indices_ = false;
     last_index_ = 0;

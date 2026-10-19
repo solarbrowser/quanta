@@ -54,11 +54,20 @@ private:
     // ensure_match_data's own lazy build, out of line: it is pcre2 API, kept
     // out of this header the same reason code_/code_owner_ already are.
     void* ensure_match_data();
+    // Tells the realm's legacy statics where a successful match was, or empties them when this RegExp may not
+    // update them. `pairs` are (start, end) code-unit offsets, one pair per group with the whole match first.
+    void note_legacy_match(const std::string& subject, const class String* cell,
+                           const size_t* pairs, size_t n_pairs) const;
     bool global_;
     bool ignore_case_;
     bool multiline_;
     bool unicode_;
     bool sticky_;
+    // Annex B legacy features: RegExp.$1 and friends are updated by matches of an instance made by the realm's own
+    // %RegExp% (not by a subclass's), run while that realm is current. The realm is recorded by (its low 16 bits) its
+    // id, which is never reused. Packed with the flags: the size of this class is pinned.
+    bool legacy_features_ = true;
+    uint16_t realm_id_ = 0;
     // Set when a match ran out of what the limits allow. The answer is then
     // unknown, and "unknown" must not read as "no match" -- PCRE2 reports both
     // as a negative return code, and treating the two alike answered false for
@@ -101,6 +110,9 @@ public:
     // answer means nothing. The caller has a Context and turns this into a
     // RangeError; RegExp itself has no way to throw.
     [[nodiscard]] bool last_match_exhausted() const { return resource_exhausted_; }
+    bool legacy_features() const { return legacy_features_; }
+    void set_legacy_features(bool v) { legacy_features_ = v; }
+    uint16_t realm_id() const { return realm_id_; }
     // `precomputed_units` lets a caller that already decoded the subject for
     // its own reasons (a global replace/match/split loop, which needs the
     // units itself for slicing text between matches) hand that decode

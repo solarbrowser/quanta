@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <string>
 #include <unordered_map>
 
 namespace Quanta {
@@ -19,6 +20,7 @@ class Function;
 class Engine;
 class Visitor;
 class Context;
+class String;
 
 // The intrinsics one realm owns. They used to be thread-wide statics, which made
 // a second realm on the thread overwrite (or be overwritten by) the first; held
@@ -123,9 +125,39 @@ public:
     // owns what these point at and must keep any cell they name alive another way.
     std::unordered_map<const void*, void*> embedder_data;
 
+    // The legacy static properties of %RegExp% (Annex B: RegExp.$1 .. $9, input, lastMatch, lastParen, leftContext,
+    // rightContext). A match only records where it was in the subject; the strings are cut out when one is asked for,
+    // since nearly nothing ever reads them. Offsets are UTF-16 code units, like the matcher's.
+    enum class LegacyRegExpSlot : uint8_t {
+        Input, LastMatch, LastParen, LeftContext, RightContext,
+        Paren1, Paren2, Paren3, Paren4, Paren5, Paren6, Paren7, Paren8, Paren9,
+    };
+    // `pairs` holds n_pairs (start, end) pairs, pair 0 being the whole match; SIZE_MAX (PCRE2_UNSET) marks a group that
+    // did not take part. `cell` is the subject's string cell when the caller has one, so it need not be copied.
+    static constexpr uint32_t kLegacyUnset = 0xFFFFFFFFu;
+    void legacy_regexp_match(const std::string& subject, const String* cell,
+                             const size_t* pairs, size_t n_pairs);
+    // A match by a RegExp that has no legacy features (or from another realm) empties the properties: reading one
+    // then throws until the next legacy match.
+    void legacy_regexp_invalidate();
+    // False when the slot is empty (invalidated), which the getter turns into a TypeError.
+    bool legacy_regexp_get(LegacyRegExpSlot slot, std::string& out) const;
+    void legacy_regexp_set_input(std::string value);
+
     void trace(Visitor& v) const;
 
 private:
+    struct LegacyRegExp {
+        enum class State : uint8_t { Initial, Matched, Invalid } state = State::Initial;
+        bool input_set = false;
+        std::string input_value;
+        String* subject_cell = nullptr;
+        std::string subject_text;
+        uint32_t caps[20] = {};          // pairs 0..9
+        uint32_t last_pair[2] = {};      // the highest-numbered group, for lastParen
+        uint32_t group_count = 0;        // groups, not counting the whole match
+    } legacy_regexp_;
+
     Engine* engine_;
     uint64_t id_;
     static constinit thread_local uint32_t death_epoch_;

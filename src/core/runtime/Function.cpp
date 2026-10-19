@@ -2473,6 +2473,21 @@ void Function::learn_construct_slot_hint(const Object* built) {
     if (slots > get_construct_slot_hint()) set_construct_slot_hint(slots);
 }
 
+// Whether `name` can stand in the text of a NativeFunction: nothing, a bracketed computed name, or an IdentifierName,
+// each after an optional get/set. The legacy RegExp accessors are called "get $&" and the like, which is none of them.
+static bool native_name_is_printable(const std::string& name) {
+    size_t at = 0;
+    if (name.compare(0, 4, "get ") == 0 || name.compare(0, 4, "set ") == 0) at = 4;
+    if (at == name.size()) return true;
+    if (name[at] == '[') return name.back() == ']';
+    for (size_t i = at; i < name.size(); i++) {
+        const unsigned char c = static_cast<unsigned char>(name[i]);
+        const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' || c >= 0x80;
+        if (!letter && !(i > at && c >= '0' && c <= '9')) return false;
+    }
+    return true;
+}
+
 std::string Function::to_string() const {
     // A well-known-symbol-named function's `name` is internally stored as "@@x" (e.g.
     // "@@asyncIterator"); NativeFunction syntax requires the spec's bracketed form instead.
@@ -2488,6 +2503,7 @@ std::string Function::to_string() const {
         if (has_internal_slot(kBoundTargetKey)) {
             return "function () { [native code] }";
         }
+        if (!native_name_is_printable(display_name)) return "function () { [native code] }";
         return "function " + display_name + "() { [native code] }";
     }
     const std::string& src = get_source_text();

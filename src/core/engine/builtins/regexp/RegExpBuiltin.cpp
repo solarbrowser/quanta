@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/RegExpBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
@@ -467,34 +468,58 @@ void register_regexp_builtins(Context& ctx) {
     Context* home_ctx = &ctx;
     auto regexp_prototype = ObjectFactory::create_object();
 
-    // Annex B compile - delegates to [[compile]] (mirrors exec/[[exec]]) so it actually recompiles.
+    // Annex B.2.4.1 RegExp.prototype.compile: re-initialises the receiver in place.
     auto compile_fn = ObjectFactory::create_native_function("compile",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* this_obj = receiver.as_object_or_null();
-            if (!RegExpObject::from(this_obj)) {
+            RegExpObject* ro = RegExpObject::from(this_obj);
+            if (!ro || !ro->impl()) {
                 ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
                 return Value();
             }
-            const std::shared_ptr<RegExp>& re = RegExpObject::from(this_obj)->impl();
-            if (!re) {
-                ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
+            const std::shared_ptr<RegExp>& re = ro->impl();
+            // Only an instance the current realm's own %RegExp% made may be recompiled (not a subclass's, not
+            // another realm's).
+            if (!re->legacy_features() || re->realm_id() != static_cast<uint16_t>(current_realm().id())) {
+                ctx.throw_type_error("RegExp.prototype.compile called on an incompatible RegExp");
                 return Value();
             }
-            std::string pattern = args.size() > 0 ? args[0].to_string() : std::string();
-            std::string flags = args.size() > 1 ? args[1].to_string() : std::string();
-            if (ctx.has_exception()) return Value();
-            re->compile(pattern, flags);
-            // The accessors read the implementation, which compile() just
-            // rewrote in place, so nothing has to be copied out.
-            regexp_set_last_index(this_obj, 0.0);
+            const Value pattern = args.size() > 0 ? args[0] : Value();
+            const Value flags = args.size() > 1 ? args[1] : Value();
+            std::string pattern_text, flags_text;
+            if (RegExpObject* other = (pattern.is_object() ? RegExpObject::from(pattern.as_object()) : nullptr)) {
+                if (!flags.is_undefined()) {
+                    ctx.throw_type_error("Cannot supply flags when constructing one RegExp from another");
+                    return Value();
+                }
+                pattern_text = other->impl()->get_source();
+                flags_text = other->impl()->get_flags();
+            } else {
+                if (!pattern.is_undefined() && !pattern.to_string_checked(ctx, pattern_text)) return Value();
+                if (!flags.is_undefined() && !flags.to_string_checked(ctx, flags_text)) return Value();
+            }
+            try {
+                re->compile(pattern_text, flags_text);
+            } catch (const std::exception& e) {
+                ctx.throw_syntax_error(e.what());
+                return Value();
+            }
+            // Set(O, "lastIndex", 0, true): a lastIndex that cannot be written is a TypeError.
+            if (!regexp_set_last_index(this_obj, 0.0)) {
+                if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
+                return Value();
+            }
             return Value(this_obj);
         }, 2);
     regexp_prototype->set_property("compile", Value(compile_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Object* regexp_proto_ptr = regexp_prototype.get();
 
+    // The constructor itself, for the one test a lambda built before it exists cannot make directly: whether
+    // NewTarget is %RegExp% (RegExpAlloc's [[LegacyFeaturesEnabled]]).
+    auto regexp_constructor_slot = std::make_shared<Function*>(nullptr);
     auto regexp_constructor = ObjectFactory::create_native_constructor_with_new_target("RegExp",
-        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+        [regexp_constructor_slot](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
             // ES6: Check IsRegExp(pattern) via Symbol.match
             bool pattern_is_regexp = false;
@@ -591,6 +616,9 @@ void register_regexp_builtins(Context& ctx) {
                 // ObjectType::RegExp so toString's internal-slot tag and String.prototype's
                 // is_native_regexp checks (match/replace/split) see this the same as regex literals.
                 auto regexp_impl = std::make_shared<RegExp>(pattern, flags);
+                regexp_impl->set_legacy_features(
+                    new_target.is_undefined() ||
+                    (new_target.is_function() && new_target.as_function() == *regexp_constructor_slot));
                 // Every flag used to be copied onto the object under a [[name]]
                 // key; the prototype accessors read them off the impl instead,
                 // so lastIndex is the one own property an instance has.
@@ -1705,7 +1733,66 @@ void register_regexp_builtins(Context& ctx) {
     // Armed only now: every set_property above would otherwise have cleared it
     // on the way in. See Object::regexp_proto_protector_intact.
     Object::watch_regexp_prototype(regexp_prototype.get());
+    *regexp_constructor_slot = regexp_constructor.get();
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()), PropertyAttributes::None);
+
+    // Annex B legacy static properties of %RegExp%: RegExp.$1 .. $9, input, lastMatch, lastParen, leftContext and
+    // rightContext (B.2.4.2). Each is an accessor that works only with %RegExp% itself as the receiver, and reads the
+    // state the home realm's legacy matches left behind.
+    {
+        Realm* home_realm = ctx.realm() ? ctx.realm() : &current_realm();
+        Function* ctor_ptr = regexp_constructor.get();
+        auto define_legacy = [&](const char* name, const char* alias, Realm::LegacyRegExpSlot slot, bool settable) {
+            auto make_getter = [&](const char* key) {
+                return ObjectFactory::create_native_function(std::string("get ") + key,
+                    [ctor_ptr, home_realm, slot](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                        if (!receiver.is_function() || receiver.as_function() != ctor_ptr) {
+                            ctx.throw_type_error("RegExp legacy static property read with a receiver that is not %RegExp%");
+                            return Value();
+                        }
+                        std::string out;
+                        if (!home_realm->legacy_regexp_get(slot, out)) {
+                            ctx.throw_type_error("RegExp legacy static property is not available after this match");
+                            return Value();
+                        }
+                        return Value(std::move(out));
+                    }, 0);
+            };
+            auto make_setter = [&](const char* key) {
+                return ObjectFactory::create_native_function(std::string("set ") + key,
+                    [ctor_ptr, home_realm](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                        if (!receiver.is_function() || receiver.as_function() != ctor_ptr) {
+                            ctx.throw_type_error("RegExp legacy static property set with a receiver that is not %RegExp%");
+                            return Value();
+                        }
+                        std::string text;
+                        if (!(args.empty() ? Value() : args[0]).to_string_checked(ctx, text)) return Value();
+                        home_realm->legacy_regexp_set_input(std::move(text));
+                        return Value();
+                    }, 1);
+            };
+            for (const char* key : {name, alias}) {
+                PropertyDescriptor d;
+                d.set_getter(make_getter(key).release());
+                if (settable) d.set_setter(make_setter(key).release());
+                d.set_enumerable(false);
+                d.set_configurable(true);
+                regexp_constructor->set_property_descriptor(key, d);
+            }
+        };
+        using Slot = Realm::LegacyRegExpSlot;
+        define_legacy("input", "$_", Slot::Input, true);
+        define_legacy("lastMatch", "$&", Slot::LastMatch, false);
+        define_legacy("lastParen", "$+", Slot::LastParen, false);
+        define_legacy("leftContext", "$`", Slot::LeftContext, false);
+        define_legacy("rightContext", "$'", Slot::RightContext, false);
+        static const char* const kParenNames[9] = {"$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8", "$9"};
+        for (int i = 0; i < 9; i++) {
+            define_legacy(kParenNames[i], kParenNames[i],
+                          static_cast<Slot>(static_cast<int>(Slot::Paren1) + i), false);
+        }
+    }
+
     {
         PropertyDescriptor len_desc(Value(2.0), PropertyAttributes::Configurable);
         len_desc.set_enumerable(false);

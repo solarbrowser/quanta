@@ -2543,6 +2543,7 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
     {
         std::unordered_set<std::string> named_groups;
         std::vector<std::string> backrefs;
+        bool bare_k = false, unterminated_k = false;
         bool has_unicode_flag = flags.find('u') != std::string::npos || flags.find('v') != std::string::npos;
         const std::string& p = pattern;
 
@@ -2848,21 +2849,29 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                     }
                 }
             } else if (p[i] == '\\' && i + 1 < p.size() && p[i+1] == 'k') {
+                // Both are SyntaxErrors only when the pattern has named groups or is unicode-aware; otherwise (Annex B)
+                // \k is an identity escape. Whether a named group exists is only known at the end of the scan.
                 if (i + 2 >= p.size() || p[i+2] != '<') {
-                    // \k not followed by < → SyntaxError
-                    add_error("SyntaxError: Invalid named backreference \\k in regular expression");
-                    return nullptr;
+                    bare_k = true;
+                    i++;
+                    continue;
                 }
                 size_t end_pos = p.find('>', i + 3);
                 if (end_pos == std::string::npos) {
-                    add_error("SyntaxError: Unterminated named backreference \\k< in regular expression");
-                    return nullptr;
+                    unterminated_k = true;
+                    i++;
+                    continue;
                 }
                 backrefs.push_back(p.substr(i + 3, end_pos - (i + 3)));
                 i = end_pos;
             } else if (p[i] == '\\' && i + 1 < p.size()) {
                 i++;
             }
+        }
+        if ((bare_k || unterminated_k) && (has_unicode_flag || !named_groups.empty())) {
+            add_error(bare_k ? "SyntaxError: Invalid named backreference \\k in regular expression"
+                             : "SyntaxError: Unterminated named backreference \\k< in regular expression");
+            return nullptr;
         }
         for (const auto& ref : backrefs) {
             if (named_groups.find(ref) == named_groups.end()) {
