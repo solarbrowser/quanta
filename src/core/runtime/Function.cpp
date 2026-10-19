@@ -1585,6 +1585,7 @@ bool Function::call_pure_native(Context& ctx, std::span<const Value> args, const
             hazards.self_name_slot = !self_name.empty() && self_name != "<anonymous>" &&
                                       !function_context.has_binding(self_name) &&
                                       BytecodeCompiler::references_identifier(ast, self_name);
+            if (executable_->needs_self_binding && self_name != "<anonymous>") hazards.self_name = self_name;
             executable_->bytecode_chunk =
                 BytecodeCompiler::compile(ast, executable_->param_list(), /*suspendable=*/false, is_arrow_,
                                           is_strict_ || executable_->fast_strict,

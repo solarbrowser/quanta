@@ -49,6 +49,9 @@ struct EnvSlotHazards {
     // (references_identifier is conservative), which is fine given the
     // by-name re-validation above.
     bool self_name_slot = false;
+    // The name a named function expression binds for itself, in the wrapper scope between its own environment and the
+    // one it closed over. Empty for everything else.
+    std::string self_name;
 };
 
 // A flat, parent-first, span-annotated stand-in for an expression subtree --
@@ -449,6 +452,11 @@ private:
     // actually closed over. See compile()'s own parameter and
     // find_ancestor_slot's use of it.
     bool has_self_name_wrapper_ = false;
+    // The name that wrapper holds. A read of it belongs to the wrapper, so no slot an ancestor declared under the same
+    // name may answer it.
+    std::string self_name_;
+    // Names this function declares as classes.
+    std::unordered_set<std::string> class_decl_names_;
     // (closure index in chunk_->ensure_closures(), creation_depth) pairs
     // recorded by with_ancestor_chain, resolved once by
     // finalize_ancestor_chains() after this function's whole body has

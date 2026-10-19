@@ -59,6 +59,7 @@ struct DeclInfo {
     bool is_catch_param = false;  // gets its own per-catch env; never a function-level local
     bool is_annexb_fn = false;    // Annex B B.3.4 if/label clause: dropped when a
                                   // lexical or a parameter already owns the name
+    bool is_class = false;        // a class declaration: bound by BindClassName, never by a slot a read could predict
 };
 
 // Appends every leaf binding name a pattern declares. Nested patterns are no
@@ -107,7 +108,8 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
             // name (see the CLASS_DECLARATION case in compile_statement).
             const auto* cd = static_cast<const ClassDeclaration*>(node);
             if (!cd->is_expression() && cd->get_id() && !cd->get_id()->get_name().empty()) {
-                out.push_back({cd->get_id()->get_name(), /*is_lexical=*/true, /*is_const=*/false});
+                out.push_back({cd->get_id()->get_name(), /*is_lexical=*/true, /*is_const=*/false,
+                               /*is_catch_param=*/false, /*is_annexb_fn=*/false, /*is_class=*/true});
             }
             return true;
         }
@@ -5182,6 +5184,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     // land short once one is actually there at runtime.
     if (!outer_with) compiler.ancestor_chain_ = std::move(ancestor_chain);
     compiler.has_self_name_wrapper_ = needs_self_binding;
+    for (const auto& info : declared) if (info.is_class) compiler.class_decl_names_.insert(info.name);
+    if (needs_self_binding && env_slot_hazards) compiler.self_name_ = env_slot_hazards->self_name;
     compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
     // Every lexically declared name, known before a single instruction is
     // emitted. Learning it while compiling made the answer depend on source
@@ -5371,7 +5375,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     }
 
     // Nested lexical names and catch parameters get their own environment
-    // elsewhere -- only direct top-level names get a function-entry binding.
+    // elsewhere -- only direct top-level names get a function-entry binding. Keyed by constness too: a nested `const r`
+    // beside a top-level `let r` is not the top-level binding, and declaring it there made `r = ...` throw.
     std::unordered_set<std::string> direct_lexical_names;
     if (env_mode) {
         std::vector<BytecodeChunk::LoopEnvVar> direct_vars;
@@ -5379,6 +5384,23 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
         collect_direct_lexical_decls(body, direct_vars, unused_needs_env);
         for (const auto& v : direct_vars) direct_lexical_names.insert(v.name);
     }
+    // A name declared lexically more than once in this function (a nested block's `const r` beside a top-level
+    // `let r`) can only be told apart by constness; a name declared once is the direct one whenever it is listed.
+    std::unordered_map<std::string, int> lexical_decl_count;
+    std::unordered_set<std::string> direct_lexical_keys;
+    if (env_mode) {
+        for (const auto& info : declared) if (info.is_lexical) lexical_decl_count[info.name]++;
+        std::vector<BytecodeChunk::LoopEnvVar> direct_vars;
+        bool unused_needs_env = false;
+        collect_direct_lexical_decls(body, direct_vars, unused_needs_env);
+        for (const auto& v : direct_vars) direct_lexical_keys.insert(v.name + (v.is_const ? '\x01' : '\x02'));
+    }
+    auto is_direct_lexical = [&](const DeclInfo& info) {
+        if (!direct_lexical_names.count(info.name)) return false;
+        auto it = lexical_decl_count.find(info.name);
+        if (it == lexical_decl_count.end() || it->second <= 1) return true;
+        return direct_lexical_keys.count(info.name + (info.is_const ? '\x01' : '\x02')) > 0;
+    };
 
     for (const auto& info : declared) {
         if (info.name == "arguments") {
@@ -5447,7 +5469,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
             // in front of the one that carries the argument.
             const bool caller_bound = !info.is_lexical && env_bound_set.count(info.name) > 0;
             if (!caller_bound && !info.is_catch_param &&
-                (!info.is_lexical || direct_lexical_names.count(info.name))) {
+                (!info.is_lexical || is_direct_lexical(info))) {
                 compiler.chunk_->ensure_env().env_locals.push_back({info.name, info.is_lexical, info.is_const});
                 // A predicted slot names a position in the environment the code
                 // runs in; with the scopes split the body's is a different one.
@@ -6330,6 +6352,8 @@ void BytecodeCompiler::finalize_ancestor_chains() {
     for (const auto& name : env_names_) if (!slots->count(name)) ambiguous->insert(name);
     for (const auto& [name, reg] : locals_) { (void)reg; if (!slots->count(name)) ambiguous->insert(name); }
     for (const auto& name : hoisted_fn_names_) if (!slots->count(name)) ambiguous->insert(name);
+    if (!self_name_.empty() && !slots->count(self_name_)) ambiguous->insert(self_name_);
+    for (const auto& name : class_decl_names_) if (!slots->count(name)) ambiguous->insert(name);
     auto& closures = chunk_->ensure_closures();
     for (const auto& [index, creation_depth] : pending_ancestor_chain_sites_) {
         auto layer = std::make_shared<ClosureScopeChain>();
@@ -6367,6 +6391,11 @@ bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, ui
     // register or env slot here describes -- an outer same-named slot would
     // otherwise be read in its place.
     if (hoisted_fn_names_.count(name)) return false;
+    // A named function expression's own name is bound in the wrapper around its scope, which no ancestor slot describes.
+    if (!self_name_.empty() && name == self_name_) return false;
+    // A class declaration binds its name in this function's own scope through BindClassName, which no ancestor slot
+    // describes either.
+    if (class_decl_names_.count(name)) return false;
     // An enclosing function's binding of this name is not this body's `arguments`.
     if (elide_arguments_ && name == "arguments") return false;
     // Starts from env_depth_, not 0: entry_hop measures each layer's
