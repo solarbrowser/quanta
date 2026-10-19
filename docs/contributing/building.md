@@ -10,7 +10,7 @@ Before building Quanta, make sure your system provides the following:
 
 * Running computer
 * clang++
-* `Make`, `CMake` or provided build scripts
+* `Make` or the provided build scripts
 * Git
 
 See [building](#4-building) for setting it up on your environment.
@@ -117,7 +117,7 @@ git clone https://github.com/solarbrowser/quanta # If you haven't already cloned
 cd quanta
 ./build.sh
 # or
-make release # also you can use cmake
+make release
 ```
 
 ### macOS
@@ -129,7 +129,7 @@ git clone https://github.com/solarbrowser/quanta # If you haven't already cloned
 cd quanta
 ./build.sh
 # or
-make release # also you can use make or cmake
+make release
 ```
 
 ### Windows
@@ -143,7 +143,7 @@ clang++ --version # see if it is installed
 
 git clone https://github.com/solarbrowser/quanta # If you haven't already cloned 
 cd quanta
-build-windows.bat # also you can use make cmake
+build-windows.bat
 ```
 
 ## 5. Troubleshooting
