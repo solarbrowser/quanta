@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// Compile a mustache-style template into a closure chain, then render it many
-// times over changing data. Regex, string building and closure calls.
+
 function compile(tpl) {
   const ops = [];
   const re = /\{\{([#\/]?)([\w.]+)\}\}/g;

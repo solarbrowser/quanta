@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// A line-oriented diff over two generated documents: an LCS table plus
-// backtracking. Big typed-array indexing with string comparison.
+
 function lcsDiff(a, b) {
   const n = a.length, m = b.length;
   const table = new Int32Array((n + 1) * (m + 1));

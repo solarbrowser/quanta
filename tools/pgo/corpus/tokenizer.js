@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// A hand-written lexer over generated source. Character-level string access,
-// substring extraction and a keyword table: exactly what a parser costs.
+
 function makeSource(n) {
   const parts = [];
   for (let i = 0; i < n; i++) {

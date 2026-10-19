@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// An API-shaped pipeline: parse a payload, index it, join across collections,
-// aggregate, and serialise the result. Mixed object, Map and string work.
+
 function makePayload(users, orders) {
   const u = [];
   for (let i = 0; i < users; i++) u.push({ id: i, name: "user" + i, region: "r" + (i % 7), active: (i & 3) !== 0 });

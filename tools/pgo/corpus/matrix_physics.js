@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// A particle simulation with 4x4 matrix transforms. Float-heavy, array-index
-// heavy, and allocation-free in the inner loop.
+
 function mat4Identity() { return new Float64Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]); }
 
 function mat4Multiply(out, a, b) {

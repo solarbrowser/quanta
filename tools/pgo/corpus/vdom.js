@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,9 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// A React-shaped workload: build a component tree, diff it against the
-// previous render, and apply the patch list. Object churn, string keys, deep
-// recursion and array allocation, which is what a UI framework actually costs.
+
 function h(type, props, children) { return { type: type, props: props || {}, children: children || [] }; }
 
 function buildTree(depth, breadth, seed) {

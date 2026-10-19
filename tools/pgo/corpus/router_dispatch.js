@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// URL routing and middleware dispatch, the request path of a web framework.
-// Regex compilation, string splitting, Map lookups and closure chains.
+
 function compileRoute(pattern) {
   const names = [];
   const re = new RegExp("^" + pattern.replace(/:([\w]+)/g, function (m, n) { names.push(n); return "([^/]+)"; }) + "$");

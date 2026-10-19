@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// An LRU cache under a skewed access pattern, the shape a memoisation layer or
-// a module registry has. Map insertion order, deletion and re-insertion.
+
 function makeLRU(limit) {
   const map = new Map();
   return {
@@ -34,7 +31,7 @@ function run() {
   const next = rng(7);
   let hits = 0, misses = 0;
   for (let i = 0; i < 12000; i++) {
-    // Zipf-ish: most traffic lands on a small hot set.
+
     const r = next();
     const key = "k" + ((r * r * 8000) | 0);
     const got = cache.get(key);

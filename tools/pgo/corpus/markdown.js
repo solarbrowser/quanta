@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,8 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// A small Markdown to HTML converter. Line splitting, many regex passes and
-// string concatenation, the classic text-pipeline shape.
+
 function inline(s) {
   return s
     .replace(/`([^`]+)`/g, "<code>$1</code>")

@@ -1,5 +1,3 @@
-// Seeded PRNG so every engine sees the same input. xorshift32: cheap enough
-// that it never dominates the measurement.
 function rng(seed) {
   let s = seed | 0 || 1;
   return function () {
@@ -9,9 +7,7 @@ function rng(seed) {
     return (s >>> 0) / 4294967296;
   };
 }
-// Recursive schema validation over a large document, the shape a request
-// validator or an ORM layer has. Deep recursion, property probing, error
-// accumulation and string paths.
+
 const schema = {
   type: "object",
   props: {
