@@ -181,6 +181,28 @@ else
     MKDIR_P = powershell -Command "New-Item -ItemType Directory -Force -Path"
 endif
 
+# ICU4X: the Intl implementation. Off by default; `make ICU4X=1` builds third_party/quanta_icu (the C API of the
+# ICU4X submodule, as a static library with no data inside) and links it in. The locale data it formats from is a
+# separate file, built by `make icu-data` and loaded when the first Intl object is made (see tools/icu/README.md).
+ICU4X ?= 0
+ICU4X_LIB = third_party/quanta_icu/target/release/libquanta_icu.a
+ifeq ($(ICU4X),1)
+CXXFLAGS += -DQUANTA_ICU4X
+INCLUDES += -Ithird_party/icu4x/ffi/capi/bindings/cpp
+LIBS += $(ICU4X_LIB) -lpthread -ldl -lm
+endif
+
+$(ICU4X_LIB): FORCE
+	@cargo build --release --manifest-path third_party/quanta_icu/Cargo.toml
+
+# The locale data for Intl: every CLDR locale and every ICU4X data marker, as one blob (about 10 MB).
+ICU4X_DATA ?= $(BUILD_DIR)/quanta-icu.postcard
+icu-data:
+	@$(MKDIR_P) $(dir $(ICU4X_DATA))
+	@cargo run --release --features unstable --manifest-path third_party/icu4x/provider/icu4x-datagen/Cargo.toml -- \
+	    --format blob --markers all --locales full --include-collations search-all -W -o $(ICU4X_DATA)
+	@echo "[OK] ICU data: $(ICU4X_DATA)"
+
 # Directories
 CORE_SRC = src/core
 LEXER_SRC = src/lexer
@@ -212,7 +234,7 @@ LIBQUANTA = $(BUILD_DIR)/libquanta.a
 CONSOLE_MAIN = console.cpp
 
 # Main targets
-.PHONY: all clean debug release asan setup-deps heap-test shape-test lib embed-test
+.PHONY: all clean clean-all debug release asan setup-deps heap-test shape-test lib embed-test icu-data
 
 # Bare `make` builds release directly (no separate opt-in step needed).
 .DEFAULT_GOAL := release
@@ -318,7 +340,7 @@ embed-test: lib
 	@$(BIN_DIR)/embed-test
 
 # Main console executable
-$(BIN_DIR)/quanta$(EXE_EXT): $(CONSOLE_MAIN) $(LIBQUANTA) $(MIMALLOC_OVERRIDE_OBJ)
+$(BIN_DIR)/quanta$(EXE_EXT): $(CONSOLE_MAIN) $(LIBQUANTA) $(MIMALLOC_OVERRIDE_OBJ) $(if $(filter 1,$(ICU4X)),$(ICU4X_LIB))
 	@$(MKDIR_P) $(BIN_DIR)
 	@echo "[LINK] Linking with ThinLTO..."
 	@echo "[LINK] Creating executable" >> $(LOG_FILE)
@@ -420,10 +442,17 @@ shape-test: $(SHAPE_TEST_SRCS)
 	@$(BIN_DIR)/shape-test
 
 # Clean
+# The Intl data blob takes a quarter of an hour to make, so a clean keeps it (make clean-all removes it too).
 clean:
 	@echo "[CLEAN] Cleaning build files..."
+	@if [ -f $(ICU4X_DATA) ]; then mv $(ICU4X_DATA) $(ICU4X_DATA).keep; fi
 	@$(RM) $(BUILD_DIR)
+	@if [ -f $(ICU4X_DATA).keep ]; then $(MKDIR_P) $(BUILD_DIR) && mv $(ICU4X_DATA).keep $(ICU4X_DATA); fi
 	@echo "[OK] Clean completed"
+
+clean-all:
+	@$(RM) $(BUILD_DIR)
+	@echo "[OK] Clean completed, Intl data removed too"
 
 # Prevent deletion of intermediate files
 .PRECIOUS: $(OBJ_DIR)/%.o

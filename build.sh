@@ -414,6 +414,16 @@ MIMALLOC_FLAGS=(
 LIBS=(-pthread)
 STACK_FLAGS=()
 
+# QUANTA_ICU4X=1: Intl through ICU4X (see tools/icu/README.md). The Rust crate in third_party/quanta_icu is built as a
+# static library without any locale data; the data is a separate file the program finds at start-up.
+if [ "${QUANTA_ICU4X:-0}" = 1 ]; then
+    command -v cargo >/dev/null 2>&1 || fail "QUANTA_ICU4X=1 needs cargo (https://rustup.rs)"
+    CXXFLAGS+=(-DQUANTA_ICU4X)
+    INCLUDES+=(-Ithird_party/icu4x/ffi/capi/bindings/cpp)
+    cargo build --release --manifest-path third_party/quanta_icu/Cargo.toml || fail "building third_party/quanta_icu failed"
+    LIBS+=(third_party/quanta_icu/target/release/libquanta_icu.a -ldl -lm)
+fi
+
 shopt -s nullglob
 
 PCRE2_SOURCES=(

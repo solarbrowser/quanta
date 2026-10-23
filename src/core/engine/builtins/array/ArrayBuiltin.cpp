@@ -1830,7 +1830,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
+            // ECMA-402: the locales and options go on to every element's own toLocaleString.
+            const Value forwarded[2] = {args.size() > 0 ? args[0] : Value(), args.size() > 1 ? args[1] : Value()};
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(std::string(""));
@@ -1868,7 +1869,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                         }
                     }
                     if (fn_val.is_function()) {
-                        Value str_val = fn_val.as_function()->call(ctx, {}, element);
+                        Value str_val = fn_val.as_function()->call(ctx, std::vector<Value>{forwarded[0], forwarded[1]}, element);
                         if (ctx.has_exception()) return Value();
                         result += sort_default_to_string(ctx, str_val);
                         if (ctx.has_exception()) return Value();

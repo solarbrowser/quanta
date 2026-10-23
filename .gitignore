@@ -69,3 +69,7 @@ Thumbs.db
 *.log
 build-pgo/
 !tools/pgo/corpus/*.js
+
+# ICU4X: the Rust build of its C API, and generated data
+third_party/quanta_icu/target/
+*.postcard

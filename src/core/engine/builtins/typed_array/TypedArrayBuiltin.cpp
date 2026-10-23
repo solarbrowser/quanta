@@ -1165,7 +1165,7 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto ta_tolocalestring_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
+            const Value forwarded[2] = {args.size() > 0 ? args[0] : Value(), args.size() > 1 ? args[1] : Value()};
             TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             size_t len = ta->length();
@@ -1200,7 +1200,7 @@ void register_typed_array_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 Value str_val;
                 if (locale_fn.is_function()) {
-                    str_val = locale_fn.as_function()->call(ctx, {}, elem);
+                    str_val = locale_fn.as_function()->call(ctx, std::vector<Value>{forwarded[0], forwarded[1]}, elem);
                     if (ctx.has_exception()) return Value();
                 } else {
                     str_val = elem;

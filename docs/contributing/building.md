@@ -4,6 +4,8 @@ This document explains how to build Quanta from source, configure the build, run
 
 If you don't care about build configurations just jump to [building](#4-building).
 
+For `Intl` (internationalization) see [Intl](intl.md): it is an optional build with its own data file.
+
 ## 1. Prerequisites
 
 Before building Quanta, make sure your system provides the following:

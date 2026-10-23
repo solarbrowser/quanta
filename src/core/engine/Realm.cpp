@@ -44,6 +44,7 @@ void Realm::trace(Visitor& v) const {
     v.visit_object(watched_regexp_proto);
     v.visit_object(watched_promise_proto);
     v.visit_object(watched_promise_ctor);
+    for (Object* proto : intl_prototypes) v.visit_object(proto);
     v.visit_string(legacy_regexp_.subject_cell);
 }
 

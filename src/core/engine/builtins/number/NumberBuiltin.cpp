@@ -6,6 +6,7 @@
 
 #include <bit>
 #include "quanta/core/engine/builtins/NumberBuiltin.h"
+#include "quanta/core/engine/builtins/IntlBuiltin.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/BigInt.h"
@@ -645,7 +646,6 @@ void register_number_builtins(Context& ctx) {
 
     auto number_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
             Value this_val = receiver;
             double num;
             if (this_val.is_number()) {
@@ -662,6 +662,13 @@ void register_number_builtins(Context& ctx) {
             } else {
                 ctx.throw_type_error("Number.prototype.toLocaleString requires a Number or Number wrapper");
                 return Value();
+            }
+            std::string formatted;
+            switch (IntlHooks::number_to_locale_string(ctx, Value(num), args.size() > 0 ? args[0] : Value(),
+                                                       args.size() > 1 ? args[1] : Value(), formatted)) {
+                case IntlHooks::Outcome::Done: return Value(formatted);
+                case IntlHooks::Outcome::Threw: return Value();
+                case IntlHooks::Outcome::Unavailable: break;
             }
             return Value(Value(num).to_string());
         });

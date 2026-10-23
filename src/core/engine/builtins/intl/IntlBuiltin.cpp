@@ -10,79 +10,66 @@
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
+#ifdef QUANTA_ICU4X
+#include "IntlSupport.h"
+#endif
 
 namespace Quanta {
 
 void register_intl_builtins(Context& ctx) {
-    // This realm, captured once at registration time -- see Engine::fixup_
-    // new_object_realm's own doc comment (same pattern used throughout the
-    // builtins/ tree).
-    Context* home_ctx = &ctx;
-    auto intl_object = ObjectFactory::create_object();
-
-    auto intl_datetimeformat = ObjectFactory::create_native_constructor("DateTimeFormat",
-        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            auto formatter = ObjectFactory::create_object();
-            Engine::fixup_new_object_realm(formatter.get(), home_ctx);
-
-            auto format_fn = ObjectFactory::create_native_function("format",
-                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    (void)ctx;
-                    if (args.empty()) {
-                        return Value(std::string("Invalid Date"));
-                    }
-                    return Value(std::string("1/1/1970"));
-                }, 1);
-            formatter->set_property("format", Value(format_fn.release()), PropertyAttributes::BuiltinFunction);
-
-            return Value(formatter.release());
-        });
-    intl_object->set_property("DateTimeFormat", Value(intl_datetimeformat.release()));
-
-    auto intl_numberformat = ObjectFactory::create_native_constructor("NumberFormat",
-        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            auto formatter = ObjectFactory::create_object();
-            Engine::fixup_new_object_realm(formatter.get(), home_ctx);
-
-            auto format_fn = ObjectFactory::create_native_function("format",
-                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    (void)ctx;
-                    if (args.empty()) {
-                        return Value(std::string("0"));
-                    }
-                    return Value(args[0].to_string());
-                }, 1);
-            formatter->set_property("format", Value(format_fn.release()), PropertyAttributes::BuiltinFunction);
-
-            return Value(formatter.release());
-        });
-    intl_object->set_property("NumberFormat", Value(intl_numberformat.release()));
-
-    auto intl_collator = ObjectFactory::create_native_constructor("Collator",
-        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
-            auto collator = ObjectFactory::create_object();
-            Engine::fixup_new_object_realm(collator.get(), home_ctx);
-
-            auto compare_fn = ObjectFactory::create_native_function("compare",
-                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    (void)ctx;
-                    if (args.size() < 2) return Value(0.0);
-                    std::string a = args[0].to_string();
-                    std::string b = args[1].to_string();
-                    if (a < b) return Value(-1.0);
-                    if (a > b) return Value(1.0);
-                    return Value(0.0);
-                }, 2);
-            collator->set_property("compare", Value(compare_fn.release()), PropertyAttributes::BuiltinFunction);
-
-            return Value(collator.release());
-        });
-    intl_object->set_property("Collator", Value(intl_collator.release()));
-
-    ctx.register_built_in_object("Intl", intl_object.release());
+#ifdef QUANTA_ICU4X
+    if (IntlICU::data_present()) {
+        auto real_intl = ObjectFactory::create_object();
+        IntlImpl::register_all(ctx, real_intl.get());
+        ctx.register_built_in_object("Intl", real_intl.release());
+        return;
+    }
+#endif
+    (void)ctx;   // no ICU4X data, no Intl: a stand-in would answer wrongly
 }
+
+namespace IntlHooks {
+
+#ifdef QUANTA_ICU4X
+namespace {
+Outcome run(Context& ctx, bool ok) { return ok ? Outcome::Done : (ctx.has_exception() ? Outcome::Threw : Outcome::Unavailable); }
+}  // namespace
+#endif
+
+Outcome number_to_locale_string(Context& ctx, const Value& number, const Value& locales, const Value& options, std::string& out) {
+#ifdef QUANTA_ICU4X
+    if (IntlICU::data_present()) return run(ctx, IntlImpl::number_to_locale_string(ctx, number, locales, options, out));
+#endif
+    (void)ctx; (void)number; (void)locales; (void)options; (void)out;
+    return Outcome::Unavailable;
+}
+
+Outcome date_to_locale_string(Context& ctx, double time_value, const Value& locales, const Value& options, const char* required,
+                              const char* defaults, std::string& out) {
+#ifdef QUANTA_ICU4X
+    if (IntlICU::data_present()) return run(ctx, IntlImpl::date_to_locale_string(ctx, time_value, locales, options, required, defaults, out));
+#endif
+    (void)ctx; (void)time_value; (void)locales; (void)options; (void)required; (void)defaults; (void)out;
+    return Outcome::Unavailable;
+}
+
+Outcome locale_compare(Context& ctx, const std::string& a, const std::string& b, const Value& locales, const Value& options,
+                       double& out) {
+#ifdef QUANTA_ICU4X
+    if (IntlICU::data_present()) return run(ctx, IntlImpl::locale_compare(ctx, a, b, locales, options, out));
+#endif
+    (void)ctx; (void)a; (void)b; (void)locales; (void)options; (void)out;
+    return Outcome::Unavailable;
+}
+
+Outcome locale_case(Context& ctx, const std::string& text, bool upper, const Value& locales, std::string& out) {
+#ifdef QUANTA_ICU4X
+    if (IntlICU::data_present()) return run(ctx, IntlImpl::locale_case(ctx, text, upper, locales, out));
+#endif
+    (void)ctx; (void)text; (void)upper; (void)locales; (void)out;
+    return Outcome::Unavailable;
+}
+
+}  // namespace IntlHooks
 
 } // namespace Quanta

@@ -5,6 +5,7 @@
  */
 #include "quanta/core/engine/builtins/BigIntBuiltin.h"
 #include <span>
+#include "quanta/core/engine/builtins/IntlBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/BigInt.h"
@@ -222,12 +223,31 @@ void register_bigint_builtins(Context& ctx) {
         if (proto_val.is_object()) proto_val.as_object()->set_property("valueOf", Value(bigint_valueOf.release()), PropertyAttributes::BuiltinFunction);
     }
 
-    // BigInt.prototype.toLocaleString(): without Intl, this is just toString().
+    // BigInt.prototype.toLocaleString([locales[, options]]): through Intl.NumberFormat; without Intl it is toString().
     {
         Value proto_val = bigint_constructor->get_property("prototype");
         if (proto_val.is_object()) {
-            Value to_string_fn = proto_val.as_object()->get_property("toString");
-            proto_val.as_object()->set_property("toLocaleString", to_string_fn, PropertyAttributes::BuiltinFunction);
+            Value plain_to_string = proto_val.as_object()->get_property("toString");
+            auto locale_fn = ObjectFactory::create_native_function("toLocaleString",
+                [plain_to_string](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                    BigInt* bi = nullptr;
+                    if (receiver.is_bigint()) bi = receiver.as_bigint();
+                    else if (receiver.is_object()) {
+                        Value pv = receiver.as_object()->get_property("[[PrimitiveValue]]");
+                        if (pv.is_bigint()) bi = pv.as_bigint();
+                    }
+                    if (!bi) { ctx.throw_type_error("BigInt.prototype.toLocaleString requires a BigInt this"); return Value(); }
+                    std::string formatted;
+                    switch (IntlHooks::number_to_locale_string(ctx, Value(bi), args.size() > 0 ? args[0] : Value(),
+                                                               args.size() > 1 ? args[1] : Value(), formatted)) {
+                        case IntlHooks::Outcome::Done: return Value(formatted);
+                        case IntlHooks::Outcome::Threw: return Value();
+                        case IntlHooks::Outcome::Unavailable: break;
+                    }
+                    return Value(bi->to_string());
+                }, 0);
+            proto_val.as_object()->set_property("toLocaleString", Value(locale_fn.release()), PropertyAttributes::BuiltinFunction);
+            (void)plain_to_string;
         }
     }
 

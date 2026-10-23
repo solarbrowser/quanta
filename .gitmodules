@@ -7,3 +7,6 @@
 [submodule "third_party/mimalloc"]
 	path = third_party/mimalloc
 	url = https://github.com/microsoft/mimalloc.git
+[submodule "third_party/icu4x"]
+	path = third_party/icu4x
+	url = https://github.com/unicode-org/icu4x.git

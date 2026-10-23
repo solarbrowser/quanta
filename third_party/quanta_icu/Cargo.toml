@@ -1,0 +1,39 @@
+[package]
+name = "quanta_icu"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+# The C API of ICU4X (third_party/icu4x, pinned to a release tag), without the compiled-in data: the engine loads a
+# data blob at run time instead, so the binary does not grow with the locales it can format for.
+[dependencies]
+icu_capi = { path = "../icu4x/ffi/capi", default-features = false, features = [
+    "buffer_provider", "std", "locale", "plurals", "decimal", "collator", "list",
+    "datetime", "calendar", "timezone", "segmenter", "normalizer", "casemap", "properties", "unstable", "experimental",
+] }
+
+# What icu_capi does not expose: the formatters of icu_experimental and the compact decimal formatter, read from the same
+# data blob (src/shim.rs).
+icu_experimental = { path = "../icu4x/components/experimental", default-features = false, features = ["serde", "ryu"] }
+icu_decimal = { path = "../icu4x/components/decimal", default-features = false, features = ["serde", "unstable", "ryu"] }
+icu_plurals = { path = "../icu4x/components/plurals", default-features = false, features = ["serde"] }
+icu_datetime = { path = "../icu4x/components/datetime", default-features = false, features = ["serde", "unstable"] }
+icu_calendar = { path = "../icu4x/components/calendar", default-features = false, features = ["serde"] }
+icu_time = { path = "../icu4x/components/time", default-features = false, features = ["serde"] }
+icu_locale = { path = "../icu4x/components/locale", default-features = false, features = ["serde"] }
+icu_locale_core = { path = "../icu4x/components/locale_core", default-features = false, features = ["alloc"] }
+icu_provider = { path = "../icu4x/provider/core", default-features = false, features = ["serde"] }
+icu_provider_blob = { path = "../icu4x/provider/blob", default-features = false }
+icu_provider_adapters = { path = "../icu4x/provider/adapters", default-features = false }
+fixed_decimal = { path = "../icu4x/utils/fixed_decimal", default-features = false, features = ["ryu"] }
+writeable = { path = "../icu4x/utils/writeable", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

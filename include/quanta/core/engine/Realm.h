@@ -121,6 +121,14 @@ public:
     Object* array_buffer_proto = nullptr;
     Object* finalization_registry_proto = nullptr;
 
+    // The prototypes of the Intl constructors (IntlImpl::Kind): the intrinsics a constructor falls back to when its
+    // newTarget comes from another realm, which a program cannot reach by reassigning Intl.NumberFormat and the like.
+    static constexpr size_t kIntlKinds = 12;
+    Object* intl_prototypes[kIntlKinds] = {};
+    // %Intl%.[[FallbackSymbol]]: where a legacy-constructed NumberFormat or DateTimeFormat keeps the real one. Symbols
+    // are not collected, so it is only a pointer.
+    class Symbol* intl_fallback_symbol = nullptr;
+
     // What an embedder keeps per realm (Embed::SetRealmData). Not cells: the embedder
     // owns what these point at and must keep any cell they name alive another way.
     std::unordered_map<const void*, void*> embedder_data;

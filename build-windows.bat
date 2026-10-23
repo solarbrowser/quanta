@@ -86,6 +86,24 @@ REM build links on Windows. Some of what it needs it loads by name at run
 REM time and some it calls directly -- reading the source to tell which is
 REM how the link broke once already, so this follows upstream's list.
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32 -ladvapi32 -lbcrypt -lpsapi -luser32"
+
+REM QUANTA_ICU4X=1: Intl through ICU4X (see tools\icu\README.md). The Rust crate in third_party\quanta_icu is built as a
+REM static library with no locale data in it; the data is a separate file the program finds at start-up.
+if "%QUANTA_ICU4X%"=="1" (
+    where cargo >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        echo %CROSS% QUANTA_ICU4X=1 needs cargo ^(https://rustup.rs^)
+        exit /b 1
+    )
+    cargo build --release --manifest-path third_party\quanta_icu\Cargo.toml
+    if !ERRORLEVEL! NEQ 0 (
+        echo %CROSS% building third_party\quanta_icu failed
+        exit /b 1
+    )
+    set "CXXFLAGS=!CXXFLAGS! -DQUANTA_ICU4X"
+    set "INCLUDES=!INCLUDES! -Ithird_party/icu4x/ffi/capi/bindings/cpp"
+    set "LIBS=third_party\quanta_icu\target\release\quanta_icu.lib !LIBS! -lntdll -luserenv"
+)
 set "PCRE2FLAGS=%TARGET_FLAGS% -O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -Ithird_party/pcre2/src %ARCH_FLAGS% -fomit-frame-pointer"
 set "UTF8PROC_FLAGS=%TARGET_FLAGS% -O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc %ARCH_FLAGS% -fomit-frame-pointer"
 REM One object for the whole library: static.c includes every other source.

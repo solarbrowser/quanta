@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Date.h"
+#include "quanta/core/engine/builtins/IntlBuiltin.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/String.h"
@@ -904,16 +905,36 @@ Value Date::toGMTString(Context& ctx, std::span<const Value> args, Value receive
     return toUTCString(ctx, args, receiver);
 }
 
+namespace {
+
+// The toLocale*String methods: through Intl.DateTimeFormat when there is one, else the plain strings.
+Value date_locale_string(Context& ctx, std::span<const Value> args, Value receiver, const char* required, const char* defaults,
+                         Value (*plain)(Context&, std::span<const Value>, Value)) {
+    double t;
+    if (!this_time_value(ctx, receiver, t)) return Value();
+    if (std::isnan(t)) return Value(std::string("Invalid Date"));
+    std::string formatted;
+    switch (IntlHooks::date_to_locale_string(ctx, t, args.size() > 0 ? args[0] : Value(), args.size() > 1 ? args[1] : Value(),
+                                             required, defaults, formatted)) {
+        case IntlHooks::Outcome::Done: return Value(formatted);
+        case IntlHooks::Outcome::Threw: return Value();
+        case IntlHooks::Outcome::Unavailable: break;
+    }
+    return plain(ctx, args, receiver);
+}
+
+}  // namespace
+
 Value Date::toLocaleString(Context& ctx, std::span<const Value> args, Value receiver) {
-    return toString(ctx, args, receiver);
+    return date_locale_string(ctx, args, receiver, "any", "all", Date::toString);
 }
 
 Value Date::toLocaleDateString(Context& ctx, std::span<const Value> args, Value receiver) {
-    return toDateString(ctx, args, receiver);
+    return date_locale_string(ctx, args, receiver, "date", "date", Date::toDateString);
 }
 
 Value Date::toLocaleTimeString(Context& ctx, std::span<const Value> args, Value receiver) {
-    return toTimeString(ctx, args, receiver);
+    return date_locale_string(ctx, args, receiver, "time", "time", Date::toTimeString);
 }
 
 Value Date::toJSON(Context& ctx, std::span<const Value> args, Value receiver) {

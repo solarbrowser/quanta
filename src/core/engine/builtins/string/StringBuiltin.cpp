@@ -5,6 +5,7 @@
  */
 #include "quanta/core/engine/builtins/StringBuiltin.h"
 #include <span>
+#include "quanta/core/engine/builtins/IntlBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/parser/Parser.h"
@@ -1112,6 +1113,13 @@ void register_string_builtins(Context& ctx) {
             std::string that = "undefined";
             if (!args.empty() && !args[0].to_string_checked(ctx, that)) return Value();
 
+            double ordered = 0;
+            switch (IntlHooks::locale_compare(ctx, str, that, args.size() > 1 ? args[1] : Value(),
+                                              args.size() > 2 ? args[2] : Value(), ordered)) {
+                case IntlHooks::Outcome::Done: return Value(ordered);
+                case IntlHooks::Outcome::Threw: return Value();
+                case IntlHooks::Outcome::Unavailable: break;
+            }
             if (str < that) return Value(-1.0);
             if (str > that) return Value(1.0);
             return Value(0.0);
@@ -1555,10 +1563,16 @@ void register_string_builtins(Context& ctx) {
 
     auto toLocaleLowerCase_fn = ObjectFactory::create_native_function("toLocaleLowerCase",
         [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
             Value this_value = receiver;
             std::string str_scratch;
             const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
+            if (ctx.has_exception()) return Value();
+            std::string mapped;
+            switch (IntlHooks::locale_case(ctx, str, false, args.empty() ? Value() : args[0], mapped)) {
+                case IntlHooks::Outcome::Done: return Value(mapped);
+                case IntlHooks::Outcome::Threw: return Value();
+                case IntlHooks::Outcome::Unavailable: break;
+            }
             return Value(unicode_case_convert(str, true));
         });
     PropertyDescriptor toLocaleLowerCase_desc(Value(toLocaleLowerCase_fn.release()),
@@ -1567,10 +1581,16 @@ void register_string_builtins(Context& ctx) {
 
     auto toLocaleUpperCase_fn = ObjectFactory::create_native_function("toLocaleUpperCase",
         [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)args;
             Value this_value = receiver;
             std::string str_scratch;
             const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
+            if (ctx.has_exception()) return Value();
+            std::string mapped;
+            switch (IntlHooks::locale_case(ctx, str, true, args.empty() ? Value() : args[0], mapped)) {
+                case IntlHooks::Outcome::Done: return Value(mapped);
+                case IntlHooks::Outcome::Threw: return Value();
+                case IntlHooks::Outcome::Unavailable: break;
+            }
             return Value(unicode_case_convert(str, false));
         });
     PropertyDescriptor toLocaleUpperCase_desc(Value(toLocaleUpperCase_fn.release()),
