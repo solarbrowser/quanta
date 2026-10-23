@@ -1,6 +1,6 @@
 # Notice
 
-_Last updated: 2026-09-26_
+_Last updated: 2026-10-23_
 
 Quanta itself is licensed under the Mozilla Public License 2.0 (see
 [`LICENSE`](./LICENSE)). This file lists the third-party software bundled in
@@ -28,6 +28,7 @@ a component's own license text disagree, that component's own license file
   [`third_party/pcre2/deps/sljit/LICENSE`](./third_party/pcre2/deps/sljit/LICENSE).
   **Copyright:** Copyright (c) 2009-2024 Zoltan Herczeg.
 - **Used for:** regular expression matching (`RegExp`).
+
 
 ### mimalloc — `third_party/mimalloc/`
 
@@ -59,6 +60,15 @@ Three separate licenses apply, all reproduced in full in
   registered in some jurisdictions.
 - **Used for:** Unicode normalization and related string-processing tables.
 
+
+### ICU4X — `third_party/icu4x/`
+
+- **License:** Unicode-3.0 (see
+  [`third_party/icu4x/LICENSE`](./third_party/icu4x/LICENSE)).
+- **Copyright:** Copyright (c) 2020-2026 Unicode, Inc.
+- **Used for:** internationalization support (`Intl` APIs, collation, number and date formatting).
+
+
 ### minicoro — `third_party/minicoro/`
 
 - **License:** dual-licensed, your choice of Unlicense (public domain) or MIT
@@ -71,6 +81,7 @@ Three separate licenses apply, all reproduced in full in
   reproduced inline in that section of the header.
 - **Used for:** stackful coroutines (generators/async execution).
 
+
 ## Trademark notice
 
 "JavaScript" is a trademark or registered trademark of Oracle Corporation
@@ -82,6 +93,9 @@ project's documentation and commit history use "JavaScript"/"JS" and
 throughout the software industry to refer to the language the spec defines —
 not to claim any affiliation with, sponsorship by, or endorsement from Oracle
 or Ecma International.
+
+"Unicode" is a trademark or registered trademark of Unicode, Inc. in the
+United States and other countries.
 
 This section is provided for informational clarity, not as a legal
 determination; if trademark compliance matters for how you distribute or
