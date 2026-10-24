@@ -445,9 +445,9 @@ shape-test: $(SHAPE_TEST_SRCS)
 # The Intl data blob takes a quarter of an hour to make, so a clean keeps it (make clean-all removes it too).
 clean:
 	@echo "[CLEAN] Cleaning build files..."
-	@if [ -f $(ICU4X_DATA) ]; then mv $(ICU4X_DATA) $(ICU4X_DATA).keep; fi
+	@if [ -f $(ICU4X_DATA) ]; then mv $(ICU4X_DATA) $(BUILD_DIR).icu-keep; fi
 	@$(RM) $(BUILD_DIR)
-	@if [ -f $(ICU4X_DATA).keep ]; then $(MKDIR_P) $(BUILD_DIR) && mv $(ICU4X_DATA).keep $(ICU4X_DATA); fi
+	@if [ -f $(BUILD_DIR).icu-keep ]; then $(MKDIR_P) $(dir $(ICU4X_DATA)) && mv $(BUILD_DIR).icu-keep $(ICU4X_DATA); fi
 	@echo "[OK] Clean completed"
 
 clean-all:
