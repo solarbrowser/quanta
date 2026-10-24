@@ -826,7 +826,25 @@ bool Isolate::JsStackEmpty() const {
 
 void Isolate::CollectGarbage() {
     HeapScope heap_scope(isolate_->heap());
-    Collector::collect();
+    Collector::collect_or_defer();
+}
+
+void Isolate::BeginNoCollect() { Collector::begin_no_collect(); }
+
+void Isolate::EndNoCollect() {
+    Collector::end_no_collect();
+    // What was asked for during the pause and cannot wait for a safepoint: the host may not run script again for a while.
+    if (!Collector::collection_paused() && Collector::full_collection_pending()) {
+        HeapScope heap_scope(isolate_->heap());
+        Collector::collect_if_pending();
+    }
+}
+
+bool Isolate::CollectionPaused() const { return Collector::collection_paused(); }
+
+bool Isolate::RequestEmergencyCollection() {
+    HeapScope heap_scope(isolate_->heap());
+    return Collector::collect_or_defer();
 }
 
 void Isolate::PerformMicrotaskCheckpoint() {
@@ -877,6 +895,10 @@ Runtime::Result Runtime::Evaluate(std::string_view source, const std::string& fi
 }
 
 void Runtime::CollectGarbage() { isolate_->CollectGarbage(); }
+void Runtime::BeginNoCollect() { isolate_->BeginNoCollect(); }
+void Runtime::EndNoCollect() { isolate_->EndNoCollect(); }
+bool Runtime::CollectionPaused() const { return isolate_->CollectionPaused(); }
+bool Runtime::RequestEmergencyCollection() { return isolate_->RequestEmergencyCollection(); }
 void Runtime::PerformMicrotaskCheckpoint() { isolate_->PerformMicrotaskCheckpoint(); }
 bool Runtime::RunDueTimers() { return isolate_->RunDueTimers(); }
 std::optional<int64_t> Runtime::NextTimerDelayMs() { return isolate_->NextTimerDelayMs(); }

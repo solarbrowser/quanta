@@ -1117,7 +1117,7 @@ void register_global_builtins(Context& ctx) {
 
         auto gc_fn = ObjectFactory::create_native_function("gc",
             [](Context&, std::span<const Value>, Value receiver) -> Value {
-                Collector::collect();
+                Collector::collect_or_defer();
                 return Value();
             }, 0);
         test262_host->set_property("gc", Value(gc_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -2123,14 +2123,14 @@ void register_global_builtins(Context& ctx) {
     auto gc_obj_collect_fn = ObjectFactory::create_native_function("collect",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx; (void)args;
-            Collector::collect();
+            Collector::collect_or_defer();
             return Value();
         }, 0);
 
     auto gc_obj_minor_fn = ObjectFactory::create_native_function("minor",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx; (void)args;
-            Collector::collect_minor();
+            if (!Collector::collection_paused()) Collector::collect_minor();
             return Value();
         }, 0);
 

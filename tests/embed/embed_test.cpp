@@ -92,6 +92,39 @@ static void test_destructor_runs_on_sweep(Runtime& rt) {
     CHECK(g_counted_alive == 0);
 }
 
+// Nothing is freed while collecting is paused, however it was asked for; what was asked for happens at the outermost end.
+static void test_no_collect_pause(Runtime& rt) {
+    const int before = g_counted_destroyed;
+    make_garbage(100);
+    CHECK(!rt.CollectionPaused());
+    rt.BeginNoCollect();
+    rt.BeginNoCollect();
+    CHECK(rt.CollectionPaused());
+    scrub_stack();
+    rt.CollectGarbage();                       // deferred
+    CHECK(!rt.RequestEmergencyCollection());   // deferred, and says so
+    CHECK(g_counted_destroyed == before);
+    rt.EndNoCollect();                         // inner end: still paused
+    CHECK(rt.CollectionPaused());
+    scrub_stack();
+    CHECK(rt.Evaluate("var n = 0; for (var i = 0; i < 100000; i++) n += i; n").ok);   // safepoints stand down
+    CHECK(g_counted_destroyed == before);
+    scrub_stack();
+    rt.EndNoCollect();                         // outermost end: the asked-for collection runs
+    CHECK(!rt.CollectionPaused());
+    CHECK(g_counted_destroyed - before == 100);
+    CHECK(g_counted_alive == 0);
+}
+
+// Over its memory limit in the middle of a frame, the host asks for a collection and gets it at once.
+static void test_emergency_collection(Runtime& rt) {
+    const int before = g_counted_destroyed;
+    make_garbage(50);
+    scrub_stack();
+    CHECK(rt.RequestEmergencyCollection());
+    CHECK(g_counted_destroyed - before == 50);
+}
+
 static void test_visit_keeps_children_alive(Runtime& rt) {
     Context& ctx = rt.GetContext();
     make_rooted_pair(ctx);
@@ -3027,6 +3060,8 @@ int main() {
     }
 
     test_destructor_runs_on_sweep(*rt);
+    test_no_collect_pause(*rt);
+    test_emergency_collection(*rt);
     test_visit_keeps_children_alive(*rt);
     test_write_barrier_covers_old_to_young_edge(*rt);
     test_cast(*rt);

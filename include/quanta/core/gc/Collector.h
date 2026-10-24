@@ -75,8 +75,28 @@ public:
     // needs no function-local static guard of its own.
     static int stress_mode_;
 
-    // Unconditional full collection (gc() builtin, tests).
+    // Unconditional full collection: the engine's own teardown paths, which must finish an open major whatever the
+    // host is doing. Anything that collects because a script or the host asked to goes through collect_or_defer().
     static void collect();
+
+    // A pause in collecting, for a host that is reading pointers to cells that must not be freed under it (a layout pass
+    // over committed objects). Nests: the collector runs again when the outermost end_no_collect() has been reached.
+    // Allocation goes on and so does the write barrier; only the freeing waits, and the safepoint, the explicit
+    // collections and the incremental slices all stand down. Per thread, which is per Isolate.
+    static void begin_no_collect() { ++no_collect_depth_; }
+    static void end_no_collect() { if (no_collect_depth_ != 0) --no_collect_depth_; }
+    static bool collection_paused() { return no_collect_depth_ != 0; }
+    static constinit thread_local uint32_t no_collect_depth_;
+
+    // A full collection now, or -- inside a pause -- at the first safepoint after the pause ends (or when the host
+    // calls collect_if_pending()). True when it ran.
+    static bool collect_or_defer();
+    // Asks for a full collection at the next safepoint without running one here.
+    static void request_full_collection();
+    static bool full_collection_pending() { return full_pending_; }
+    // Runs the full collection that was asked for while collecting was paused, if the pause is over.
+    static bool collect_if_pending();
+    static constinit thread_local bool full_pending_;
 
     // A heap whose engine is gone: one full collection that does not let a stale
     // stack word keep the heap's cells alive. What is left in it afterwards is

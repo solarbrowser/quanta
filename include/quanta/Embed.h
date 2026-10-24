@@ -466,8 +466,34 @@ public:
                                 std::span<const uint8_t> cache = {});
 
     // Full collection, now. Ordinary collections happen on their own at the
-    // interpreter's safepoints.
+    // interpreter's safepoints. Inside a NoCollect pause it is asked for instead and runs when the outermost pause ends.
     void CollectGarbage();
+
+    // Collecting is paused from BeginNoCollect() to the matching EndNoCollect(): no cell is freed in between, so the host
+    // can read pointers to cells (a layout pass over committed objects) without a collection running under it. Script
+    // and the host go on allocating and the write barrier goes on working; the safepoint, CollectGarbage() and the
+    // incremental slices wait. Calls nest, and the collector runs again at the outermost End. A collection that was asked
+    // for during the pause (by the allocation budget, CollectGarbage(), RequestEmergencyCollection()) happens at the
+    // first safepoint after it, or at the End itself when it was an explicit or emergency request. Per thread, which is
+    // per Isolate.
+    void BeginNoCollect();
+    void EndNoCollect();
+    bool CollectionPaused() const;
+    class NoCollectScope {
+    public:
+        explicit NoCollectScope(Isolate& isolate) : isolate_(isolate) { isolate_.BeginNoCollect(); }
+        ~NoCollectScope() { isolate_.EndNoCollect(); }
+        NoCollectScope(const NoCollectScope&) = delete;
+        NoCollectScope& operator=(const NoCollectScope&) = delete;
+    private:
+        Isolate& isolate_;
+    };
+
+    // For a host that has found the process over its memory limit in the middle of a frame: a full collection as soon as
+    // one is allowed. True when it ran before returning (nothing paused it); false when a NoCollect pause is open, in which
+    // case it runs at the End of the outermost one. Call it on the Isolate's thread; from inside a native function it runs
+    // on top of the script that called it, as CollectGarbage() does.
+    bool RequestEmergencyCollection();
 
     // The event loop is the host's, and one per Isolate: its jobs and timers belong
     // to whichever realm queued them and run in it. Evaluate runs a script and
@@ -526,6 +552,11 @@ public:
     Result Evaluate(std::string_view source, const std::string& filename = "<embed>");
 
     void CollectGarbage();
+    // See Isolate: the pause in collecting, and the way out of a memory limit.
+    void BeginNoCollect();
+    void EndNoCollect();
+    bool CollectionPaused() const;
+    bool RequestEmergencyCollection();
     void PerformMicrotaskCheckpoint();
     bool RunDueTimers();
     std::optional<int64_t> NextTimerDelayMs();

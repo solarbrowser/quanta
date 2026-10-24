@@ -1605,7 +1605,39 @@ void Collector::release_env_deferred(Environment* env) {
     pending_env_frees().push_back(env);
 }
 
+constinit thread_local uint32_t Collector::no_collect_depth_ = 0;
+constinit thread_local bool Collector::full_pending_ = false;
+
+bool Collector::collect_or_defer() {
+    if (no_collect_depth_ != 0) {
+        request_full_collection();
+        return false;
+    }
+    full_pending_ = false;
+    collect();
+    return true;
+}
+
+void Collector::request_full_collection() {
+    full_pending_ = true;
+    Heap::request_gc();   // arms the safepoint, whose inline test only looks at this
+}
+
+bool Collector::collect_if_pending() {
+    if (!full_pending_ || no_collect_depth_ != 0) return false;
+    full_pending_ = false;
+    collect();
+    return true;
+}
+
 void Collector::safepoint_slow() {
+    // Inside a pause nothing is freed, and a request stays asked for until it is over.
+    if (no_collect_depth_ != 0) return;
+    if (full_pending_) {
+        full_pending_ = false;
+        run_major_slice(std::chrono::microseconds(-1));
+        return;
+    }
     // QUANTA_GC_STRESS: "2" = minor at every safepoint (write-barrier soak,
     // full every 64th); any other truthy value = full at every safepoint.
     // Resolved into the shared field so safepoint()'s inline test can read
