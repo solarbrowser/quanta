@@ -297,27 +297,11 @@ Token Lexer::next_token() {
         }
     }
 
-    // HTML-style comment: <!-- treated as single line comment (not allowed in module code)
-    if (ch == '<' && peek_char() == '!' && peek_char(2) == '-' && peek_char(3) == '-') {
-        if (options_.source_type_module) {
-            add_error("SyntaxError: HTML comments are not allowed in module code");
-            // The token still has to consume what it names. Reporting the error
-            // without moving on leaves the scan sitting on the same character.
-            for (int i = 0; i < 4; i++) advance();
-            return create_token(TokenType::INVALID, "<!--", current_position_);
-        }
-        return read_single_line_comment();
-    }
-
-    if (ch == '-' && peek_char() == '-' && peek_char(2) == '>') {
-        if (options_.source_type_module) {
-            add_error("SyntaxError: HTML comments are not allowed in module code");
-            for (int i = 0; i < 3; i++) advance();
-            return create_token(TokenType::INVALID, "-->", current_position_);
-        }
-        if (current_position_.column == 1 || is_at_line_start()) {
-            return read_single_line_comment();
-        }
+    // HTML-style comments (<!-- and --> at the start of a line) are a thing of scripts: in module code they are not recognized, and what is left of them
+    // is tokens that mean what they say (x-->0 is x-- > 0), or an error where they are not valid.
+    if (!options_.source_type_module) {
+        if (ch == '<' && peek_char() == '!' && peek_char(2) == '-' && peek_char(3) == '-') return read_single_line_comment();
+        if (ch == '-' && peek_char() == '-' && peek_char(2) == '>' && (current_position_.column == 1 || is_at_line_start())) return read_single_line_comment();
     }
 
     if (is_digit(ch) || (ch == '.' && is_digit(peek_char()))) {
@@ -897,6 +881,60 @@ Token Lexer::read_string(char quote) {
     return tok;
 }
 
+// Index of the `}` that closes a substitution whose body starts at `i` (just
+// after the `${`), or npos. Braces inside strings, nested templates, comments
+// and regular expressions do not count.
+size_t find_template_substitution_end(const std::string& s, size_t i) {
+    int depth = 1;
+    char prev = '{';  // last significant character, to tell a regex from a division
+    while (i < s.length()) {
+        char c = s[i];
+        if (c == '\'' || c == '"') {
+            size_t j = i + 1;
+            while (j < s.length() && s[j] != c) { if (s[j] == '\\') j++; j++; }
+            i = j + 1; prev = c; continue;
+        }
+        if (c == '`') {
+            size_t j = i + 1;
+            while (j < s.length() && s[j] != '`') {
+                if (s[j] == '\\') { j += 2; continue; }
+                if (s[j] == '$' && j + 1 < s.length() && s[j + 1] == '{') {
+                    size_t e = find_template_substitution_end(s, j + 2);
+                    if (e == std::string::npos) return e;
+                    j = e + 1; continue;
+                }
+                j++;
+            }
+            i = j + 1; prev = '`'; continue;
+        }
+        if (c == '/' && i + 1 < s.length() && s[i + 1] == '/') {
+            while (i < s.length() && s[i] != '\n') i++;
+            continue;
+        }
+        if (c == '/' && i + 1 < s.length() && s[i + 1] == '*') {
+            size_t e = s.find("*/", i + 2);
+            if (e == std::string::npos) return e;
+            i = e + 2; continue;
+        }
+        if (c == '/' && std::strchr("(,=:[!&|?{};+-*%<>~^", prev)) {
+            size_t j = i + 1;
+            bool in_class = false;
+            while (j < s.length() && (in_class || s[j] != '/')) {
+                if (s[j] == '\\') j++;
+                else if (s[j] == '[') in_class = true;
+                else if (s[j] == ']') in_class = false;
+                j++;
+            }
+            i = j + 1; prev = ')'; continue;
+        }
+        if (c == '{') depth++;
+        else if (c == '}' && --depth == 0) return i;
+        if (!std::isspace((unsigned char)c)) prev = c;
+        i++;
+    }
+    return std::string::npos;
+}
+
 // A `$` that came from `\$` and is followed by `{`. See read_template_literal.
 static constexpr char kEscapedDollar = '\x02';
 
@@ -925,12 +963,10 @@ Token Lexer::read_template_literal() {
             full_cooked += c1; full_raw += c1;
             full_cooked += c2; full_raw += c2;
 
-            int brace_count = 1;
-            while (!at_end() && brace_count > 0) {
+            size_t close = find_template_substitution_end(source(), position_);
+            while (!at_end() && (close == std::string::npos || position_ <= close)) {
                 char ch = advance();
                 full_cooked += ch; full_raw += ch;
-                if (ch == '{') brace_count++;
-                else if (ch == '}') brace_count--;
             }
         } else if (current_char() == '\\') {
             size_t raw_start = position_;

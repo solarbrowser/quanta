@@ -1,3 +1,4 @@
+#include <cstring>
 /*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -1765,7 +1766,8 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                         std::move(expr), std::move(property), false, start, end
                     );
                 } else {
-                if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
+                // (Any name, a reserved word too: o?.catch(), o?.default, o?.delete.)
+                if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type()) && current_token().get_type() != TokenType::FOR &&
                     current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&
                     current_token().get_type() != TokenType::DELETE) {
                     add_error("Expected property name after '?.'");
@@ -1774,6 +1776,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
 
                 const Token& token = current_token();
                 std::string name = token_string(token);
+                if (is_keyword_token(token.get_type())) name = std::string(token_text(token));
                 Position prop_start = token.get_start();
                 Position prop_end = token.get_end();
                 advance();
@@ -2210,6 +2213,9 @@ static void restore_escaped_dollars(std::string& s) {
     for (char& c : s) if (c == kEscapedDollar) c = '$';
 }
 
+// Defined in Lexer.cpp.
+size_t find_template_substitution_end(const std::string& s, size_t i);
+
 // Helper: extract text parts from a template string by splitting on ${...} markers
 static std::vector<std::string> extract_template_text_parts(const std::string& str) {
     std::vector<std::string> parts;
@@ -2221,14 +2227,8 @@ static std::vector<std::string> extract_template_text_parts(const std::string& s
             break;
         }
         parts.push_back(str.substr(pos, expr_start - pos));
-        int brace_count = 1;
-        size_t i = expr_start + 2;
-        while (i < str.length() && brace_count > 0) {
-            if (str[i] == '{') brace_count++;
-            else if (str[i] == '}') brace_count--;
-            i++;
-        }
-        pos = i;
+        size_t end = find_template_substitution_end(str, expr_start + 2);
+        pos = end == std::string::npos ? str.length() + 1 : end + 1;
     }
     for (auto& part : parts) restore_escaped_dollars(part);
     return parts;
@@ -2279,15 +2279,7 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
             size_t expr_start = cooked_str.find("${", pos);
             if (expr_start == std::string::npos) break;
 
-            size_t expr_end = std::string::npos;
-            int brace_count = 1;
-            for (size_t i = expr_start + 2; i < cooked_str.length(); ++i) {
-                if (cooked_str[i] == '{') brace_count++;
-                else if (cooked_str[i] == '}') {
-                    brace_count--;
-                    if (brace_count == 0) { expr_end = i; break; }
-                }
-            }
+            size_t expr_end = find_template_substitution_end(cooked_str, expr_start + 2);
 
             if (expr_end == std::string::npos) {
                 add_error("Unterminated expression in template literal");
@@ -2300,6 +2292,9 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
             // Inherit outer parser context so `yield`/`await` inside a `${...}` substitution resolve correctly.
             Parser expr_parser(std::move(expr_tokens), options_);
             expr_parser.set_detached_tokens(true);
+            // The private names of the class the template is in are the ones a substitution may use (`${this.#n}`).
+            expr_parser.private_scope_stack_ = private_scope_stack_;
+            expr_parser.reading_back_ = reading_back_;
             // Gives the substitution somewhere to record what it mentions;
             // merged back below.
             expr_parser.name_scopes_.emplace_back();
@@ -3067,7 +3062,7 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
         return nullptr;
     }
 
-    if (options_.class_depth == 0 && !options_.in_eval_context) {
+    if (options_.class_depth == 0 && !options_.in_eval_context && !reading_back_) {
         add_error("SyntaxError: Private names are not allowed outside class bodies");
         return nullptr;
     }
