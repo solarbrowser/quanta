@@ -1318,12 +1318,13 @@ void register_object_builtins(Context& ctx) {
                 return Value();
             }
 
-            if (!args[0].is_object()) {
+            // (A function is an object: a class is given its static members this way.)
+            if (!args[0].is_object() && !args[0].is_function()) {
                 ctx.throw_type_error("Object.defineProperties called on non-object");
                 return Value();
             }
 
-            Object* obj = args[0].as_object();
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
 
             // ToObject only throws for null/undefined; other primitives box into a wrapper
             // with no own enumerable properties, so the loop below just does nothing.
@@ -1332,7 +1333,7 @@ void register_object_builtins(Context& ctx) {
                 return Value();
             }
             if (!args[1].is_object() && !args[1].is_function()) {
-                return Value(obj);
+                return args[0];
             }
 
             Object* properties = args[1].is_function()
