@@ -757,7 +757,7 @@ Value Function::call_gated_general(Context& ctx, std::span<const Value> args, Va
     // stage, just onto a separate fast_ctx object read back through
     // ctx.set_super_called(true) right here); ctx now IS that object,
     // so leaving the write in place reproduces the exact same behavior.
-    if (ctx.was_super_called() && is_arrow_ && closure_context_) {
+    if (ctx.was_super_called() && is_arrow_ && closure_context_ && closure_context_->this_needs_super()) {
         closure_context_->set_super_called(true);
         closure_context_->set_this_needs_super(false);
     }
@@ -1694,7 +1694,7 @@ bool Function::call_pure_native(Context& ctx, std::span<const Value> args, const
                     ctx.set_last_super_override(function_context.last_super_override());
                     ctx.set_last_super_override_needs_reparent(function_context.last_super_override_needs_reparent());
                 }
-                if (is_arrow_ && closure_context_) {
+                if (is_arrow_ && closure_context_ && closure_context_->this_needs_super()) {
                     closure_context_->set_super_called(true);
                     closure_context_->set_this_needs_super(false);
                 }
