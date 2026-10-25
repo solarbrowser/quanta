@@ -7347,7 +7347,7 @@ QUANTA_HANDLER Value h_gen_CallViaFunctionApply(HANDLER_PARAMS) {
                 if (!handled && frame_args && owner) {
                     // Anything other than the pristine apply gets to see a real
                     // arguments object, as it would have without the elision.
-                    regs[args_start + 1] = Value(owner->build_arguments_object(ctx, f.args).release());
+                    regs[args_start + 1] = Value(owner->build_arguments_object(ctx, f.args, true).release());
                 }
                 if (!handled) {
                     Value method = get_named(ctx, target, "apply", &fb_slot, owner, f.feedback_rooted);
@@ -7460,7 +7460,7 @@ QUANTA_HANDLER Value h_CallViaFunctionApplyWide(HANDLER_PARAMS) {
     if (!handled && frame_args && owner) {
         // Anything other than the pristine apply gets to see a real
         // arguments object, as it would have without the elision.
-        regs[args_start + 1] = Value(owner->build_arguments_object(ctx, f.args).release());
+        regs[args_start + 1] = Value(owner->build_arguments_object(ctx, f.args, true).release());
     }
     if (!handled) {
         Value method = get_named(ctx, target, "apply", &fb_slot, owner, f.feedback_rooted);
@@ -8766,7 +8766,7 @@ QUANTA_HANDLER Value h_LdaArgAtSlow(HANDLER_PARAMS) {
         {
             std::string key = acc.to_property_key();
             CHECK_EXC();
-            Value object(f.owner->build_arguments_object(ctx, f.args).release());
+            Value object(f.owner->build_arguments_object(ctx, f.args, true).release());
             acc = get_keyed(ctx, object, key, nullptr);
             CHECK_EXC();
             break;

@@ -2262,7 +2262,9 @@ public:
     // compiled to read the argument list directly, this is what a read that the
     // direct opcodes cannot answer (a name, a symbol, an index past the end)
     // is put to, so the answer is the object's own.
-    std::unique_ptr<Object> build_arguments_object(Context& fn_ctx, std::span<const Value> args);
+    // `plain_elements`: every element is the argument itself, none left for a parameter mapping to answer (the object of a body whose
+    // `arguments` was elided has no mapping behind it: its parameters are never written, so each one is its argument).
+    std::unique_ptr<Object> build_arguments_object(Context& fn_ctx, std::span<const Value> args, bool plain_elements = false);
 
 protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx, class Environment* param_env = nullptr);

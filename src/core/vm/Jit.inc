@@ -5,48 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-// Baseline JIT. Included by Interpreter.cpp (inside namespace Quanta::VM, after
-// the handler table) because it is built on the interpreter's own Frame and
-// handlers rather than beside them.
-//
-// Why a template compiler that falls back to the interpreter, instead of a JIT
-// with its own implementation of every opcode: this engine has ~190 opcodes whose
-// handlers carry years of spec corner cases, and most of them (classes, private
-// names, spread, destructuring, eval, with, disposal scopes) are not hot. A second
-// implementation of each would be a second place for every conformance bug to
-// live. So the JIT translates only what it can prove inline and hands every other
-// instruction to the interpreter's own handler ("stepping"), on the very same
-// Frame. The Frame *is* the machine state in both directions (registers stay in
-// memory, only the accumulator is cached in r13), which is what makes switching
-// between the two at any instruction boundary free -- and also what makes
-// on-stack replacement and bailing out trivial.
-//
-// Why loops only, by default: what a template JIT removes is dispatch, which
-// multiplies in loops. A short method that is mostly property accesses and calls
-// spends its time in the call path and the runtime either way; compiling it only
-// adds instruction-cache pressure (measured: the code a function needs is ~25x
-// its bytecode, and a few dozen such functions no longer fit L1i, while the
-// interpreter's handlers are shared by every function).
-//
-// Memory safety, in the order the generated code could break it:
-//  * every register / constant / name / jump operand is range-checked while
-//    compiling; a chunk that fails any check is refused outright;
-//  * generated code only reads and writes Frame, the register bank, the chunk's
-//    constant pool, its own JitCode, and objects through checks the interpreter's
-//    inline-cache handlers make as well;
-//  * C++ exceptions never unwind through generated code (it has no unwind info):
-//    helpers catch everything and the trampoline rethrows after the native frame
-//    is gone;
-//  * the GC is conservative and non-moving, so values in generated code are
-//    found on the C stack like any other -- and the accumulator is spilled to the
-//    Frame before every call out;
-//  * code pages are written once and then flipped to read+execute.
-//
-// Register map while generated code runs:
-//   rbx Frame*   r12 register bank   r13 accumulator   r14 JitCode*
-//   r15 this code's inline caches    rbp finite-double limit (see finite_check)
-// (Named for x86-64. On AArch64 the same roles are x19-x24: see kPhys in A64Asm.h.)
-
 #ifdef QUANTA_JIT_PLATFORM_OK
 #define QUANTA_JIT_ENABLED 1
 #endif

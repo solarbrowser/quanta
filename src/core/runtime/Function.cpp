@@ -380,7 +380,7 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
     fn_ctx.create_binding("arguments", Value(arguments_obj.release()), true, false);
 }
 
-std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::span<const Value> args) {
+std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::span<const Value> args, bool plain_elements) {
     // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] must be %ArrayPrototype%.values.
     // Found before anything is defined: the first lookup can run script.
     Value arr_iter_fn;
@@ -417,7 +417,7 @@ std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::s
     bool pre_simple = !fn_ctx.is_strict_mode() && !param_names.empty() && !has_non_simple_params;
     size_t map_count_pre = pre_simple ? std::min(args.size(), param_names.size()) : 0;
     for (size_t i = 0; i < args.size(); i++) {
-        if (i < map_count_pre && param_gets_mapped_accessor(param_names, i)) continue; // will be set via accessor
+        if (!plain_elements && i < map_count_pre && param_gets_mapped_accessor(param_names, i)) continue; // will be set via accessor
         arguments_obj->set_element(i, args[i]);
     }
     {
