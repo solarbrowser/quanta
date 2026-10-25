@@ -6145,6 +6145,20 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
             for (const auto& v : body_lexicals) compiler.lexical_scopes_.back().push_back(v.name);
         }
         for (const auto& pn : param_names) compiler.lexical_scopes_.back().push_back(pn);
+        // What a destructuring parameter binds, a rest parameter, and the vars and functions of the body are the function's own names too: a read of one
+        // outside a nested block that declares the same name is not out of scope.
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (!params.has_pattern(pidx)) continue;
+            const ASTNode* pat = params.pattern(pidx);
+            if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) continue;
+            std::vector<std::string> bound;
+            static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+            for (const auto& bn : bound) compiler.lexical_scopes_.back().push_back(bn);
+        }
+        if (has_rest) compiler.lexical_scopes_.back().push_back(rest_name);
+        for (const auto& info : declared) {
+            if (!info.is_lexical && !info.is_catch_param) compiler.lexical_scopes_.back().push_back(info.name);
+        }
     }
     bool body_has_using = false;
     for (const auto& stmt : block->get_statements()) {
