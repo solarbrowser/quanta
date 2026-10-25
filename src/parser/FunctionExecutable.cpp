@@ -7,6 +7,10 @@
 #include "quanta/parser/FunctionExecutable.h"
 #include "quanta/parser/AST.h"
 #include "quanta/parser/ScriptUnit.h"
+#include "quanta/core/runtime/StackFloor.h"
+#if defined(__unix__) || defined(__APPLE__)
+#include <pthread.h>
+#endif
 #include "quanta/core/vm/Bytecode.h"
 #include "quanta/core/engine/Realm.h"
 #include "quanta/core/gc/Collector.h"
@@ -225,12 +229,51 @@ void FunctionExecutable::defer_body(const ExecutableRef<ScriptUnit>& unit,
 }
 
 bool FunctionExecutable::release_rebuilt_body() const {
-    if (!owned_body_ || !unit_ || body_end_offset_ <= body_start_.offset) return false;
+    if (!rebuilt_from_range_ || !owned_body_ || !unit_ || body_end_offset_ <= body_start_.offset) return false;
+    rebuilt_from_range_ = false;
     owned_body_.reset();
     body_ = nullptr;
     body_deferred_ = true;
     return true;
 }
+
+namespace {
+
+// Reads a body back on a stack of its own. A fiber's stack is a couple of
+// megabytes, and a body read back while one runs is read back over there; a
+// long minified function does not fit in what is left of it.
+struct BigStackRead {
+    ScriptUnit* unit;
+    const Position* start;
+    uint32_t end;
+    bool strict, generator, async, concise;
+    std::unique_ptr<ASTNode> result;
+};
+
+std::unique_ptr<ASTNode> parse_body_on_big_stack(BigStackRead& job) {
+#if defined(__unix__) || defined(__APPLE__)
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0) return nullptr;
+    pthread_attr_setstacksize(&attr, size_t{256} << 20);
+    pthread_t thread;
+    auto entry = [](void* arg) -> void* {
+        auto* j = static_cast<BigStackRead*>(arg);
+        j->result = j->unit->parse_body_from_source(*j->start, j->end, j->strict, j->generator,
+                                                    j->async, j->concise);
+        return nullptr;
+    };
+    const int rc = pthread_create(&thread, &attr, entry, &job);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) return nullptr;
+    pthread_join(thread, nullptr);
+    return std::move(job.result);
+#else
+    (void)job;
+    return nullptr;
+#endif
+}
+
+}  // namespace
 
 ASTNode* FunctionExecutable::ensure_body() const {
     if (body_) return body_;
@@ -245,6 +288,11 @@ ASTNode* FunctionExecutable::ensure_body() const {
     auto parsed = unit_->parse_body_from_source(body_start_, body_end_offset_, deferred_strict_,
                                                 deferred_generator_, deferred_async_,
                                                 deferred_concise_);
+    if (!parsed && current_stack_floor()) {
+        BigStackRead job{unit_.get(), &body_start_, body_end_offset_, deferred_strict_,
+                         deferred_generator_, deferred_async_, deferred_concise_, nullptr};
+        parsed = parse_body_on_big_stack(job);
+    }
     if (!parsed) {
         // Left deferred on purpose. A rebuild that did not finish is not the
         // same thing as a function without a body, and whoever asked has to be
@@ -259,6 +307,7 @@ ASTNode* FunctionExecutable::ensure_body() const {
     body_ = owned_body_.get();
     if (body_) { body_start_ = body_->get_start(); body_end_offset_ = body_->get_end().offset; }
     body_deferred_ = false;
+    rebuilt_from_range_ = true;
     return body_;
 }
 

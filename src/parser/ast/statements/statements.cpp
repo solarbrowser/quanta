@@ -274,6 +274,12 @@ void Program::check_global_declaration_conflicts(Context& ctx) {
 // OWN property: one the name has further up its prototype chain (a named property the document gives a global, an
 // Object.prototype member) is another thing, and the script's var is a property of the global of its own.
 static bool var_already_bound(Context& ctx, const std::string& name) {
+    if (ctx.get_type() == Context::Type::Module) {
+        // A module's var is its own, whatever the global (or a scope outside it) says of the name: an element's id
+        // is a name on the global, and a module that writes `var app = ...` is not writing that.
+        Environment* module_env = ctx.get_variable_environment();
+        if (module_env) return module_env->has_own_binding(name);
+    }
     if (ctx.get_type() != Context::Type::Global) return ctx.has_binding(name);
     Environment* var_env = ctx.get_variable_environment();
     if (!var_env || var_env->get_type() != Environment::Type::Object || !var_env->get_binding_object()) {

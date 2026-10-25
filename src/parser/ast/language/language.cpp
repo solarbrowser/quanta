@@ -419,7 +419,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.is_generator = fe->is_generator();
             tpl.is_async = fe->is_async();
             tpl.is_method_shorthand = fe->is_method_shorthand();
-            tpl.needs_self_binding = fe->is_named() && !fe->is_decl_form();
+            tpl.needs_self_binding = fe->is_named() && !fe->is_decl_form() && !fe->is_method_shorthand();
             load_body_facts(fe, tpl.body_is_strict, tpl.has_direct_eval);
             tpl.declared_length = static_cast<uint32_t>(fe->get_cached_spec_length());
             if (fe->is_generator()) {

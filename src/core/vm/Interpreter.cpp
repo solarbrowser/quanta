@@ -922,7 +922,8 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // instead, since that is what brings a body into being.
     FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (receiver.is_null() || receiver.is_undefined()) {
-        ctx.throw_type_error("Cannot read property of null or undefined");
+        ctx.throw_type_error(std::string("Cannot read properties of ") + (receiver.is_null() ? "null" : "undefined") +
+                             " (reading '" + name + "')");
         return Value();
     }
     Object* obj = as_object_like(receiver);

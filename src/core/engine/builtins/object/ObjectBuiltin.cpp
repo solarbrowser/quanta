@@ -675,8 +675,8 @@ void register_object_builtins(Context& ctx) {
                 new_obj->initialize_prototype(nullptr);  // Set prototype to null
                 new_obj_ptr = new_obj.release();
             }
-            else if (args[0].is_object()) {
-                Object* prototype = args[0].as_object();
+            else if (args[0].is_object() || args[0].is_function()) {
+                Object* prototype = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
                 auto new_obj = ObjectFactory::create_object(prototype);
                 if (!new_obj) {
                     ctx.throw_exception(Value(std::string("Error: Failed to create object with prototype")));

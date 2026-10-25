@@ -4907,7 +4907,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     // `() => { return e; }` with the statement left implicit. Without this it
     // never compiled at all, so every call to one ran in the tree-walker.
     const bool concise = body->get_type() != ASTNode::Type::BLOCK_STATEMENT;
-    if (params.size() > 64) return nullptr;
+    if (params.size() > 200) return nullptr;
 
     // Default/destructured/rest parameters force env_mode: rest needs a
     // fresh (not run()-auto-bound) slot, and destructuring only knows how
@@ -5458,7 +5458,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     // not compiling at all. The reserve leaves room for the temporaries
     // expression evaluation allocates on top of the named locals.
     if (!full_env) {
-        constexpr size_t kTempReserve = 48;
+        constexpr size_t kTempReserve = 96;
         std::unordered_set<std::string> counted;
         size_t used = param_names.size() + kTempReserve;
         for (const auto& info : declared) {
@@ -6228,6 +6228,20 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_module_body(
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with,
     bool track_completion, bool suspendable) {
+    g_jump_range_failed = false;
+    auto chunk = compile_script_attempt(statements, outer_with, track_completion, suspendable);
+    if (!chunk && g_jump_range_failed) {
+        // A script with code between a jump and where it goes longer than a 16-bit jump reaches (`a && f({ ...a hundred kilobytes... })`): again
+        // with every jump in its long form.
+        WideJumpScope wide;
+        chunk = compile_script_attempt(statements, outer_with, track_completion, suspendable);
+    }
+    return chunk;
+}
+
+std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script_attempt(
+    const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with,
+    bool track_completion, bool suspendable) {
     // Scan the whole program once. Modules and anything opaque to the
     // scanners tree-walk; class definitions and closure-side eval only
     // disable the nested-register refinement (top-level names are outer
@@ -6363,7 +6377,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     // Environment instead, which is slower per access but is the difference
     // between compiling the script and not compiling it at all.
     {
-        constexpr size_t kTempReserve = 48;
+        constexpr size_t kTempReserve = 96;
         std::unordered_set<std::string> counted;
         size_t used = kTempReserve;
         for (const auto& info : declared) {
@@ -6392,6 +6406,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     BytecodeCompiler compiler({}, /*env_mode=*/true,
                               script_has_with ? nullptr : &env_resident);
     if (compiler.failed_) return nullptr;
+    compiler.wide_jumps_ = g_wide_jumps;
     compiler.suspendable_ = suspendable;
     // Every lexically declared name, known before a single instruction is
     // emitted. Learning it while compiling made the answer depend on source
@@ -9332,6 +9347,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* block = static_cast<const BlockStatement*>(node);
+            // A case jump cannot land inside this block, so a let of its own is initialised
+            // by the time later statements of the block run, whatever the switch around it does.
+            struct SwitchDepthReset {
+                int& depth; int saved;
+                explicit SwitchDepthReset(int& d) : depth(d), saved(d) { depth = 0; }
+                ~SwitchDepthReset() { depth = saved; }
+            } switch_depth_reset(switch_body_depth_);
             // A block with its own direct let/const gets its own Environment
             // -- a nested block's own names are its own scope's concern.
             int block_env_idx = -1;

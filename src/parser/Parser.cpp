@@ -39,7 +39,8 @@ using NameSet = std::unordered_set<std::string, NameHash, std::equal_to<>>;
 }
 
 size_t Parser::thread_stack_budget() {
-    static const size_t budget = [] {
+    // Per thread: a program may run its scripts on a thread whose stack is not the main thread's.
+    static thread_local const size_t budget = [] {
         // Half the thread's stack: the check has to leave room for the deepest
         // frame to finish and for the tree it built to be taken apart, which
         // unwinds recursively too.
@@ -809,6 +810,9 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
     }
 
     if (match(TokenType::LEFT_PAREN)) {
+        // An arrow an attempt at a tape already read is taken as it is: reading its parameter list again would reach tokens of a streamed sequence that
+        // are gone once the body behind them was long.
+        if (!tape_node_cache_.empty() && tape_node_cache_.count(tape_cache_key(current_token_index_, CacheKind::Arrow))) return parse_arrow_function();
         size_t saved_pos = current_token_index_;
         if (try_parse_arrow_function_params()) {
             current_token_index_ = saved_pos;
@@ -1539,7 +1543,10 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 );
             } else if (match(TokenType::LEFT_BRACKET)) {
                 advance();
+                const bool saved_no_in_member = no_in_mode_;
+                no_in_mode_ = false;
                 auto computed_prop = parse_assignment_expression();
+                no_in_mode_ = saved_no_in_member;
                 if (!computed_prop) {
                     add_error("Expected expression in computed member access");
                     return nullptr;
@@ -1681,7 +1688,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
         } else if (match(TokenType::LEFT_BRACKET)) {
             advance();
             
-            auto property = parse_expression_maybe_tape();
+            auto property = parse_expression_with_in();
             if (!property) {
                 add_error("Expected expression inside []");
                 return expr;
@@ -1702,7 +1709,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             if (match(TokenType::LEFT_BRACKET)) {
                 advance();
                 
-                auto property = parse_expression_maybe_tape();
+                auto property = parse_expression_with_in();
                 if (!property) {
                     add_error("Expected expression inside []");
                     return expr;
@@ -1793,6 +1800,9 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             
             std::vector<std::unique_ptr<ASTNode>> arguments;
             
+            // (`in` is an operator in the arguments, whatever the context round the call forbids.)
+            const bool saved_no_in_args = no_in_mode_;
+            no_in_mode_ = false;
             if (!match(TokenType::RIGHT_PAREN)) {
                 do {
                     if (match(TokenType::ELLIPSIS)) {
@@ -1824,6 +1834,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                     }
                 } while (true);
             }
+            no_in_mode_ = saved_no_in_args;
             
             if (!consume(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ')' after function arguments");
@@ -1907,7 +1918,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
             if (match(TokenType::LEFT_BRACKET)) {
                 advance();
                 
-                auto property = parse_expression_maybe_tape();
+                auto property = parse_expression_with_in();
                 if (!property) {
                     add_error("Expected expression inside []");
                     return expr;
@@ -1941,7 +1952,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
         } else {
             advance();
             
-            auto property = parse_expression_maybe_tape();
+            auto property = parse_expression_with_in();
             if (!property) {
                 add_error("Expected expression inside []");
                 return expr;
@@ -2762,8 +2773,8 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                     } else {
                         i++;
                     }
-                } else if (p[i] == '{' && (i == 0 || p[i-1] != '\\')) {
-                    // Lone { not part of quantifier is invalid in unicode mode
+                } else if (p[i] == '{' && !in_class && (i == 0 || p[i-1] != '\\')) {
+                    // Lone { not part of quantifier is invalid in unicode mode (inside a character class it is an ordinary character)
                     // Check if it's a valid quantifier: {n}, {n,}, {n,m}
                     size_t j = i + 1;
                     while (j < p.size() && std::isdigit((unsigned char)p[j])) j++;
@@ -2782,7 +2793,19 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                 }
             }
         }
+        // Which characters of the pattern are inside a character class, where `(`, `?` and the like are ordinary characters: /^[(?-i)y]$/ is a class.
+        std::vector<bool> in_character_class(p.size(), false);
+        {
+            bool open_class = false;
+            for (size_t i = 0; i < p.size(); i++) {
+                if (p[i] == '\\') { if (open_class) in_character_class[i] = true; if (i + 1 < p.size() && open_class) in_character_class[i + 1] = true; i++; continue; }
+                if (!open_class && p[i] == '[') { open_class = true; in_character_class[i] = true; continue; }
+                if (open_class && p[i] == ']') { open_class = false; in_character_class[i] = true; continue; }
+                in_character_class[i] = open_class;
+            }
+        }
         for (size_t i = 0; i < p.size(); i++) {
+            if (in_character_class[i]) continue;
             // Detect invalid group syntax: (?x where x is not :, =, !, <, or a modifier
             // group (?ims-ims:...) per the regexp-modifiers proposal (ES2025).
             if (p[i] == '(' && i + 1 < p.size() && p[i+1] == '?') {
@@ -3080,6 +3103,15 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
     return std::make_unique<Identifier>(name, start, end);
 }
 
+// An expression inside brackets, parentheses or the like: `in` is an operator there even where the surrounding for-init forbids it.
+std::unique_ptr<ASTNode> Parser::parse_expression_with_in() {
+    const bool saved = no_in_mode_;
+    no_in_mode_ = false;
+    auto expr = parse_expression_maybe_tape();
+    no_in_mode_ = saved;
+    return expr;
+}
+
 std::unique_ptr<ASTNode> Parser::parse_parenthesized_expression() {
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '('");
@@ -3091,7 +3123,10 @@ std::unique_ptr<ASTNode> Parser::parse_parenthesized_expression() {
     bool saved_binary = options_.in_binary_expr;
     options_.in_unary_operand = false;
     options_.in_binary_expr = false;
+    const bool saved_no_in_paren = no_in_mode_;
+    no_in_mode_ = false;
     auto expr = parse_expression();
+    no_in_mode_ = saved_no_in_paren;
     options_.in_unary_operand = saved_unary;
     options_.in_binary_expr = saved_binary;
     if (!expr) {
@@ -4074,6 +4109,22 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         return nullptr;
     }
     SubtreeScope scope(*this);
+    // A function's body starts afresh: what the expression round it forbids (`in` in a for-init, yield in a binary operand) holds nowhere inside it.
+    struct BodyContext {
+        Parser& p;
+        bool in_binary, in_unary, no_in, active;
+        ~BodyContext() {
+            if (!active) return;
+            p.options_.in_binary_expr = in_binary;
+            p.options_.in_unary_operand = in_unary;
+            p.no_in_mode_ = no_in;
+        }
+    } body_context{*this, options_.in_binary_expr, options_.in_unary_operand, no_in_mode_, is_function_body};
+    if (is_function_body) {
+        options_.in_binary_expr = false;
+        options_.in_unary_operand = false;
+        no_in_mode_ = false;
+    }
     // A function's own top-level body has no shadow ambiguity at that single
     // level (nothing else shares its exact nesting depth within itself), so
     // its own let/const/class/catch-param declarations write straight into
@@ -4681,6 +4732,74 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             if (kind != VariableDeclarator::Kind::VAR) for_let_scope.emplace(*this);
             advance();
 
+            // The declarators after the first, `, b = 1, [c] = d, {e} = f`: a name or a pattern each, the initializers without `in` (it would begin a for-in).
+            const auto parse_more_declarators = [&](std::vector<std::unique_ptr<VariableDeclarator>>& declarations, Position first_start) -> bool {
+                while (match(TokenType::COMMA)) {
+                    advance();
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET || current_token().get_type() == TokenType::LEFT_BRACE) {
+                        auto pattern = parse_destructuring_pattern();
+                        if (!pattern) {
+                            add_error("Failed to parse destructuring pattern");
+                            return false;
+                        }
+                        if (auto* da = dynamic_cast<DestructuringAssignment*>(pattern.get())) {
+                            std::vector<std::string> bound;
+                            da->collect_bound_names(bound);
+                            for (const auto& nm : bound) {
+                                if (kind == VariableDeclarator::Kind::VAR) declare_local_name(nm);
+                                else declare_block_scoped_name(nm);
+                            }
+                        }
+                        if (!match(TokenType::ASSIGN)) {
+                            add_error("SyntaxError: Missing initializer in destructuring declaration");
+                            return false;
+                        }
+                        advance();
+                        bool prev_no_in = no_in_mode_;
+                        no_in_mode_ = true;
+                        auto initializer = parse_assignment_maybe_tape();
+                        no_in_mode_ = prev_no_in;
+                        if (!initializer) {
+                            add_error("Expected expression after '=' in destructuring assignment");
+                            return false;
+                        }
+                        Position pat_start = pattern->get_start();
+                        static_cast<DestructuringAssignment*>(pattern.get())->set_source(std::move(initializer));
+                        declarations.push_back(std::make_unique<VariableDeclarator>(
+                            std::make_unique<Identifier>("", pat_start, pat_start), std::move(pattern), kind, pat_start, get_current_position()));
+                        continue;
+                    }
+                    auto next_identifier = parse_identifier();
+                    if (!next_identifier) {
+                        add_error("Expected identifier after ',' in variable declaration");
+                        return false;
+                    }
+                    // parse_identifier() already ran note_name on this one (unlike the first binder, built by hand) -- recorded as an
+                    // ordinary mention, not a declaration. declared_here still needs it for `var`, same as the first binder.
+                    if (kind == VariableDeclarator::Kind::VAR) {
+                        declare_local_name(static_cast<Identifier*>(next_identifier.get())->get_name());
+                    } else {
+                        declare_block_scoped_name(static_cast<Identifier*>(next_identifier.get())->get_name());
+                    }
+                    std::unique_ptr<ASTNode> next_initializer = nullptr;
+                    if (match(TokenType::ASSIGN)) {
+                        advance();
+                        bool prev_no_in = no_in_mode_;
+                        no_in_mode_ = true;
+                        next_initializer = parse_assignment_maybe_tape();
+                        no_in_mode_ = prev_no_in;
+                        if (!next_initializer) {
+                            add_error("Expected expression after '=' in variable declaration");
+                            return false;
+                        }
+                    }
+                    Position next_var_end = get_current_position();
+                    declarations.push_back(std::make_unique<VariableDeclarator>(
+                        std::unique_ptr<Identifier>(static_cast<Identifier*>(next_identifier.release())), std::move(next_initializer), kind, first_start, next_var_end));
+                }
+                return true;
+            };
+
             if (current_token().get_type() == TokenType::LEFT_BRACKET ||
                 current_token().get_type() == TokenType::LEFT_BRACE) {
 
@@ -4736,6 +4855,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     declarations.push_back(std::make_unique<VariableDeclarator>(
                         std::make_unique<Identifier>("", pat_start, pat_start),
                         std::move(destructuring), kind, pat_start, get_current_position()));
+                    if (!parse_more_declarators(declarations, pat_start)) return nullptr;
                     if (kind != VariableDeclarator::Kind::VAR) subtree_acc_ |= kSubtreeLexicalDecl;
                     init = std::make_unique<VariableDeclaration>(
                         std::move(declarations), kind, decl_start, get_current_position());
@@ -4818,45 +4938,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             std::vector<std::unique_ptr<VariableDeclarator>> declarations;
             declarations.push_back(std::move(declarator));
 
-            while (match(TokenType::COMMA)) {
-                advance();
-
-                auto next_identifier = parse_identifier();
-                if (!next_identifier) {
-                    add_error("Expected identifier after ',' in variable declaration");
-                    return nullptr;
-                }
-                // parse_identifier() already ran note_name on this one (unlike
-                // the first binder above, built by hand) -- recorded as an
-                // ordinary mention, not a declaration. declared_here still
-                // needs it for `var`, same as the first binder, regardless of
-                // how it got into `all`.
-                if (kind == VariableDeclarator::Kind::VAR) {
-                    declare_local_name(static_cast<Identifier*>(next_identifier.get())->get_name());
-                } else {
-                    declare_block_scoped_name(static_cast<Identifier*>(next_identifier.get())->get_name());
-                }
-
-                std::unique_ptr<ASTNode> next_initializer = nullptr;
-                if (match(TokenType::ASSIGN)) {
-                    advance();
-                    next_initializer = parse_assignment_maybe_tape();
-                    if (!next_initializer) {
-                        add_error("Expected expression after '=' in variable declaration");
-                        return nullptr;
-                    }
-                }
-
-                Position next_var_end = get_current_position();
-                auto next_declarator = std::make_unique<VariableDeclarator>(
-                    std::unique_ptr<Identifier>(static_cast<Identifier*>(next_identifier.release())),
-                    std::move(next_initializer),
-                    kind,
-                    var_start,
-                    next_var_end
-                );
-                declarations.push_back(std::move(next_declarator));
-            }
+            if (!parse_more_declarators(declarations, var_start)) return nullptr;
             
             Position decl_end = get_current_position();
             if (kind != VariableDeclarator::Kind::VAR) subtree_acc_ |= kSubtreeLexicalDecl;
@@ -5610,7 +5692,10 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             const bool saved_in_binary = options_.in_binary_expr;
             options_.in_unary_operand = false;
             options_.in_binary_expr = false;
+            const bool saved_in_paren_no_in = no_in_mode_;
+            no_in_mode_ = false;
             const bool inner_ok = try_tape_expression(tape);
+            no_in_mode_ = saved_in_paren_no_in;
             options_.in_unary_operand = saved_in_unary;
             options_.in_binary_expr = saved_in_binary;
             if (!inner_ok) return false;
@@ -6408,6 +6493,10 @@ std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence, bool for_init
 
     TapeAttempt attempt;
     attempt.gap_start = saved_pos;
+    // The real parse that follows a failed attempt starts from these tokens again, and an attempt that read a function of tens of thousands of
+    // tokens has moved the window of a streamed sequence far past them: they stay until the real parse has taken what the attempt made.
+    tokens_.pin(saved_pos, saved_pos + 4);
+    attempt.pinned.emplace_back(saved_pos, saved_pos + 4);
     TapeAttempt* outer_attempt = tape_attempt_;
     tape_attempt_ = &attempt;
     // try_tape_assignment mirrors parse_assignment_expression, not

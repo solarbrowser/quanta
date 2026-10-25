@@ -336,6 +336,10 @@ public:
     bool deferred_generator_ = false;
     bool deferred_async_ = false;
     mutable bool body_deferred_ = false;
+    // Whether the body now held was read back out of the source by ensure_body. Only such a body can be
+    // let go again: any other tree (a class field's initializer, say) is not a range of the source that
+    // reads back as a function body.
+    mutable bool rebuilt_from_range_ = false;
     // Whether the body opens with a "use strict" directive. Read once, at the
     // moment the body is attached, so that resolving strict_directive_state
     // below never has to reach for the tree -- which is the whole point: a

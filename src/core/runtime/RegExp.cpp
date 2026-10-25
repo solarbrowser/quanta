@@ -319,10 +319,10 @@ void RegExp::parse_flags(const std::string& flags) {
             case 'v': unicode_sets_ = true; unicode_ = true; idx = 6; break;
             case 'y': sticky_ = true;        idx = 7; break;
             default:
-                throw std::runtime_error("Invalid regular expression flags");
+                throw std::runtime_error("Invalid regular expression flags: '" + flags + "'");
         }
         if (idx >= 0 && seen[idx])
-            throw std::runtime_error("Invalid regular expression flags");
+            throw std::runtime_error("Invalid regular expression flags: '" + flags + "'");
         if (idx >= 0) seen[idx] = true;
     }
 }
@@ -343,6 +343,13 @@ static std::string convert_unicode_escapes(const std::string& pat, bool unicode)
         return c - 'A' + 10;
     };
     while (i < pat.size()) {
+        if (pat[i] == '\\' && i + 1 < pat.size() && pat[i+1] != 'u') {
+            // \v is U+000B alone in a regular expression; PCRE2's \v is every vertical space, line feed included.
+            if (pat[i+1] == 'v') result += "\\x0B";
+            else { result += pat[i]; result += pat[i+1]; }
+            i += 2;
+            continue;
+        }
         if (pat[i] == '\\' && i + 1 < pat.size() && pat[i+1] == 'u') {
             if (i + 2 < pat.size() && pat[i+2] == '{') {
                 // \u{XXXXX}
@@ -890,6 +897,12 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
             i += 3;
             continue;
         }
+        // [] is the class that matches nothing; PCRE2 reads its ] as a member and runs on to the next one.
+        if (ch == '[' && !in_char_class && i + 1 < pat.size() && pat[i+1] == ']') {
+            result += "(?:(?!))";
+            i += 2;
+            continue;
+        }
         if (ch == ']' && !in_char_class) {
             result += "\\]";
             i++;
@@ -1352,7 +1365,7 @@ static void reset_stale_captures(const std::string& pat, const void* code,
 // JS spec: \d = [0-9], \w = [A-Za-z0-9_], \s = specific Unicode whitespace list.
 // PCRE2_UCP extends these to full Unicode categories and non-UCP \s is ASCII-only;
 // both are wrong per spec, so \s and \S are expanded to explicit code point sets.
-static std::string expand_js_charclass_shortcuts(const std::string& p, bool unicode) {
+static std::string expand_js_charclass_shortcuts(const std::string& p, bool unicode, bool class_sets = false) {
     // JS \s whitespace — exactly the set from ECMAScript spec (WhiteSpace + LineTerminator)
     static const char* s_inner  = "\\t\\n\\x0B\\f\\r\\x20\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}";
     static const char* s_outer  = "[\\t\\n\\x0B\\f\\r\\x20\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
@@ -1387,6 +1400,14 @@ static std::string expand_js_charclass_shortcuts(const std::string& p, bool unic
                 i += 2;
                 continue;
             }
+            // [] matches nothing, and PCRE2 would take its ] for a member of the class.
+            if (cc_depth == 0 && i + 1 < p.size() && p[i+1] == ']') {
+                result += "(?:(?!))";
+                i += 1;
+                continue;
+            }
+            // Only a class set (v flag) nests; in any other class a [ is itself.
+            if (cc_depth > 0 && !class_sets) { result += p[i]; continue; }
             cc_depth++;
             result += p[i];
         } else if (p[i] == ']' && cc_depth > 0) {
@@ -2490,7 +2511,7 @@ void RegExp::do_compile() {
     }
 
     std::string pat = unicode_
-        ? convert_unicode_escapes(expand_gc_aliases(expand_word_classes_unicode_i(expand_js_charclass_shortcuts(base, true), ignore_case_)), true)
+        ? convert_unicode_escapes(expand_gc_aliases(expand_word_classes_unicode_i(expand_js_charclass_shortcuts(base, true, unicode_sets_), ignore_case_)), true)
         : convert_unicode_escapes(expand_ascii_word_classes(expand_js_charclass_shortcuts(preprocess_pattern(base), false)), false);
     // Only /u-mode PCRE2_UTF rejects unpaired surrogate units in the pattern; in
     // 16-bit code-unit mode they are ordinary units.
@@ -2571,7 +2592,9 @@ void RegExp::do_compile() {
             pcre2_get_error_message(errcode, errbuf, 256);
             std::string msg;
             for (size_t k = 0; k < 256 && errbuf[k]; k++) msg += static_cast<char>(errbuf[k]);
-            throw std::runtime_error("Invalid regular expression: " + msg);
+            // The pattern as the engine got it (after the rewrites above) and where it stopped: what a page's
+            // regular expression was is not otherwise findable in a minified script.
+            throw std::runtime_error("Invalid regular expression: /" + pat + "/: " + msg + " at " + std::to_string(erroffset));
         }
     } else if (!g_regexp_validation_only) {
         pcre2_jit_compile(re, PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT);

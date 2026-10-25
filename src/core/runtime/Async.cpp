@@ -316,7 +316,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // inside its body (assignment is silently ignored in sloppy mode, throws in strict).
     const std::string& fn_name = get_name();
     bool self_name_slot = false;
-    if (!fn_name.empty() && fn_name != "<anonymous>" && !exec_ctx->has_binding(fn_name)) {
+    if (get_executable() && get_executable()->needs_self_binding && !fn_name.empty() && fn_name != "<anonymous>" && !exec_ctx->has_binding(fn_name)) {
         exec_ctx->create_binding(fn_name, Value(this), false);
         self_name_slot = true;
     }
@@ -1865,7 +1865,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
     bool self_name_slot = false;
     {
         const std::string& fn_name = get_name();
-        if (!fn_name.empty() && fn_name != "<anonymous>" && !gen_ctx->has_binding(fn_name)) {
+        if (get_executable() && get_executable()->needs_self_binding && !fn_name.empty() && fn_name != "<anonymous>" && !gen_ctx->has_binding(fn_name)) {
             gen_ctx->create_binding(fn_name, Value(this), false);
             self_name_slot = true;
         }

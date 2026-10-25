@@ -372,7 +372,9 @@ private:
             return info;
         }
         ~FunctionNames() {
-            if (has_body) {
+            // A template substitution is parsed on its own text, so its offsets are relative to that text
+            // and would be filed over the real bodies that sit at those offsets of the script.
+            if (has_body && !p.detached_tokens_) {
                 if (ScriptUnit* unit = ScriptUnit::building()) {
                     unit->set_scope_info_at(body_src, take());
                 }
@@ -527,6 +529,7 @@ public:
     // Expression (VariableDeclarator's initializer); both share
     // last_consumed_token_end for computing the tape's own end position.
     std::unique_ptr<ASTNode> parse_expression_maybe_tape();
+    std::unique_ptr<ASTNode> parse_expression_with_in();
     std::unique_ptr<ASTNode> parse_assignment_maybe_tape();
     Position last_consumed_token_end(const Position& fallback) const;
     // One buffer the outermost tape attempt builds into: a bail then costs no

@@ -1582,7 +1582,7 @@ bool Function::call_pure_native(Context& ctx, std::span<const Value> args, const
             hazards.is_static_method = slots.is_static_method;
             hazards.super_is_null = slots.super_is_null;
             hazards.private_brands = slots.private_brands != nullptr;
-            hazards.self_name_slot = !self_name.empty() && self_name != "<anonymous>" &&
+            hazards.self_name_slot = executable_->needs_self_binding && !self_name.empty() && self_name != "<anonymous>" &&
                                       !function_context.has_binding(self_name) &&
                                       BytecodeCompiler::references_identifier(ast, self_name);
             if (executable_->needs_self_binding && self_name != "<anonymous>") hazards.self_name = self_name;
@@ -1645,7 +1645,7 @@ bool Function::call_pure_native(Context& ctx, std::span<const Value> args, const
             if (executable_->self_name_state < 0) {
                 executable_->self_name_state = 0;
                 const std::string& self_name = get_name();
-                if (!self_name.empty() && self_name != "<anonymous>") {
+                if (executable_->needs_self_binding && !self_name.empty() && self_name != "<anonymous>") {
                     for (const auto& n : executable_->bytecode_chunk->names) {
                         if (*n == self_name) { executable_->self_name_state = 1; break; }
                     }

@@ -294,6 +294,9 @@ public:
     static std::unique_ptr<BytecodeChunk> compile_script(
         const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false,
         bool track_completion = false, bool suspendable = false);
+    static std::unique_ptr<BytecodeChunk> compile_script_attempt(
+        const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with,
+        bool track_completion, bool suspendable);
 
     // A module body compiled for the suspendable convention, so a top-level
     // await suspends the fiber the module runs on instead of draining the

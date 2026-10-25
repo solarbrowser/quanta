@@ -1366,6 +1366,10 @@ static uint32_t decode_utf8_at(const std::string& src, size_t pos) {
 static bool is_unicode_id_start(uint32_t cp) {
     if (cp > 0xFFFF) return true;
     if (cp == 0x180E) return false; // Mongolian Vowel Separator: Cf, not ID_Start
+    // The Latin-1 letters: the feminine and masculine ordinal indicators and the micro sign are letters (Lo, Ll); the multiplication and
+    // division signs, between the capitals and the small letters, are not.
+    if (cp == 0x00AA || cp == 0x00B5 || cp == 0x00BA) return true;
+    if (cp == 0x00D7 || cp == 0x00F7) return false;
     if (cp >= 0x00C0 && cp < 0x2000) return true;
     if (cp < 0x2070) return false;
     if (cp == 0x2071 || cp == 0x207F) return true;
@@ -1402,6 +1406,7 @@ static bool is_invalid_id_continue_cp(uint32_t cp) {
     if (cp == 0x180E) return true; // Mongolian Vowel Separator: Cf, not ID_Continue
     if (cp == 0x2E2F) return true; // Vertical Tilde: Lm + Pattern_Syntax, not ID_Continue
     if (cp == 0x00A0) return true; // NO-BREAK SPACE: WhiteSpace, not ID_Continue
+    if (cp == 0x00D7 || cp == 0x00F7) return true; // multiplication and division signs: Sm, not ID_Continue
     if (cp < 0x80) return !(std::isalnum((int)cp) || cp == '_' || cp == '$');
     return false;
 }
@@ -1552,6 +1557,9 @@ bool Lexer::is_regex_context() const {
                     case TokenType::ELSE:
                     case TokenType::TRY:
                     case TokenType::FINALLY:
+                    case TokenType::CATCH:       // `catch {}`: no binding
+                    case TokenType::LEFT_BRACE:  // a block opening a block, or the first statement of a body
+                    case TokenType::RIGHT_BRACE: // a block after a block
                     case TokenType::COLON: // labeled block
                         return true;
                     case TokenType::FUNCTION:
@@ -2140,6 +2148,20 @@ bool Lexer::can_be_regex_literal() const {
     // All preceding characters were whitespace -- start of source, regex is valid
     if (is_whitespace(prev_char) || is_line_terminator(prev_char)) {
         return true;
+    }
+
+    // `a++ / b`: the operator after an operand is the postfix one, and what follows it is a division.
+    if ((prev_char == '+' || prev_char == '-') && pos > 0 && source()[pos - 1] == prev_char) {
+        size_t before = pos - 1;
+        while (before > 0 && (is_whitespace(source()[before - 1]) || is_line_terminator(source()[before - 1]))) before--;
+        if (before > 0) {
+            const char operand_end = source()[before - 1];
+            if (operand_end == ')' || operand_end == ']' || operand_end == '_' || operand_end == '$' ||
+                (operand_end >= '0' && operand_end <= '9') || (operand_end >= 'a' && operand_end <= 'z') ||
+                (operand_end >= 'A' && operand_end <= 'Z') || static_cast<unsigned char>(operand_end) >= 0x80) {
+                return false;
+            }
+        }
     }
 
     return prev_char == '=' || prev_char == '(' || prev_char == '[' ||

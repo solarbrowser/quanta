@@ -14,6 +14,7 @@
 #endif
 #include <windows.h>
 #else
+#include <pthread.h>
 #include <sys/resource.h>
 #endif
 
@@ -27,7 +28,24 @@ size_t thread_stack_bytes() {
     GetCurrentThreadStackLimits(&low, &high);
     if (high > low) return static_cast<size_t>(high - low);
     return 1u * 1024 * 1024;
+#elif defined(__APPLE__)
+    // The stack of the thread asking, which a program may have made larger (or smaller) than the process limit.
+    const size_t own = pthread_get_stacksize_np(pthread_self());
+    if (own >= 1u * 1024 * 1024) return own;
+    return 8u * 1024 * 1024;
 #else
+#if defined(__linux__)
+    {
+        pthread_attr_t attr;
+        if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+            void* address = nullptr;
+            size_t size = 0;
+            const int got = pthread_attr_getstack(&attr, &address, &size);
+            pthread_attr_destroy(&attr);
+            if (got == 0 && size >= 1u * 1024 * 1024) return size;
+        }
+    }
+#endif
     struct rlimit rl;
     if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
         rl.rlim_cur >= 1u * 1024 * 1024) {

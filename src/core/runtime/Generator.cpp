@@ -744,7 +744,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     bool self_name_slot = false;
     {
         const std::string& fn_name = this->get_name();
-        if (!fn_name.empty() && fn_name != "<anonymous>" && !gen_context.has_binding(fn_name)) {
+        if (get_executable() && get_executable()->needs_self_binding && !fn_name.empty() && fn_name != "<anonymous>" && !gen_context.has_binding(fn_name)) {
             gen_context.create_binding(fn_name, Value(this), false);
             self_name_slot = true;
         }
