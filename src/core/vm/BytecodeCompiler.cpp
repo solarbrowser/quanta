@@ -12381,6 +12381,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 if (failed_) return false;
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(func_reg));
+                if (call->is_optional()) {
+                    // f?.(...xs): a nullish callee ends the chain before the arguments run.
+                    chain_shortcircuit_jumps_->push_back(emit_jump(Op::JumpIfNullish));
+                }
                 // Spec: the callee is evaluated before the arguments.
                 int args_reg;
                 if (call_args.size() == 1) {
