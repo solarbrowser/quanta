@@ -50,6 +50,9 @@ size_t Parser::thread_stack_budget() {
     return budget;
 }
 
+static void collect_var_declared_names(ASTNode* node, std::vector<std::string>& vars);
+namespace { void append_declarator_names(const VariableDeclarator* d, std::vector<std::string>& out); }
+
 Parser::Parser(TokenSequence tokens)
     : tokens_(std::move(tokens)), current_token_index_(0) {
     options_.allow_return_outside_function = false;
@@ -456,6 +459,11 @@ std::unique_ptr<Program> Parser::parse_program() {
             for (const auto& stmt : statements) {
                 if (!stmt) continue;
                 auto t = stmt->get_type();
+                if (t != ASTNode::Type::VARIABLE_DECLARATION) {
+                    std::vector<std::string> hoisted;
+                    collect_var_declared_names(stmt.get(), hoisted);
+                    for (const auto& n : hoisted) local_bindings.insert(n);
+                }
                 if (t == ASTNode::Type::FUNCTION_DECLARATION) {
                     auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
                     if (fn->get_id()) local_bindings.insert(fn->get_id()->get_name());
@@ -464,8 +472,9 @@ std::unique_ptr<Program> Parser::parse_program() {
                     if (cls->get_id()) local_bindings.insert(cls->get_id()->get_name());
                 } else if (t == ASTNode::Type::VARIABLE_DECLARATION) {
                     auto* vd = static_cast<VariableDeclaration*>(stmt.get());
-                    for (const auto& d : vd->get_declarations())
-                        if (d->get_id()) local_bindings.insert(d->get_id()->get_name());
+                    std::vector<std::string> declared;
+                    for (const auto& d : vd->get_declarations()) append_declarator_names(d.get(), declared);
+                    for (const auto& n : declared) local_bindings.insert(n);
                 } else if (t == ASTNode::Type::IMPORT_STATEMENT) {
                     auto* imp = static_cast<ImportStatement*>(stmt.get());
                     if (!imp->get_default_alias().empty()) local_bindings.insert(imp->get_default_alias());
@@ -484,8 +493,9 @@ std::unique_ptr<Program> Parser::parse_program() {
                                 if (cls->get_id()) local_bindings.insert(cls->get_id()->get_name());
                             } else if (decl->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
                                 auto* vd = static_cast<VariableDeclaration*>(decl);
-                                for (const auto& d : vd->get_declarations())
-                                    if (d->get_id()) local_bindings.insert(d->get_id()->get_name());
+                                std::vector<std::string> declared;
+                                for (const auto& d : vd->get_declarations()) append_declarator_names(d.get(), declared);
+                                for (const auto& n : declared) local_bindings.insert(n);
                             }
                         }
                     }
@@ -12393,6 +12403,12 @@ void Parser::check_for_use_strict_directive() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
+    // An async arrow is a function of its own: a static block around it neither forbids its `return` nor its `await`-named things.
+    struct StaticBlockOff {
+        bool& flag; bool saved;
+        explicit StaticBlockOff(bool& f) : flag(f), saved(f) { flag = false; }
+        ~StaticBlockOff() { flag = saved; }
+    } static_block_off(options_.in_class_static_block);
     // An arrow is transparent to a suspension and to `arguments`, which
     // belong to the body around it, but what it binds is its own, and it is a
     // closure like any other for what it can see.
@@ -12608,6 +12624,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Position start) {
+    // An async arrow is a function of its own: a static block around it neither forbids its `return` nor its `await`-named things.
+    struct StaticBlockOff {
+        bool& flag; bool saved;
+        explicit StaticBlockOff(bool& f) : flag(f), saved(f) { flag = false; }
+        ~StaticBlockOff() { flag = saved; }
+    } static_block_off(options_.in_class_static_block);
     // An arrow is transparent to a suspension and to `arguments`, which
     // belong to the body around it, but what it binds is its own, and it is a
     // closure like any other for what it can see.

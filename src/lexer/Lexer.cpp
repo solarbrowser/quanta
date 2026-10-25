@@ -1492,9 +1492,27 @@ bool Lexer::is_regex_context() const {
         case TokenType::ELSE:
         // `do /re/.test(x);` -- a statement follows, not an operand.
         case TokenType::DO:
+        // `[...a, .../re/.test(s)]`: an operand follows.
+        case TokenType::ELLIPSIS:
 
         case TokenType::EOF_TOKEN:
             return true;
+
+        case TokenType::OF: {
+            // `for (x of /re/.test(y) ? a : b)`: the `of` of a for-of head; anywhere else it is a name being divided.
+            if (tokens_so_far_ == nullptr) return false;
+            const auto& toks = *tokens_so_far_;
+            int seen = 0;
+            for (int i = (int)toks.lexed_count() - 2; i >= 0 && seen < 12; i--) {
+                TokenType tt = toks[i].get_type();
+                if (tt == TokenType::NEWLINE || tt == TokenType::WHITESPACE || tt == TokenType::COMMENT) continue;
+                seen++;
+                if (tt == TokenType::FOR) return true;
+                if (tt == TokenType::SEMICOLON || tt == TokenType::RIGHT_PAREN || tt == TokenType::LEFT_BRACE ||
+                    tt == TokenType::RIGHT_BRACE) return false;
+            }
+            return false;
+        }
 
         case TokenType::RIGHT_PAREN: {
             // A `)` usually ends an operand, so `/` after it divides. The

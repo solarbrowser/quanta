@@ -159,7 +159,7 @@ std::string DateTimeFormatObject::skeleton() const {
         else if (date_style == "long") s += "yMMMMd";
         else if (date_style == "medium") s += "yMMMd";
         else if (date_style == "short") s += "yyMd";
-        const char* hour_letter = hour_cycle == "h11" ? "K" : hour_cycle == "h24" ? "k" : hour_cycle == "h12" ? "h" : "H";
+        const char* hour_letter = (hour_cycle == "h11" || hour_cycle == "h12") ? "h" : "H";
         if (time_style == "full") s += std::string(hour_letter) + "mszzzz";
         else if (time_style == "long") s += std::string(hour_letter) + "msz";
         else if (time_style == "medium") s += std::string(hour_letter) + "ms";
@@ -173,7 +173,7 @@ std::string DateTimeFormatObject::skeleton() const {
     s += width(weekday, "", "", "EEEEE", "E", "EEEE");
     s += width(day_period, "", "", "BBBBB", "B", "BBBB");
     if (!hour.empty()) {
-        const char* letter = hour_cycle == "h11" ? "K" : hour_cycle == "h24" ? "k" : hour_cycle == "h12" ? "h" : "H";
+        const char* letter = (hour_cycle == "h11" || hour_cycle == "h12") ? "h" : "H";
         s += hour == "2-digit" ? std::string(letter) + letter : std::string(letter);
     }
     s += width(minute, "m", "mm", "", "", "");
@@ -499,7 +499,8 @@ DateTimeFormatObject* create_date_time_format(Context& ctx, const Value& locales
     LocaleId id = IntlICU::split_tag(f.locale);
     id.keywords.clear();
     id.keywords.emplace_back("ca", f.calendar);
-    if (!f.hour_cycle.empty()) id.keywords.emplace_back("hc", f.hour_cycle);
+    // The calendar library has no h11 and h24 patterns: they are shown as the h12 and h23 they differ from at midnight and noon only.
+    if (!f.hour_cycle.empty()) id.keywords.emplace_back("hc", f.hour_cycle == "h11" ? "h12" : f.hour_cycle == "h24" ? "h23" : f.hour_cycle);
     id.keywords.emplace_back("nu", f.numbering_system);
     std::sort(id.keywords.begin(), id.keywords.end());
     f.icu_locale = id.to_string();

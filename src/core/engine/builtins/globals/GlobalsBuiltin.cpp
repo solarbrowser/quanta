@@ -2227,10 +2227,10 @@ void register_global_builtins(Context& ctx) {
     auto clearTimeout_fn = ObjectFactory::create_native_function("clearTimeout", clear_timer_fn);
     auto clearInterval_fn = ObjectFactory::create_native_function("clearInterval", clear_timer_fn);
     
-    ctx.get_lexical_environment()->create_binding("setTimeout", Value(setTimeout_fn.release()), false);
-    ctx.get_lexical_environment()->create_binding("setInterval", Value(setInterval_fn.release()), false);
-    ctx.get_lexical_environment()->create_binding("clearTimeout", Value(clearTimeout_fn.release()), false);
-    ctx.get_lexical_environment()->create_binding("clearInterval", Value(clearInterval_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("setTimeout", Value(setTimeout_fn.release()), true);
+    ctx.get_lexical_environment()->create_binding("setInterval", Value(setInterval_fn.release()), true);
+    ctx.get_lexical_environment()->create_binding("clearTimeout", Value(clearTimeout_fn.release()), true);
+    ctx.get_lexical_environment()->create_binding("clearInterval", Value(clearInterval_fn.release()), true);
 
     // setImmediate/clearImmediate: a zero-delay, one-shot timer (Node API, not in any web spec).
     auto setImmediate_fn = ObjectFactory::create_native_function("setImmediate",
@@ -2242,14 +2242,14 @@ void register_global_builtins(Context& ctx) {
             return schedule_timer_fn(ctx, shifted, false);
         });
     auto clearImmediate_fn = ObjectFactory::create_native_function("clearImmediate", clear_timer_fn);
-    ctx.get_lexical_environment()->create_binding("setImmediate", Value(setImmediate_fn.release()), false);
-    ctx.get_lexical_environment()->create_binding("clearImmediate", Value(clearImmediate_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("setImmediate", Value(setImmediate_fn.release()), true);
+    ctx.get_lexical_environment()->create_binding("clearImmediate", Value(clearImmediate_fn.release()), true);
 
     auto structuredClone_fn = ObjectFactory::create_native_function("structuredClone",
         [](Context& ctx, std::span<const Value> args, Value) -> Value {
             return structured_clone_global(ctx, args);
         }, 1);
-    ctx.get_lexical_environment()->create_binding("structuredClone", Value(structuredClone_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("structuredClone", Value(structuredClone_fn.release()), true);
 
     // queueMicrotask: unlike setTimeout, a non-callable callback is a TypeError, not a silent no-op.
     // Exceptions are reported as uncaught, not propagated, since the caller's turn already ended.
@@ -2274,7 +2274,7 @@ void register_global_builtins(Context& ctx) {
             }, {Value(cb)});
             return Value();
         }, 1);
-    ctx.get_lexical_environment()->create_binding("queueMicrotask", Value(queueMicrotask_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("queueMicrotask", Value(queueMicrotask_fn.release()), true);
 
 
     if (ctx.get_built_in_object("Object")) {
