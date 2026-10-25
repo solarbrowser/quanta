@@ -11494,7 +11494,9 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         }
         advance();
         
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
+        if (current_token().get_type() != TokenType::IDENTIFIER && current_token().get_type() != TokenType::OF &&
+            current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::ASYNC &&
+            current_token().get_type() != TokenType::STATIC && current_token().get_type() != TokenType::UNDEFINED) {
             add_error("Expected identifier after 'as'");
             return nullptr;
         }
@@ -12012,7 +12014,9 @@ std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
         }
         advance();
 
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
+        if (current_token().get_type() != TokenType::IDENTIFIER && current_token().get_type() != TokenType::OF &&
+            current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::ASYNC &&
+            current_token().get_type() != TokenType::STATIC && current_token().get_type() != TokenType::UNDEFINED) {
             add_error("Expected identifier after 'as'");
             return nullptr;
         }

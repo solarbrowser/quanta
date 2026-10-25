@@ -8869,7 +8869,9 @@ QUANTA_HANDLER Value h_gen_GetKeyed(HANDLER_PARAMS) {
                 const Value& recv = regs[obj_reg];
                 // Null/undefined check must run before ToPropertyKey on the key (spec order).
                 if (recv.is_null() || recv.is_undefined()) {
-                    ctx.throw_type_error("Cannot read property of null or undefined");
+                    std::string message = std::string("Cannot read properties of ") + (recv.is_null() ? "null" : "undefined");
+                    if (acc.is_string() || acc.is_number()) message += " (reading '" + acc.to_string() + "')";
+                    ctx.throw_type_error(message);
                     CHECK_EXC();
                     break;
                 }
