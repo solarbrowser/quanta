@@ -119,8 +119,8 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_bor
 Value perform_super_call(Context& ctx, std::span<const Value> arg_values, bool super_already_called);
 // And from member.cpp, backing the Op::GetSuper family.
 Object* resolve_super_base(Context& ctx, Function* owner, Environment* lex_env = nullptr);
-Value super_get(Context& ctx, const std::string& prop_name, Function* owner, Environment* lex_env = nullptr);
-Value super_get_on(Context& ctx, Object* base, const std::string& prop_name);
+Value super_get(Context& ctx, const std::string& prop_name, Function* owner, Environment* lex_env = nullptr, const Value* receiver = nullptr);
+Value super_get_on(Context& ctx, Object* base, const std::string& prop_name, const Value* receiver = nullptr);
 void super_set(Context& ctx, const std::string& prop_name, const Value& value, Function* owner);
 void super_set_on(Context& ctx, Object* base, const std::string& prop_name, const Value& value);
 
@@ -7702,7 +7702,8 @@ QUANTA_HANDLER Value h_gen_GetSuper(HANDLER_PARAMS) {
                 {
                 uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
-                acc = super_get(ctx, chunk.name_at(name_idx), f.owner, frame_lexical_env(f));
+                if (!f.this_resolved && !ctx.this_needs_super()) { f.this_value = ctx.get_this_value(); CHECK_EXC(); f.this_resolved = true; }
+                acc = super_get(ctx, chunk.name_at(name_idx), f.owner, frame_lexical_env(f), f.this_resolved ? &f.this_value : nullptr);
                 CHECK_EXC();
                 break;
             }
@@ -7771,7 +7772,8 @@ QUANTA_HANDLER Value h_gen_GetSuperKeyed(HANDLER_PARAMS) {
                 pc += 1;
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
-                acc = super_get_on(ctx, as_object_like(regs[base_reg]), key);
+                if (!f.this_resolved) { f.this_value = ctx.get_this_value(); CHECK_EXC(); f.this_resolved = true; }
+                acc = super_get_on(ctx, as_object_like(regs[base_reg]), key, &f.this_value);
                 CHECK_EXC();
                 break;
             }

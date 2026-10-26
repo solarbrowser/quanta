@@ -204,29 +204,35 @@ Object* resolve_super_base(Context& ctx, Function* owner, Environment* lex_env =
 // super [[Get]] (ES2024 13.3.7.3) on an already-resolved base. Computed keys take
 // this form because MakeSuperPropertyReference runs GetSuperBase before GetValue
 // applies ToPropertyKey, and a key's toString() can mutate the prototype chain.
-Value super_get_on(Context& ctx, Object* base, const std::string& prop_name) {
+Value super_get_on(Context& ctx, Object* base, const std::string& prop_name, const Value* receiver) {
     if (!base) {
         // RequireObjectCoercible: null prototype base throws TypeError (spec 13.3.7.3 step 5)
         ctx.throw_type_error("Cannot read properties of null (reading super property)");
         return Value();
     }
     // For getter properties, invoke with current 'this' as receiver (spec super[[Get]])
-    PropertyDescriptor desc = base->get_property_descriptor(prop_name);
-    if (desc.is_accessor_descriptor() && desc.has_getter()) {
-        Function* getter = as_function(desc.get_getter());
-        if (getter) return getter->call(ctx, {}, ctx.get_binding("this"));
+    // (the getter may sit further up the chain than the base itself: a class between
+    // the one that defines it and the one asking has none of its own)
+    for (Object* holder = base; holder; holder = holder->get_prototype()) {
+        if (!holder->has_own_property(prop_name)) continue;
+        PropertyDescriptor desc = holder->get_property_descriptor(prop_name);
+        if (desc.is_accessor_descriptor() && desc.has_getter()) {
+            Function* getter = as_function(desc.get_getter());
+            if (getter) return getter->call(ctx, {}, receiver ? *receiver : ctx.get_binding("this"));
+        }
+        break;
     }
     return base->get_property(prop_name);
 }
 
 // super.<name>: no key expression, so the base can be resolved here.
 // Shared with Op::GetSuper.
-Value super_get(Context& ctx, const std::string& prop_name, Function* owner, Environment* lex_env) {
+Value super_get(Context& ctx, const std::string& prop_name, Function* owner, Environment* lex_env, const Value* receiver) {
     if (ctx.this_needs_super()) {
         ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
         return Value();
     }
-    return super_get_on(ctx, resolve_super_base(ctx, owner, lex_env), prop_name);
+    return super_get_on(ctx, resolve_super_base(ctx, owner, lex_env), prop_name, receiver);
 }
 
 // super [[Set]] (ES2024 13.3.7.4) on an already-resolved base: the lookup walks the
