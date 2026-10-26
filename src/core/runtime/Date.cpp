@@ -396,6 +396,25 @@ double parse_iso_string(const std::string& s, bool& ok) {
     bool tz_present = false;
     double tz_ms = 0.0;
     if (i < s.size()) {
+        // (the space-separated form browsers also read: "2026-10-23 15:01:55 GMT", "... UTC+0300", "... +0300")
+        size_t spaced = i;
+        while (spaced < s.size() && s[spaced] == ' ') ++spaced;
+        if (spaced > i && spaced < s.size()) {
+            size_t word = spaced;
+            if (s.compare(word, 3, "GMT") == 0 || s.compare(word, 3, "UTC") == 0) word += 3;
+            else if (s.compare(word, 2, "UT") == 0) word += 2;
+            else if (s[word] != '+' && s[word] != '-') word = spaced;
+            if (word != spaced || s[spaced] == '+' || s[spaced] == '-') {
+                i = word;
+                if (word != spaced) tz_present = true;
+                if (i >= s.size()) { /* the name alone */ }
+            }
+        } else if (s.compare(i, 3, "GMT") == 0 || s.compare(i, 3, "UTC") == 0) {
+            i += 3;
+            tz_present = true;
+        }
+    }
+    if (i < s.size()) {
         if (s[i] == 'Z') {
             ++i;
             tz_present = true;
@@ -471,6 +490,31 @@ double parse_legacy_string(const std::string& input) {
         if (m >= 0) {
             if (month >= 0) return nan_value();
             month = m;
+            continue;
+        }
+        if (tok.find('/') != std::string::npos) {
+            // 10/23/2026 (month first) or 2026/10/23 (year first)
+            if (month >= 0 || have_day || have_year) return nan_value();
+            long long parts[3];
+            size_t p = 0;
+            for (int k = 0; k < 3; ++k) {
+                size_t from = p;
+                while (p < tok.size() && tok[p] >= '0' && tok[p] <= '9') ++p;
+                if (p == from || p - from > 4) return nan_value();
+                parts[k] = std::strtoll(tok.substr(from, p - from).c_str(), nullptr, 10);
+                if (k < 2) {
+                    if (p >= tok.size() || tok[p] != '/') return nan_value();
+                    ++p;
+                }
+            }
+            if (p != tok.size()) return nan_value();
+            const bool year_first = tok.find('/') > 2;
+            const long long mo = year_first ? parts[1] : parts[0], dy = year_first ? parts[2] : parts[1], yr = year_first ? parts[0] : parts[2];
+            if (mo < 1 || mo > 12 || dy < 1 || dy > 31) return nan_value();
+            month = static_cast<int>(mo - 1);
+            day = static_cast<double>(dy);
+            year = static_cast<double>(yr < 50 && !year_first && tok.size() - tok.rfind('/') - 1 <= 2 ? 2000 + yr : yr < 100 && !year_first && tok.size() - tok.rfind('/') - 1 <= 2 ? 1900 + yr : yr);
+            have_day = have_year = true;
             continue;
         }
         if (tok.find(':') != std::string::npos) {
@@ -552,7 +596,7 @@ double parse_date_string(const std::string& input) {
 
     bool iso_shaped = false;
     double iso = parse_iso_string(s, iso_shaped);
-    if (iso_shaped) return iso;
+    if (iso_shaped && s.find('/') == std::string::npos) return iso;
     return parse_legacy_string(s);
 }
 
