@@ -4896,18 +4896,38 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 }
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
-    const ASTNode* body, const ParamList& params,
+    const ASTNode* body, const ParamList& params_in,
     bool suspendable, bool is_arrow, bool is_strict,
     const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
     const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain,
     bool needs_self_binding, const EnvSlotHazards* env_slot_hazards,
     bool elide_arguments, bool* attempted_elision) {
     if (!body) return nullptr;
+    // A parameter takes a register, and the register file is 255 wide. A list longer than this (a build manifest
+    // that names every string it repeats makes one of hundreds) keeps its first names as parameters and takes the
+    // rest as one rest array that the prologue spreads into variables of those names.
+    constexpr size_t kRegisterParams = 64;
+    std::vector<std::string> trimmed_names;
+    std::vector<std::string> spilled_params;
+    ParamList trimmed_params;
+    const ParamList* effective_params = &params_in;
+    if (params_in.size() > kRegisterParams) {
+        std::unordered_set<std::string> seen_names;
+        for (size_t i = 0; i < params_in.size(); i++) {
+            if (params_in.is_rest(i) || params_in.has_default(i) || params_in.has_pattern(i)) return nullptr;
+            if (!seen_names.insert(params_in.name(i)).second) return nullptr;
+            (i < kRegisterParams ? trimmed_names : spilled_params).push_back(params_in.name(i));
+        }
+        trimmed_names.push_back("%spilled-params");
+        trimmed_params.names = &trimmed_names;
+        trimmed_params.rest_last = true;
+        effective_params = &trimmed_params;
+    }
+    const ParamList& params = *effective_params;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
     // never compiled at all, so every call to one ran in the tree-walker.
     const bool concise = body->get_type() != ASTNode::Type::BLOCK_STATEMENT;
-    if (params.size() > 200) return nullptr;
 
     // Default/destructured/rest parameters force env_mode: rest needs a
     // fresh (not run()-auto-bound) slot, and destructuring only knows how
@@ -4958,6 +4978,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
 
     std::vector<DeclInfo> declared;
     if (!prescan_declarations(body, declared)) return nullptr;
+    // The spilled parameters are variables like any other from here on (a body `var` of the same name is one binding).
+    for (const auto& name : spilled_params) {
+        bool already = false;
+        for (const auto& info : declared) if (info.name == name) { already = true; break; }
+        if (!already) declared.push_back({name, false, false});
+    }
     std::unordered_set<std::string> annexb_fn_vars;
     drop_shadowed_annexb_fn_vars(declared, param_names, annexb_fn_vars);
 
@@ -6055,6 +6081,24 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
             // Environment, where the difference between creating a slot and
             // writing one is observable.
             compiler.emit_write_local(rest_name, /*is_declaration=*/true);
+        }
+        if (!spilled_params.empty()) {
+            compiler.emit_read_local(rest_name);
+            const int spill_reg = compiler.alloc_temp();
+            if (compiler.failed_) return nullptr;
+            compiler.emit(Op::Star);
+            compiler.emit_u8(static_cast<uint8_t>(spill_reg));
+            for (size_t i = 0; i < spilled_params.size(); i++) {
+                if (i <= static_cast<size_t>(INT8_MAX)) {
+                    compiler.emit(Op::LdaSmi);
+                    compiler.emit_u8(static_cast<uint8_t>(static_cast<int8_t>(i)));
+                } else {
+                    compiler.emit_load_const(Value(static_cast<double>(i)));
+                }
+                compiler.emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(spill_reg), compiler.alloc_keyed_feedback());
+                compiler.emit_write_local(spilled_params[i], /*is_declaration=*/true);
+            }
+            compiler.free_temp(spill_reg);
         }
     }
     if (params_tdz && env_mode) {
