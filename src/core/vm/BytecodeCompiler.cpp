@@ -11199,6 +11199,17 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     emit_u8(static_cast<uint8_t>(reg));
                 }
                 count++;
+                if (count == 32) {
+                    // Hundreds of pieces would exhaust the register file:
+                    // fold what is here into the first register and go on.
+                    emit(Op::BuildTemplateString);
+                    emit_u8(static_cast<uint8_t>(pieces_start));
+                    emit_u8(count);
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(pieces_start));
+                    free_temp(pieces_start + 1);
+                    count = 1;
+                }
             }
             if (count == 0) {
                 // Nothing but empty text: the result is the empty string.
