@@ -135,10 +135,12 @@ public:
     // Contexts keep the set: there are few of them, and Context has no room
     // for a stamp without growing (its size is asserted).
     void visit_context(Context* ctx) override {
-        if (ctx && seen_contexts_.insert(ctx).second) {
-            ctx->gc_stamp_major_epoch(g_major_epoch);
-            context_work_.push_back(ctx);
-        }
+        if (!ctx) return;
+        // Stamped by every real edge, not only the first: a survivor the pool has already
+        // queued (root_survivor_context) is in the set without a stamp, and a live closure
+        // reaching it afterwards is exactly the edge the prune asks about.
+        ctx->gc_stamp_major_epoch(g_major_epoch);
+        if (seen_contexts_.insert(ctx).second) context_work_.push_back(ctx);
     }
     void visit_environment(Environment* env) override {
         if (env && env->gc_seen_cycle_ != cycle_) {
@@ -1073,6 +1075,8 @@ void run_minor_collection() {
     for (Engine* engine : Engine::all_engines())
         for (Context* ctx : engine->get_survivor_contexts()) v.root_survivor_context(ctx);
     Collector::mark_step(std::chrono::microseconds(-1));
+    // (before the prune: what a WeakMap's live key holds is reached only here, and may name a Context)
+    v.drain_ephemerons();
 
     // Pruned only now, with the whole graph traced. A pool entry kept for any
     // reason can reach a Function whose closure_context_ is a different pool
@@ -1212,6 +1216,11 @@ void finish_major_cycle(MarkVisitor& v) {
     // EventLoop still has a pending timer/Promise/fiber against gets
     // force-traced (nothing else would mark its subgraph) and kept;
     // anything else is unreachable and deleted.
+    //
+    // The ephemeron fixpoint runs first: a WeakMap value whose key is alive is
+    // reached only by it, and may be a closure of a Context the prune below
+    // would otherwise free before the fixpoint got to the closure.
+    v.drain_ephemerons();
     bool any_forced = false;
     std::vector<std::pair<Engine*, std::vector<Context*>>> doomed;
     for (Engine* engine : Engine::all_engines()) {
@@ -1240,6 +1249,7 @@ void finish_major_cycle(MarkVisitor& v) {
     // reaches goes back into its own engine's pool.
     if (any_forced) {
         Collector::mark_step(std::chrono::microseconds(-1));
+        v.drain_ephemerons();
         for (auto& [engine, candidates] : doomed) {
             std::vector<Context*> still_doomed;
             still_doomed.reserve(candidates.size());
