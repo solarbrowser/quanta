@@ -3756,6 +3756,14 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             {
                 std::vector<std::string> bound;
                 dest->collect_bound_names(bound);
+                if (options_.strict_mode) {
+                    for (const auto& name : bound) {
+                        if (name == "eval" || name == "arguments") {
+                            add_error("SyntaxError: '" + name + "' cannot be used as a variable name in strict mode");
+                            return nullptr;
+                        }
+                    }
+                }
                 if (kind == VariableDeclarator::Kind::VAR) {
                     for (const auto& name : bound) declare_local_name(name);
                 } else {
@@ -10918,10 +10926,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                             add_error("SyntaxError: '" + shn + "' is a reserved word in strict mode");
                             return nullptr;
                         }
-                        if (shn == "eval" || shn == "arguments") {
-                            add_error("SyntaxError: '" + shn + "' cannot be used as identifier in strict mode");
-                            return nullptr;
-                        }
+                        // `{eval}` and `{arguments}` read the bindings of those names, which strict code may do; it
+                        // may not write them, and a pattern that does is refused where it is made into one.
                     }
                     auto value = std::make_unique<Identifier>(
                         shn,
