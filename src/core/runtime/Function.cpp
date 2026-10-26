@@ -2434,7 +2434,9 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
             ? super_override_needs_reparent : auto_super_needs_reparent;
         if (from_super_swap && swap_needs_reparent && is_derived && constructor_prototype.is_object() &&
             ret_obj->get_type() != Object::ObjectType::Proxy) {
-            ret_obj->set_prototype(constructor_prototype.as_object());
+            // new.target's prototype, which is this class's own when it is what was constructed and a subclass's when this
+            // is a link of the chain a subclass built (`this` after its super() has to be its own).
+            ret_obj->set_prototype(pending_proto ? pending_proto : constructor_prototype.as_object());
         }
         if (!ret_obj->get_prototype_raw() && pending_proto) {
             // pending_proto, not constructor_prototype: a native that builds
