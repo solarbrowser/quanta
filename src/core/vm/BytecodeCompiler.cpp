@@ -10625,6 +10625,9 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     // over. Nothing else goes in it, and it is left before the outer binding
     // is made -- a named class expression binds its name only inside itself.
     int class_env_idx = -1;
+    // The closures made inside the class (its methods) must not trust an outer slot of this name either: count the
+    // inner binding as the declaration it is, so the chains they get leave the name to the walk that finds it.
+    if (reads_own_name) global_decl_count_[inner_name]++;
     // Shadows env_slot_info_'s entry for inner_name, if it has one, for
     // exactly the scope holding this binding. global_decl_count_ never learns
     // about this binding -- it is not a var/let/const/function declaration
