@@ -2518,12 +2518,12 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
     {
         std::vector<int32_t> npred(g_.b.size(), 0);
         for (int32_t i = 0; i < static_cast<int32_t>(g_.b.size()); i++) {
-            if (!reach[i] && !g_.b[i].synthetic) continue;
+            if (!g_.b[i].synthetic && !reach[i]) continue;
             for (int32_t s : g_.b[i].succs) npred[s]++;
         }
         const int32_t original = static_cast<int32_t>(g_.b.size());
         for (int32_t i = 0; i < original; i++) {
-            if (!reach[i] && !g_.b[i].synthetic) continue;
+            if (!g_.b[i].synthetic && !reach[i]) continue;
             if (g_.b[i].succs.size() < 2) continue;
             for (size_t k = 0; k < g_.b[i].succs.size(); k++) {
                 const int32_t s = g_.b[i].succs[k];
@@ -2540,7 +2540,7 @@ inline bool Builder::build(const std::vector<uint32_t>& entry_pcs, size_t max_in
     // Predecessor lists, from scratch, in block order.
     for (Block& B : g_.b) B.preds.clear();
     for (int32_t i = 0; i < static_cast<int32_t>(g_.b.size()); i++) {
-        if (!reach[i] && !g_.b[i].synthetic) continue;
+        if (!g_.b[i].synthetic && !reach[i]) continue;  // (a block made since `reach` was sized has no entry in it)
         for (int32_t s : g_.b[i].succs) g_.b[s].preds.push_back(i);
     }
     // Blocks that are only successors of unreachable synthetic leftovers cannot exist; entries have no preds.
