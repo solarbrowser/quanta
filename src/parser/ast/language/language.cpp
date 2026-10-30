@@ -604,7 +604,7 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
     {
         CallStack& cs = CallStack::instance();
         if (cs.depth() > 0) {
-            if (Function* creator = cs.top().function_ptr; creator && creator != function.get()) {
+            if (Function* creator = cs.top().function_ptr; creator && creator != function.get() && (tpl.form == Form::Arrow || tpl.is_arrow)) {
                 if (Object* brands = creator->private_brands()) {
                     function->set_private_brands(brands);
                     const std::string& slot = creator->pm_brand_slot();
