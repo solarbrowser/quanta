@@ -852,6 +852,8 @@ static bool is_bigint_wrapper(const Object* obj) {
 }
 
 std::string JSON::Stringifier::stringify_value(const Value& value) {
+    const bool skip_to_json = skip_object_toJSON_;
+    skip_object_toJSON_ = false;
     if (value.is_null()) {
         return "null";
     } else if (value.is_undefined()) {
@@ -909,7 +911,7 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
             bool is_array_value = unwrapped && unwrapped->is_array();
 
             // toJSON takes the current key as its first argument
-            if (obj && context_) {
+            if (obj && context_ && !skip_to_json) {
                 Value toJSON_val = const_cast<Object*>(obj)->get_property("toJSON");
                 if (toJSON_val.is_function()) {
                     Function* toJSON_fn = toJSON_val.as_function();
@@ -919,6 +921,7 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
                     if (result.is_undefined() || result.is_function() || result.is_symbol())
                         return "undefined_sentinel";
                     std::string saved = current_key_;
+                    skip_object_toJSON_ = true;
                     std::string r = stringify_value(result);
                     current_key_ = saved;
                     return r;

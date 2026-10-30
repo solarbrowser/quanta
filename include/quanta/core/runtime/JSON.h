@@ -137,6 +137,7 @@ private:
         Context* realm_hint_;
         std::string current_key_;
         bool skip_bigint_toJSON_ = false;
+        bool skip_object_toJSON_ = false;  // the value is what a toJSON returned: it is serialized as it is, its own toJSON is not asked again
 
     public:
         Stringifier(const StringifyOptions& options, Context* ctx = nullptr, Context* realm_hint = nullptr);
