@@ -104,10 +104,16 @@ public:
     // count, which the shape system caps at kMaxSlots.
     template <typename Fn>
     void for_each_property(Fn&& fn) const {
-        if (!parent_) return;
-        parent_->for_each_property(fn);
-        uint32_t width = is_accessor_added_ ? 2u : 1u;
-        fn(PropertyInfo{added_key_, slot_count_ - width, is_accessor_added_});
+        // The chain is gathered and then walked from the root: a call per link would put a frame for each of the
+        // properties on a stack that may be a fiber's, which is not a big one.
+        const Shape* chain[kMaxSlots + 1];
+        size_t n = 0;
+        for (const Shape* s = this; s->parent_ && n <= kMaxSlots; s = s->parent_) chain[n++] = s;
+        while (n > 0) {
+            const Shape* s = chain[--n];
+            const uint32_t width = s->is_accessor_added_ ? 2u : 1u;
+            fn(PropertyInfo{s->added_key_, s->slot_count_ - width, s->is_accessor_added_});
+        }
     }
 
     // Canonicalizes `key` to a stable address. Backed by a thread_local set
