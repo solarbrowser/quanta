@@ -599,6 +599,22 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
             function->set_arrow_this(ctx.get_binding("this"));
         }
     }
+    // A private name is the class's lexically, wherever the closure is called from: one made in a method of a class that has private names
+    // carries what that method does (the call stack alone names the class of whoever is calling, which is not it).
+    {
+        CallStack& cs = CallStack::instance();
+        if (cs.depth() > 0) {
+            if (Function* creator = cs.top().function_ptr; creator && creator != function.get()) {
+                if (Object* brands = creator->private_brands()) {
+                    function->set_private_brands(brands);
+                    const std::string& slot = creator->pm_brand_slot();
+                    if (!slot.empty()) function->set_pm_brand_slot(slot);
+                    const Value names = creator->get_internal_slot("__private_method_names__");
+                    if (!names.is_undefined()) function->set_internal_slot("__private_method_names__", names);
+                }
+            }
+        }
+    }
     if (tpl.form == Form::Arrow) {
         // ContainsArguments is lexical: an arrow born inside a class field
         // initializer keeps the direct-eval `arguments` ban for its whole life,
