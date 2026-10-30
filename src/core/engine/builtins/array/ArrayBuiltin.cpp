@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
+#include "quanta/core/runtime/StableSort.h"
 #include "quanta/core/engine/builtins/ArrayBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
@@ -1979,9 +1980,18 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (ctx.has_exception()) { sort_error = true; return 0; }
                 return str_a.compare(str_b);
             };
-            std::stable_sort(items.begin(), items.end(), [&](const Value& a, const Value& b) {
-                return compare(a, b) < 0;
-            });
+            {
+                // (Indices are sorted, not the values: a Value moved into the sort's own buffer is out of the collector's sight.)
+                std::vector<uint32_t> order(items.size());
+                for (size_t i = 0; i < order.size(); i++) order[i] = static_cast<uint32_t>(i);
+                safe_stable_sort(order, [&](uint32_t i, uint32_t j) { return compare(items[i], items[j]) < 0; });
+                if (ctx.has_exception()) return Value();
+                std::vector<Value> sorted_items;
+                ValueVectorRoot sorted_items_root(&sorted_items);
+                sorted_items.reserve(items.size());
+                for (uint32_t i : order) sorted_items.push_back(items[i]);
+                items.swap(sorted_items);
+            }
             if (ctx.has_exception()) return Value();
 
             for (size_t j = 0; j < items.size(); j++) {
@@ -2969,7 +2979,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                         if (!items[i].is_undefined()) keys[i] = sort_default_to_string(ctx, items[i]);
                 }
             }
-            std::stable_sort(order.begin(), order.end(), [&](uint32_t i, uint32_t j) {
+            safe_stable_sort(order, [&](uint32_t i, uint32_t j) {
                 if (keyed) {
                     const bool ui = items[i].is_undefined(), uj = items[j].is_undefined();
                     if (ui || uj) return !ui && uj;

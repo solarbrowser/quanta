@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
+#include "quanta/core/runtime/StableSort.h"
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
@@ -1238,7 +1239,7 @@ void register_typed_array_builtins(Context& ctx) {
             // leave `els`, where they stay rooted throughout.
             std::vector<uint32_t> order(len);
             for (size_t i = 0; i < len; i++) order[i] = static_cast<uint32_t>(i);
-            std::stable_sort(order.begin(), order.end(), [&](uint32_t i, uint32_t j) {
+            safe_stable_sort(order, [&](uint32_t i, uint32_t j) {
                 const Value& a = els[i];
                 const Value& b = els[j];
                 if (ctx.has_exception()) return false;
@@ -1446,13 +1447,24 @@ void register_typed_array_builtins(Context& ctx) {
             ValueVectorRoot els_root(&els);
             els.reserve(len);
             for (size_t i = 0; i < len; i++) els.push_back(ta->get_element(i));
-            std::sort(els.begin(), els.end(), [&](const Value& a, const Value& b) {
+            std::vector<uint32_t> order(len);
+            for (size_t i = 0; i < len; i++) order[i] = static_cast<uint32_t>(i);
+            safe_stable_sort(order, [&](uint32_t ia, uint32_t ib) {
+                const Value& a = els[ia];
+                const Value& b = els[ib];
                 if (ctx.has_exception()) return false;
                 if (cmp) { std::vector<Value> ca = {a, b}; return cmp->call(ctx, ca, Value()).to_number() < 0; }
                 if (a.is_bigint() && b.is_bigint()) return *a.as_bigint() < *b.as_bigint();
                 return a.to_number() < b.to_number();
             });
             if (ctx.has_exception()) return Value();
+            {
+                std::vector<Value> sorted_els;
+                ValueVectorRoot sorted_els_root(&sorted_els);
+                sorted_els.reserve(len);
+                for (uint32_t i : order) sorted_els.push_back(els[i]);
+                els.swap(sorted_els);
+            }
             TypedArrayBase* r = create_same_type_typed_array(ctx, ta, len);
             if (!r) return Value();
             for (size_t i = 0; i < len; i++) r->set_element(i, els[i]);
