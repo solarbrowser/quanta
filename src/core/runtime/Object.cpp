@@ -1964,7 +1964,13 @@ bool Object::delete_property_default(const std::string& key) {
         auto* d0 = descriptors();
         if (d0 && d0->find(key)) bump_descriptor_epoch();
         bool had_descriptor = d0 && d0->erase(key) > 0;
-        bool deleted = delete_element(index);
+        // The physical slot only: delete_element sends a host object's index back to its legacy delete, which comes here again (and so on, to a stack overflow).
+        bool deleted = false;
+        if (index < elements_length()) {
+            (*element_ptr(index)) = Value();
+            ensure_deleted_elements().insert(index);
+            deleted = true;
+        }
         return deleted || had_descriptor;
     }
 
