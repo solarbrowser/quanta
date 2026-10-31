@@ -4732,7 +4732,11 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                           match(TokenType::LET) &&
                           peek_token().get_type() != TokenType::IDENTIFIER &&
                           peek_token().get_type() != TokenType::LEFT_BRACKET &&
-                          peek_token().get_type() != TokenType::LEFT_BRACE);
+                          peek_token().get_type() != TokenType::LEFT_BRACE &&
+                          // `for (let of = 0; ...)` declares a variable called of (a keyword that is a name where a name is expected).
+                          peek_token().get_type() != TokenType::OF &&
+                          peek_token().get_type() != TokenType::YIELD && peek_token().get_type() != TokenType::AWAIT &&
+                          peek_token().get_type() != TokenType::STATIC);
         if (!let_as_id && (match(TokenType::VAR) || match(TokenType::LET) || match(TokenType::CONST))) {
 
             Position decl_start = get_current_position();
@@ -4889,7 +4893,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             {
                 TokenType ct = current_token().get_type();
                 bool is_kw_binding = (ct == TokenType::LET || ct == TokenType::YIELD ||
-                                      ct == TokenType::AWAIT || ct == TokenType::STATIC);
+                                      ct == TokenType::AWAIT || ct == TokenType::STATIC || ct == TokenType::OF);
                 if (ct != TokenType::IDENTIFIER && !is_kw_binding) {
                     add_error("Expected identifier in variable declaration");
                     return nullptr;
