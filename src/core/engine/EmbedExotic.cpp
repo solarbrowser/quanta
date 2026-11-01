@@ -322,7 +322,9 @@ struct CrossOriginHost : DOMObject {
     static bool ExoticDefineOwnProperty(Context& c, CrossOriginHost& self, const std::string& key, const PropertyDescriptor& d) {
         if (self.same_origin(c)) {
             uint32_t index;
-            if (self.is_window && !is_symbol_key(key) && array_index(key, index)) return false;
+            // An index of a child window cannot be defined; one that is none is a property like any other (in Chrome
+            // Object.defineProperty(window, 0, ...) works in a window with no frames, and a script that tests it relies on that).
+            if (self.is_window && !is_symbol_key(key) && array_index(key, index) && self.child_at(index)) return false;
             if (!self.target) return self.ordinary_define_own_property(key, d);
             return self.target->set_property_descriptor(key, d);
         }
@@ -379,7 +381,7 @@ struct CrossOriginHost : DOMObject {
         Value me(self.self_object());
         if (self.same_origin(c)) {
             uint32_t index;
-            if (self.is_window && !is_symbol_key(key) && array_index(key, index)) return false;
+            if (self.is_window && !is_symbol_key(key) && array_index(key, index) && self.child_at(index)) return false;
             // A setter anywhere in the chain gets the proxy; otherwise the data property is the window's own.
             if (self.target) {
                 for (Object* o = self.target; o; o = o->get_prototype()) {
@@ -412,10 +414,7 @@ struct CrossOriginHost : DOMObject {
     static bool ExoticDelete(Context& c, CrossOriginHost& self, const std::string& key) {
         if (self.same_origin(c)) {
             uint32_t index;
-            if (self.is_window && !is_symbol_key(key) && array_index(key, index)) {
-                PropertyDescriptor desc;
-                return !ExoticGetOwnProperty(c, self, key, desc);
-            }
+            if (self.is_window && !is_symbol_key(key) && array_index(key, index) && self.child_at(index)) return false;
             if (!self.target) return self.ordinary_delete(key);
             return self.target->delete_property(key);
         }
