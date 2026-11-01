@@ -11204,7 +11204,10 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
             parameter_name = "__destr_pattern__";
         } else if (match(TokenType::IDENTIFIER) ||
                    (match(TokenType::AWAIT) && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
-                   (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode)) {
+                   (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode) ||
+                   // The words that are names where they are not keywords, as in a variable declaration: catch (of), catch (async).
+                   match(TokenType::OF) || match(TokenType::ASYNC) || match(TokenType::FROM) || match(TokenType::UNDEFINED) ||
+                   (match(TokenType::LET) && !options_.strict_mode) || (match(TokenType::STATIC) && !options_.strict_mode)) {
             parameter_name = token_text(current_token());
 
             // ES5: eval and arguments cannot be used as catch parameter in strict mode
