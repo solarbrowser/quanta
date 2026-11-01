@@ -154,19 +154,6 @@ static std::string string_this_coerce(Context& ctx, const Value& v, bool& ok) {
     }
     if (v.is_object() || v.is_function()) {
         Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
-        // Fast path: primitive-wrapper objects expose their value via [[PrimitiveValue]] or valueOf().
-        auto otype = obj->get_type();
-        if (otype == Object::ObjectType::String || otype == Object::ObjectType::Boolean ||
-                otype == Object::ObjectType::Number) {
-            Value pv = obj->get_property("[[PrimitiveValue]]");
-            if (!pv.is_undefined() && !pv.is_object() && !pv.is_function()) { ok = true; return pv.to_string(); }
-            Value vof = obj->get_property("valueOf");
-            if (!ctx.has_exception() && vof.is_function()) {
-                Value r = vof.as_function()->call(ctx, {}, v);
-                if (!ctx.has_exception() && !r.is_object() && !r.is_function()) { ok = true; return r.to_string(); }
-                if (ctx.has_exception()) return {};
-            }
-        }
         // Check @@toPrimitive first (string hint).
         Symbol* toPrim_sym = Symbol::get_well_known("Symbol.toPrimitive");
         if (toPrim_sym) {
