@@ -1258,13 +1258,6 @@ bool ModuleLoader::prepare_module_file(Module* module, const std::string& filena
         // Handed to the collector, not held here: a body that suspends on a
         // top-level await still reaches for `exports` long after this function
         // has returned, and the binding is what keeps them reachable.
-        auto module_obj = ObjectFactory::create_object();
-        module_context->create_binding("module", Value(module_obj.release()));
-        auto exports_obj = ObjectFactory::create_object();
-        module_context->create_binding("exports", Value(exports_obj.release()));
-        module_context->create_binding("__filename", Value(filename));
-        module_context->create_binding("__dirname", Value(std::filesystem::path(filename).parent_path().string()));
-        
         std::unique_ptr<Program> ast;
         if (hosted_ast) {
             ast = std::move(hosted_ast);
@@ -1289,6 +1282,23 @@ bool ModuleLoader::prepare_module_file(Module* module, const std::string& filena
             }
         }
         
+        // The names a CommonJS file would have, kept for the scripts that read them. A name the module imports under is the module's own: the binding
+        // of the import is the one there is (`import * as module from "./x.js"`).
+        {
+            std::unordered_set<std::string> imported_names;
+            for (const auto& stmt : ast->get_statements()) {
+                if (!stmt || stmt->get_type() != ASTNode::Type::IMPORT_STATEMENT) continue;
+                const auto* im = static_cast<const ImportStatement*>(stmt.get());
+                if (!im->get_namespace_alias().empty()) imported_names.insert(im->get_namespace_alias());
+                if (!im->get_default_alias().empty()) imported_names.insert(im->get_default_alias());
+                for (const auto& spec : im->get_specifiers()) imported_names.insert(spec->get_local_name());
+            }
+            if (!imported_names.count("module")) module_context->create_binding("module", Value(ObjectFactory::create_object().release()));
+            if (!imported_names.count("exports")) module_context->create_binding("exports", Value(ObjectFactory::create_object().release()));
+            if (!imported_names.count("__filename")) module_context->create_binding("__filename", Value(filename));
+            if (!imported_names.count("__dirname")) module_context->create_binding("__dirname", Value(std::filesystem::path(filename).parent_path().string()));
+        }
+
         module->set_context(std::move(module_context));
         module->get_context()->set_current_filename(filename);
 
