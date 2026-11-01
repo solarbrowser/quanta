@@ -130,8 +130,8 @@ static std::string round_half_up_fixed(double abs_num, int frac_digits) {
 }
 
 void register_number_builtins(Context& ctx) {
-    auto number_constructor = ObjectFactory::create_native_constructor("Number",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto number_constructor = ObjectFactory::create_native_constructor_with_new_target("Number",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value) -> Value {
             // Number() uses ToNumeric (not ToNumber): BigInt is explicitly convertible.
             double num_value = 0.0;
             if (!args.empty()) {
@@ -141,7 +141,8 @@ void register_number_builtins(Context& ctx) {
 
             // Return an ObjectType::Number-tagged wrapper so Object.prototype.toString
             // sees the correct internal-slot tag (generic Function::construct gives Ordinary).
-            Object* this_obj = receiver.as_object_or_null();
+            // A plain call (Number.call(obj, x)) is ToNumeric of the argument, whatever `this` is.
+            Object* this_obj = is_construct ? receiver.as_object_or_null() : nullptr;
             if (this_obj) {
                 auto number_obj = std::make_unique<Object>(Object::ObjectType::Number);
                 // See Boolean's identical constructor comment: this_obj's own

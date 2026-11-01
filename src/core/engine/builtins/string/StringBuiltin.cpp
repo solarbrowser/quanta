@@ -308,7 +308,8 @@ void register_string_builtins(Context& ctx) {
 
             // Return an ObjectType::String-tagged wrapper so Object.prototype.toString
             // sees the correct internal-slot tag (generic Function::construct gives Ordinary).
-            Object* old_this = receiver.as_object_or_null();
+            // A plain call (String.call(obj, x), a method of an object that is String) makes the string, not the wrapper.
+            Object* old_this = is_construct ? receiver.as_object_or_null() : nullptr;
             if (old_this) {
                 auto this_obj = std::make_unique<Object>(Object::ObjectType::String);
                 // See Boolean's identical constructor comment: old_this's own

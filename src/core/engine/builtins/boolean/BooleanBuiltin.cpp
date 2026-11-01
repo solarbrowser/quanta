@@ -18,13 +18,14 @@
 namespace Quanta {
 
 void register_boolean_builtins(Context& ctx) {
-    auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto boolean_constructor = ObjectFactory::create_native_constructor_with_new_target("Boolean",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value) -> Value {
             bool value = args.empty() ? false : args[0].to_boolean();
 
             // Return an ObjectType::Boolean-tagged wrapper so Object.prototype.toString
             // sees the correct internal-slot tag (generic Function::construct gives Ordinary).
-            Object* this_obj = receiver.as_object_or_null();
+            // A plain call (Boolean.call(obj, x)) is ToBoolean of the argument, whatever `this` is.
+            Object* this_obj = is_construct ? receiver.as_object_or_null() : nullptr;
             if (this_obj) {
                 auto bool_obj = ObjectFactory::create_boolean(value);
                 // this_obj's own prototype is already right for a same-realm
