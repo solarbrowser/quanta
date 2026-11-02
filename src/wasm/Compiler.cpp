@@ -11,7 +11,7 @@
 #include <cstring>
 
 #include "quanta/wasm/Reader.h"
-#include "src/wasm/Internal.h"
+#include "Internal.h"
 
 namespace Quanta::Wasm {
 
@@ -963,9 +963,10 @@ bool FuncCompiler::Instruction(std::string& error) {
                 const uint32_t n = r_.u32();
                 if (!r_.ok()) return Error(r_.error());
                 if (n != 1) return Error("invalid result arity");
-                t = cx_.Canon(r_.valType());
+                const ValType declared = r_.valType();
                 if (!r_.ok()) return Error(r_.error());
-                if (!ValidValType(t)) return false;
+                if (!ValidValType(declared)) return false;
+                t = cx_.Canon(declared);
                 if (!Pop(ValType::I32()) || !Pop(t) || !Pop(t)) return false;
             } else {
                 if (!Pop(ValType::I32())) return false;

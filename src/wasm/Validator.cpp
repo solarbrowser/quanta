@@ -7,11 +7,13 @@
 // The checks of the meaning of a decoded module (the types, the index spaces, the segments, the constant expressions), and, through the compiler,
 // of the bodies of its functions.
 
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_set>
 
 #include "quanta/wasm/Decoder.h"
 #include "quanta/wasm/Reader.h"
-#include "src/wasm/Internal.h"
+#include "Internal.h"
 
 namespace Quanta::Wasm {
 
@@ -214,6 +216,7 @@ bool Validate(Module& m, std::string& error) {
     }
 
     // The functions.
+    const bool dump = std::getenv("QUANTA_WASM_DUMP") != nullptr;
     m.compiled.clear();
     m.compiled.resize(m.bodies.size());
     for (size_t i = 0; i < m.bodies.size(); ++i) {
@@ -221,6 +224,11 @@ bool Validate(Module& m, std::string& error) {
         if (!CompileFunction(cx, m.importedFuncs + static_cast<uint32_t>(i), m.compiled[i], why)) {
             error = "function #" + std::to_string(m.importedFuncs + i) + ": " + why;
             return false;
+        }
+        if (dump) {
+            std::fprintf(stderr, "func %zu: paramsN=%u paramsR=%u localsN=%u localsR=%u maxN=%u maxR=%u\n  ", m.importedFuncs + i, m.compiled[i].paramsN, m.compiled[i].paramsR, m.compiled[i].localsN, m.compiled[i].localsR, m.compiled[i].maxN, m.compiled[i].maxR);
+            for (size_t k = 0; k < m.compiled[i].code.size(); ++k) std::fprintf(stderr, "%x ", m.compiled[i].code[k]);
+            std::fprintf(stderr, "\n");
         }
     }
     return true;

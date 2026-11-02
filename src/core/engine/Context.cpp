@@ -6,6 +6,7 @@
 
 #include "quanta/core/gc/FiberRegistry.h"
 #include <span>
+#include "quanta/wasm/JSApi.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Visitor.h"
@@ -883,6 +884,7 @@ void Context::initialize_global_context() {
 
     setup_global_bindings();
 
+    Wasm::register_webassembly_builtins(*this);
 }
 
 Function* Context::intrinsic_promise() {
