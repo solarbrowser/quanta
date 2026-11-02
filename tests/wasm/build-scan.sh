@@ -1,0 +1,3 @@
+#!/bin/sh
+# Builds the scanner of the WPT WebAssembly suite (no engine needed): tests/wasm/build-scan.sh, then build/wasm-scan [-v] file.wast.js...
+cd "$(dirname "$0")/../.." && mkdir -p build && clang++ -std=c++20 -O1 -g -Wall -I. -Iinclude tests/wasm/SpecScan.cpp src/wasm/Decoder.cpp src/wasm/Validator.cpp src/wasm/Compiler.cpp src/wasm/TypeRegistry.cpp -o build/wasm-scan

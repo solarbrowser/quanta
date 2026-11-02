@@ -207,6 +207,7 @@ icu-data:
 CORE_SRC = src/core
 LEXER_SRC = src/lexer
 PARSER_SRC = src/parser
+WASM_SRC = src/wasm
 OBJ_DIR = $(BUILD_DIR)/obj
 BIN_DIR = $(BUILD_DIR)/bin
 
@@ -216,16 +217,18 @@ rwildcard = $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2)$(filter $(subst
 CORE_SOURCES = $(call rwildcard,$(CORE_SRC)/,*.cpp)
 LEXER_SOURCES = $(call rwildcard,$(LEXER_SRC)/,*.cpp)
 PARSER_SOURCES = $(call rwildcard,$(PARSER_SRC)/,*.cpp)
+WASM_SOURCES = $(call rwildcard,$(WASM_SRC)/,*.cpp)
 
 # Object files
 CORE_OBJECTS = $(CORE_SOURCES:$(CORE_SRC)/%.cpp=$(OBJ_DIR)/core/%.o)
 LEXER_OBJECTS = $(LEXER_SOURCES:$(LEXER_SRC)/%.cpp=$(OBJ_DIR)/lexer/%.o)
 PARSER_OBJECTS = $(PARSER_SOURCES:$(PARSER_SRC)/%.cpp=$(OBJ_DIR)/parser/%.o)
+WASM_OBJECTS = $(WASM_SOURCES:$(WASM_SRC)/%.cpp=$(OBJ_DIR)/wasm/%.o)
 
-ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(PCRE2_OBJS) $(UTF8PROC_OBJS) $(MIMALLOC_OBJS)
+ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(WASM_OBJECTS) $(PCRE2_OBJS) $(UTF8PROC_OBJS) $(MIMALLOC_OBJS)
 
 # Header dependency tracking (-MMD): a header edit rebuilds every dependent TU.
--include $(CORE_OBJECTS:.o=.d) $(LEXER_OBJECTS:.o=.d) $(PARSER_OBJECTS:.o=.d)
+-include $(CORE_OBJECTS:.o=.d) $(LEXER_OBJECTS:.o=.d) $(PARSER_OBJECTS:.o=.d) $(WASM_OBJECTS:.o=.d)
 
 # Static library
 LIBQUANTA = $(BUILD_DIR)/libquanta.a
@@ -365,6 +368,12 @@ $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
 	@echo "[BUILD] Compiling parser: $<"
 	@echo "[BUILD] $<" >> $(LOG_FILE)
 	@$(CXX) $(CXXFLAGS) $(HARDEN_FLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+
+$(OBJ_DIR)/wasm/%.o: $(WASM_SRC)/%.cpp
+	@$(MKDIR_P) $(dir $@)
+	@echo "[BUILD] Compiling wasm: $<"
+	@echo "[BUILD] $<" >> $(LOG_FILE)
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 $(OBJ_DIR)/pcre2/%.o: $(PCRE2_DIR)/%.c
 	@$(MKDIR_P) $(dir $@)
