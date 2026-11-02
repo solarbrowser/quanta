@@ -26,7 +26,6 @@ See [building.md](https://github.com/solarbrowser/quanta/blob/main/docs/contribu
 ## Roadmap
 
 - temporal api support
-- wasm engine
 
 ## More about Quanta
 
