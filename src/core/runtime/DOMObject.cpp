@@ -262,6 +262,8 @@ static bool legacy_own(const DOMObject* self, const DOMLegacyHooks& h, Context& 
     const DOMExoticHooks* exotic = type_ ? type_->exotic : nullptr;                                \
     Context* exotic_ctx = exotic && exotic->member && g_ordinary_self != this ? hook_context() : nullptr;
 
+bool DOMObject::answers_with_hooks() const { return type_ && (type_->legacy || type_->exotic) && g_ordinary_self != this; }
+
 bool DOMObject::legacy_has_own_property(const std::string& key) const {
     {
         QUANTA_EXOTIC(get_own_property)

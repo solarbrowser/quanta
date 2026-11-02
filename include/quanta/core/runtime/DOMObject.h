@@ -291,6 +291,9 @@ public:
     void NoteWrite();
     void NoteWrite(const Value& stored);
 
+    // Whether the operations of the object are answered by hooks of its type (legacy or exotic) rather than by the plain object it also is.
+    bool answers_with_hooks() const;
+
     // Collector entry points.
     void trace(Visitor& v);
     void destroy();

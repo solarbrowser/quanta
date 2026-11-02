@@ -2170,7 +2170,8 @@ void Object::copy_elements_reversed_from(const Object& src, uint32_t count) {
 bool Object::set_element(uint32_t index, const Value& value) {
     Collector::write_barrier_value(this, value);
     if (get_type() == ObjectType::Custom &&
-        static_cast<const CustomObjectBase*>(this)->get_custom_kind() == CustomObjectBase::CustomKind::Host) {
+        static_cast<const CustomObjectBase*>(this)->get_custom_kind() == CustomObjectBase::CustomKind::Host &&
+        static_cast<const DOMObject*>(this)->answers_with_hooks()) {
         return static_cast<DOMObject*>(this)->legacy_set_property(std::to_string(index), value, PropertyAttributes::Default);
     }
     // Same dispatch problem as get_element: TypedArrayBase::set_element(size_t) doesn't
