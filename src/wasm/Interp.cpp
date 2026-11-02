@@ -92,6 +92,50 @@ I Saturate(F f, F lo, F hi, I imin, I imax) {
     return static_cast<I>(f);
 }
 
+
+constexpr size_t kMaxArrayBytes = size_t(1) << 30;
+
+}  // namespace
+
+bool RefMatches(const Value& v, HeapType heap, bool nullable) {
+    if (v.is_null()) return nullable;
+    const bool number = v.is_number();
+    StructObject* s = number ? nullptr : DOMObject::Cast<StructObject>(v);
+    ArrayObject* a = (number || s) ? nullptr : DOMObject::Cast<ArrayObject>(v);
+    FuncObject* f = (number || s || a) ? nullptr : DOMObject::Cast<FuncObject>(v);
+    switch (heap) {
+        case Heap::Any: return number || s || a || DOMObject::Cast<HostRefObject>(v) != nullptr;
+        case Heap::Eq: return number || s || a;
+        case Heap::I31: return number;
+        case Heap::Struct: return s != nullptr;
+        case Heap::Array: return a != nullptr;
+        case Heap::Func: return f != nullptr;
+        case Heap::Extern: return true;
+        case Heap::Exn: return DOMObject::Cast<ExceptionObject>(v) != nullptr;
+        case Heap::None: case Heap::NoFunc: case Heap::NoExtern: case Heap::NoExn: return false;
+        default: break;
+    }
+    if (s) return TypeRegistry::HeapSubtype(static_cast<HeapType>(s->type), heap);
+    if (a) return TypeRegistry::HeapSubtype(static_cast<HeapType>(a->type), heap);
+    if (f) return TypeRegistry::HeapSubtype(static_cast<HeapType>(f->sig), heap);
+    return false;
+}
+
+namespace {
+
+inline Value I31Value(uint32_t bits) { return Value(static_cast<int32_t>(bits << 1) >> 1); }
+
+// The value of a packed or whole element of the bytes of an array, as a slot.
+inline uint64_t LoadElement(const uint8_t* p, uint32_t bytes, bool sign) {
+    switch (bytes) {
+        case 1: return sign ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(*p))) : *p;
+        case 2: { uint16_t v; std::memcpy(&v, p, 2); return sign ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v))) : v; }
+        case 4: { uint32_t v; std::memcpy(&v, p, 4); return v; }
+        default: { uint64_t v; std::memcpy(&v, p, 8); return v; }
+    }
+}
+inline void StoreElement(uint8_t* p, uint32_t bytes, uint64_t v) { std::memcpy(p, &v, bytes > 8 ? 8 : bytes); }
+
 }  // namespace
 
 // ---- The stacks ----
@@ -856,6 +900,298 @@ run:
                 sp -= 2;
                 if (dest > t->Size() || length > t->Size() - dest) TRAP(TrapKind::TableOutOfBounds);
                 for (uint64_t i = 0; i < length; ++i) t->elems.set(static_cast<size_t>(dest + i), v);
+                break;
+            }
+            // ---- 0xFB: the instructions of the GC proposal ----
+            case Op::kFbBase + 0x00: case Op::kFbBase + 0x01: {  // struct.new, struct.new_default
+                const CanonType& t = TypeRegistry::Get(pc[0]);
+                StructObject* o = ::Quanta::Heap::Allocate<StructObject>();
+                o->initialize_prototype(nullptr);
+                o->type = pc[0];
+                if (op == Op::kFbBase + 0x00) {
+                    o->numbers.assign(sp - t.numSlots, sp);
+                    sp -= t.numSlots;
+                    for (uint32_t i = 0; i < t.numRefs; ++i) o->refs.push_back(rsp[-static_cast<ptrdiff_t>(t.numRefs) + i]);
+                    rsp -= t.numRefs;
+                } else {
+                    o->numbers.assign(t.numSlots, 0);
+                    for (uint32_t i = 0; i < t.numRefs; ++i) o->refs.push_back(Value::null());
+                }
+                *rsp++ = Value(static_cast<Object*>(o));
+                pc += 1;
+                break;
+            }
+            case Op::kFbBase + 0x02: case Op::kFbBase + 0x03: case Op::kFbBase + 0x04: {  // struct.get, _s, _u
+                const Value ref = *--rsp;
+                if (ref.is_null()) TRAP(TrapKind::NullReference);
+                StructObject* o = DOMObject::Cast<StructObject>(ref);
+                const uint32_t slot = pc[0], flags = pc[1];
+                if (flags & 1) {
+                    *rsp++ = o->refs[slot];
+                } else if (flags & 16) {
+                    sp[0] = o->numbers[slot];
+                    sp[1] = o->numbers[slot + 1];
+                    sp += 2;
+                } else {
+                    uint64_t v = o->numbers[slot];
+                    if (flags & 2) v = (flags & 8) ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(v))) : (v & 0xFF);
+                    else if (flags & 4) v = (flags & 8) ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v))) : (v & 0xFFFF);
+                    *sp++ = v;
+                }
+                pc += 2;
+                break;
+            }
+            case Op::kFbBase + 0x05: {  // struct.set
+                const uint32_t slot = pc[0], flags = pc[1];
+                if (flags & 1) {
+                    const Value v = *--rsp;
+                    const Value ref = *--rsp;
+                    if (ref.is_null()) TRAP(TrapKind::NullReference);
+                    DOMObject::Cast<StructObject>(ref)->refs.set(slot, v);
+                } else if (flags & 16) {
+                    sp -= 2;
+                    const uint64_t lo = sp[0], hi = sp[1];
+                    const Value ref = *--rsp;
+                    if (ref.is_null()) TRAP(TrapKind::NullReference);
+                    StructObject* o = DOMObject::Cast<StructObject>(ref);
+                    o->numbers[slot] = lo;
+                    o->numbers[slot + 1] = hi;
+                } else {
+                    uint64_t v = *--sp;
+                    if (flags & 2) v &= 0xFF;
+                    else if (flags & 4) v &= 0xFFFF;
+                    const Value ref = *--rsp;
+                    if (ref.is_null()) TRAP(TrapKind::NullReference);
+                    DOMObject::Cast<StructObject>(ref)->numbers[slot] = v;
+                }
+                pc += 2;
+                break;
+            }
+            case Op::kFbBase + 0x06: case Op::kFbBase + 0x07: case Op::kFbBase + 0x08: case Op::kFbBase + 0x09: case Op::kFbBase + 0x0A: {
+                // array.new, _default, _fixed, _data, _elem
+                const CanonType& t = TypeRegistry::Get(pc[0]);
+                const uint32_t eb = t.elemBytes;
+                uint64_t length = 0;
+                if (op == Op::kFbBase + 0x08) length = pc[1];
+                else if (op == Op::kFbBase + 0x06 || op == Op::kFbBase + 0x07) length = static_cast<uint32_t>(*--sp);
+                else length = static_cast<uint32_t>(sp[-1]);
+                if (length * (t.elemIsRef ? 8 : eb) > kMaxArrayBytes) TRAP(TrapKind::OutOfMemory);
+                ArrayObject* o = ::Quanta::Heap::Allocate<ArrayObject>();
+                o->initialize_prototype(nullptr);
+                o->type = pc[0];
+                o->length = static_cast<uint32_t>(length);
+                if (!t.elemIsRef) o->bytes.assign(static_cast<size_t>(length) * eb, 0);
+                if (op == Op::kFbBase + 0x06) {
+                    if (t.elemIsRef) {
+                        const Value v = *--rsp;
+                        for (uint64_t i = 0; i < length; ++i) o->refs.push_back(v);
+                    } else if (eb == 16) {
+                        sp -= 2;
+                        for (uint64_t i = 0; i < length; ++i) { std::memcpy(&o->bytes[i * 16], &sp[0], 8); std::memcpy(&o->bytes[i * 16 + 8], &sp[1], 8); }
+                    } else {
+                        const uint64_t v = *--sp;
+                        for (uint64_t i = 0; i < length; ++i) StoreElement(&o->bytes[static_cast<size_t>(i) * eb], eb, v);
+                    }
+                } else if (op == Op::kFbBase + 0x07) {
+                    if (t.elemIsRef) for (uint64_t i = 0; i < length; ++i) o->refs.push_back(Value::null());
+                } else if (op == Op::kFbBase + 0x08) {
+                    if (t.elemIsRef) {
+                        rsp -= length;
+                        for (uint64_t i = 0; i < length; ++i) o->refs.push_back(rsp[i]);
+                    } else if (eb == 16) {
+                        sp -= length * 2;
+                        for (uint64_t i = 0; i < length; ++i) { std::memcpy(&o->bytes[i * 16], &sp[i * 2], 8); std::memcpy(&o->bytes[i * 16 + 8], &sp[i * 2 + 1], 8); }
+                    } else {
+                        sp -= length;
+                        for (uint64_t i = 0; i < length; ++i) StoreElement(&o->bytes[static_cast<size_t>(i) * eb], eb, sp[i]);
+                    }
+                } else {
+                    // from a segment: [offset, length] on the stack
+                    const uint64_t offset = static_cast<uint32_t>(sp[-2]);
+                    sp -= 2;
+                    if (op == Op::kFbBase + 0x09) {
+                        const DataSegment& d = inst->module->datas[pc[1]];
+                        const uint64_t size = inst->dataDropped[pc[1]] ? 0 : d.bytes.size;
+                        if (offset > size || length * eb > size - offset) TRAP(TrapKind::MemoryOutOfBounds);
+                        if (length) std::memcpy(o->bytes.data(), inst->module->bytes.data() + d.bytes.offset + offset, static_cast<size_t>(length) * eb);
+                    } else {
+                        const std::vector<Value>& items = inst->elems[pc[1]];
+                        if (offset > items.size() || length > items.size() - offset) TRAP(TrapKind::TableOutOfBounds);
+                        for (uint64_t i = 0; i < length; ++i) o->refs.push_back(items[static_cast<size_t>(offset + i)]);
+                    }
+                }
+                *rsp++ = Value(static_cast<Object*>(o));
+                pc += (op == Op::kFbBase + 0x06 || op == Op::kFbBase + 0x07) ? 1 : 2;
+                break;
+            }
+            case Op::kFbBase + 0x0B: case Op::kFbBase + 0x0C: case Op::kFbBase + 0x0D: {  // array.get, _s, _u
+                const uint32_t info = pc[0];
+                const uint64_t index = static_cast<uint32_t>(*--sp);
+                const Value ref = *--rsp;
+                if (ref.is_null()) TRAP(TrapKind::NullReference);
+                ArrayObject* o = DOMObject::Cast<ArrayObject>(ref);
+                if (index >= o->length) TRAP(TrapKind::ArrayOutOfBounds);
+                if (info & 0x100) {
+                    *rsp++ = o->refs[static_cast<size_t>(index)];
+                } else if ((info & 0xFF) == 16) {
+                    sp[0] = LoadElement(&o->bytes[index * 16], 8, false);
+                    sp[1] = LoadElement(&o->bytes[index * 16 + 8], 8, false);
+                    sp += 2;
+                } else {
+                    *sp++ = LoadElement(&o->bytes[static_cast<size_t>(index) * (info & 0xFF)], info & 0xFF, (info & 0x200) != 0);
+                }
+                pc += 1;
+                break;
+            }
+            case Op::kFbBase + 0x0E: {  // array.set
+                const uint32_t info = pc[0];
+                if (info & 0x100) {
+                    const Value v = *--rsp;
+                    const uint64_t index = static_cast<uint32_t>(*--sp);
+                    const Value ref = *--rsp;
+                    if (ref.is_null()) TRAP(TrapKind::NullReference);
+                    ArrayObject* o = DOMObject::Cast<ArrayObject>(ref);
+                    if (index >= o->length) TRAP(TrapKind::ArrayOutOfBounds);
+                    o->refs.set(static_cast<size_t>(index), v);
+                } else if ((info & 0xFF) == 16) {
+                    sp -= 2;
+                    const uint64_t lo = sp[0], hi = sp[1];
+                    const uint64_t index = static_cast<uint32_t>(*--sp);
+                    const Value ref = *--rsp;
+                    if (ref.is_null()) TRAP(TrapKind::NullReference);
+                    ArrayObject* o = DOMObject::Cast<ArrayObject>(ref);
+                    if (index >= o->length) TRAP(TrapKind::ArrayOutOfBounds);
+                    std::memcpy(&o->bytes[index * 16], &lo, 8);
+                    std::memcpy(&o->bytes[index * 16 + 8], &hi, 8);
+                } else {
+                    const uint64_t v = *--sp;
+                    const uint64_t index = static_cast<uint32_t>(*--sp);
+                    const Value ref = *--rsp;
+                    if (ref.is_null()) TRAP(TrapKind::NullReference);
+                    ArrayObject* o = DOMObject::Cast<ArrayObject>(ref);
+                    if (index >= o->length) TRAP(TrapKind::ArrayOutOfBounds);
+                    StoreElement(&o->bytes[static_cast<size_t>(index) * (info & 0xFF)], info & 0xFF, v);
+                }
+                pc += 1;
+                break;
+            }
+            case Op::kFbBase + 0x0F: {  // array.len
+                const Value ref = *--rsp;
+                if (ref.is_null()) TRAP(TrapKind::NullReference);
+                *sp++ = DOMObject::Cast<ArrayObject>(ref)->length;
+                break;
+            }
+            case Op::kFbBase + 0x10: {  // array.fill
+                const uint32_t info = pc[0];
+                const uint64_t count = static_cast<uint32_t>(*--sp);
+                Value fillRef;
+                uint64_t fillLo = 0, fillHi = 0;
+                if (info & 0x100) fillRef = *--rsp;
+                else if ((info & 0xFF) == 16) { sp -= 2; fillLo = sp[0]; fillHi = sp[1]; }
+                else fillLo = *--sp;
+                const uint64_t offset = static_cast<uint32_t>(*--sp);
+                const Value ref = *--rsp;
+                if (ref.is_null()) TRAP(TrapKind::NullReference);
+                ArrayObject* o = DOMObject::Cast<ArrayObject>(ref);
+                if (offset > o->length || count > o->length - offset) TRAP(TrapKind::ArrayOutOfBounds);
+                for (uint64_t i = 0; i < count; ++i) {
+                    if (info & 0x100) o->refs.set(static_cast<size_t>(offset + i), fillRef);
+                    else if ((info & 0xFF) == 16) { std::memcpy(&o->bytes[(offset + i) * 16], &fillLo, 8); std::memcpy(&o->bytes[(offset + i) * 16 + 8], &fillHi, 8); }
+                    else StoreElement(&o->bytes[static_cast<size_t>(offset + i) * (info & 0xFF)], info & 0xFF, fillLo);
+                }
+                pc += 1;
+                break;
+            }
+            case Op::kFbBase + 0x11: {  // array.copy
+                const uint32_t dinfo = pc[0];
+                const uint64_t count = static_cast<uint32_t>(*--sp);
+                const uint64_t soff = static_cast<uint32_t>(*--sp);
+                const Value sref = *--rsp;
+                const uint64_t doff = static_cast<uint32_t>(*--sp);
+                const Value dref = *--rsp;
+                if (sref.is_null() || dref.is_null()) TRAP(TrapKind::NullReference);
+                ArrayObject* d = DOMObject::Cast<ArrayObject>(dref);
+                ArrayObject* sa = DOMObject::Cast<ArrayObject>(sref);
+                if (doff > d->length || count > d->length - doff || soff > sa->length || count > sa->length - soff) TRAP(TrapKind::ArrayOutOfBounds);
+                if (dinfo & 0x100) {
+                    if (d == sa && doff > soff) { for (uint64_t i = count; i-- > 0;) d->refs.set(static_cast<size_t>(doff + i), sa->refs[static_cast<size_t>(soff + i)]); }
+                    else { for (uint64_t i = 0; i < count; ++i) d->refs.set(static_cast<size_t>(doff + i), sa->refs[static_cast<size_t>(soff + i)]); }
+                } else {
+                    const uint32_t eb = dinfo & 0xFF;
+                    if (count) std::memmove(&d->bytes[static_cast<size_t>(doff) * eb], &sa->bytes[static_cast<size_t>(soff) * eb], static_cast<size_t>(count) * eb);
+                }
+                pc += 2;
+                break;
+            }
+            case Op::kFbBase + 0x12: case Op::kFbBase + 0x13: {  // array.init_data, array.init_elem
+                const uint32_t info = pc[0], segment = pc[1];
+                const uint64_t count = static_cast<uint32_t>(*--sp);
+                const uint64_t soff = static_cast<uint32_t>(*--sp);
+                const uint64_t doff = static_cast<uint32_t>(*--sp);
+                const Value ref = *--rsp;
+                if (ref.is_null()) TRAP(TrapKind::NullReference);
+                ArrayObject* o = DOMObject::Cast<ArrayObject>(ref);
+                if (doff > o->length || count > o->length - doff) TRAP(TrapKind::ArrayOutOfBounds);
+                if (op == Op::kFbBase + 0x12) {
+                    const uint32_t eb = info & 0xFF;
+                    const DataSegment& d = inst->module->datas[segment];
+                    const uint64_t size = inst->dataDropped[segment] ? 0 : d.bytes.size;
+                    if (soff > size || count * eb > size - soff) TRAP(TrapKind::MemoryOutOfBounds);
+                    if (count) std::memcpy(&o->bytes[static_cast<size_t>(doff) * eb], inst->module->bytes.data() + d.bytes.offset + soff, static_cast<size_t>(count) * eb);
+                } else {
+                    const std::vector<Value>& items = inst->elems[segment];
+                    if (soff > items.size() || count > items.size() - soff) TRAP(TrapKind::TableOutOfBounds);
+                    for (uint64_t i = 0; i < count; ++i) o->refs.set(static_cast<size_t>(doff + i), items[static_cast<size_t>(soff + i)]);
+                }
+                pc += 2;
+                break;
+            }
+            case Op::kFbBase + 0x14: case Op::kFbBase + 0x15: {  // ref.test
+                const Value v = *--rsp;
+                *sp++ = RefMatches(v, static_cast<HeapType>(static_cast<int32_t>(pc[0])), pc[1] != 0) ? 1 : 0;
+                pc += 2;
+                break;
+            }
+            case Op::kFbBase + 0x16: case Op::kFbBase + 0x17: {  // ref.cast
+                if (!RefMatches(rsp[-1], static_cast<HeapType>(static_cast<int32_t>(pc[0])), pc[1] != 0)) TRAP(TrapKind::CastFailure);
+                pc += 2;
+                break;
+            }
+            case Op::kFbBase + 0x18: case Op::kFbBase + 0x19: {  // br_on_cast, br_on_cast_fail
+                const bool matches = RefMatches(rsp[-1], static_cast<HeapType>(static_cast<int32_t>(pc[5])), pc[6] != 0);
+                const bool take = op == Op::kFbBase + 0x18 ? matches : !matches;
+                if (!take) { pc += 7; break; }
+                const uint32_t target = pc[0], keepN = pc[1], keepR = pc[2], dropN = pc[3], dropR = pc[4];
+                if (dropN) { std::memmove(sp - keepN - dropN, sp - keepN, keepN * sizeof(uint64_t)); sp -= dropN; }
+                if (dropR) { std::memmove(rsp - keepR - dropR, rsp - keepR, keepR * sizeof(Value)); rsp -= dropR; }
+                pc = code->code.data() + target;
+                break;
+            }
+            case Op::kFbBase + 0x1A: {  // any.convert_extern
+                const Value v = rsp[-1];
+                if (v.is_null()) break;
+                if (v.is_number()) {
+                    const double d = v.as_number();
+                    if (d == std::trunc(d) && d >= -1073741824.0 && d <= 1073741823.0 && !(d == 0 && std::signbit(d))) break;  // (it is an i31 as it is)
+                }
+                if (DOMObject::Cast<StructObject>(v) || DOMObject::Cast<ArrayObject>(v)) break;
+                HostRefObject* h = ::Quanta::Heap::Allocate<HostRefObject>();
+                h->initialize_prototype(nullptr);
+                h->value.Set(v);
+                rsp[-1] = Value(static_cast<Object*>(h));
+                break;
+            }
+            case Op::kFbBase + 0x1B: {  // extern.convert_any
+                const Value v = rsp[-1];
+                if (HostRefObject* h = v.is_null() ? nullptr : DOMObject::Cast<HostRefObject>(v)) rsp[-1] = h->value.Get();
+                break;
+            }
+            case Op::kFbBase + 0x1C: rsp[0] = I31Value(static_cast<uint32_t>(*--sp)); ++rsp; break;  // ref.i31
+            case Op::kFbBase + 0x1D: case Op::kFbBase + 0x1E: {  // i31.get_s, i31.get_u
+                const Value v = *--rsp;
+                if (v.is_null()) TRAP(TrapKind::NullReference);
+                const int32_t i = static_cast<int32_t>(v.as_number());
+                *sp++ = op == Op::kFbBase + 0x1D ? static_cast<uint32_t>(i) : (static_cast<uint32_t>(i) & 0x7FFFFFFFu);
                 break;
             }
             default:

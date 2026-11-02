@@ -490,6 +490,11 @@ private:
     bool MemoryAccess(uint8_t op);
     bool Prefixed(uint8_t prefix);
     bool MiscInstruction(uint32_t n);
+    bool GcInstruction(uint32_t n);
+    bool ReadHeap(HeapType& canon);
+    bool ReadTypeIndex(TypeDef::Kind kind, uint32_t& canon, uint32_t& local);
+    uint32_t ElementInfo(const CanonType& t) const;
+    bool SameHierarchy(HeapType a, HeapType b) const { return TypeRegistry::TopOf(a) == TypeRegistry::TopOf(b); }
     bool MemArg(uint32_t naturalAlign, uint32_t& memory, uint64_t& offset, bool& is64);
     bool Call(uint32_t index, bool tail);
     bool CallIndirect(bool tail);
@@ -817,7 +822,257 @@ bool FuncCompiler::Prefixed(uint8_t prefix) {
     const uint32_t n = r_.u32();
     if (!r_.ok()) return Error(r_.error());
     if (prefix == 0xFC) return MiscInstruction(n);
+    if (prefix == 0xFB) {
+        if (constMode_ && !(n == 0x00 || n == 0x01 || n == 0x06 || n == 0x07 || n == 0x08 || n == 0x1A || n == 0x1B || n == 0x1C)) return Error("constant expression required");
+        return GcInstruction(n);
+    }
     return Error("invalid opcode");
+}
+
+// ---- The GC instructions ----
+
+bool FuncCompiler::ReadHeap(HeapType& canon) {
+    const HeapType h = r_.heapType();
+    if (!r_.ok()) return Error(r_.error());
+    if (h >= 0 && static_cast<size_t>(h) >= m_.types.size()) return Error("unknown type");
+    canon = h >= 0 ? static_cast<HeapType>(cx_.typeIds[static_cast<size_t>(h)]) : h;
+    return true;
+}
+
+bool FuncCompiler::ReadTypeIndex(TypeDef::Kind kind, uint32_t& canon, uint32_t& local) {
+    local = r_.u32();
+    if (!r_.ok()) return Error(r_.error());
+    if (local >= m_.types.size()) return Error("unknown type");
+    canon = cx_.typeIds[local];
+    if (TypeRegistry::Get(canon).kind != kind) return Error("type is not of the kind the instruction takes");
+    return true;
+}
+
+// What an access to an element of an array is told: its size, whether it is a reference, and, if it is packed, how it is read.
+uint32_t FuncCompiler::ElementInfo(const CanonType& t) const {
+    uint32_t info = t.elemBytes;
+    if (t.elemIsRef) info |= 0x100;
+    return info;
+}
+
+static bool StorageDefaultable(const StorageType& t) { return t.pack != StorageType::Pack::None || !(t.val.IsRef() && !t.val.nullable); }
+
+bool FuncCompiler::GcInstruction(uint32_t n) {
+    const ValType i32 = ValType::I32();
+    uint32_t id, local;
+    switch (n) {
+        case 0x00: case 0x01: {  // struct.new, struct.new_default
+            if (!ReadTypeIndex(TypeDef::Kind::Struct, id, local)) return false;
+            const CanonType& t = TypeRegistry::Get(id);
+            if (n == 0x01) {
+                for (const FieldType& f : t.str.fields) if (!StorageDefaultable(f.type)) return Error("struct.new_default of a type with a field that has no default");
+            } else {
+                for (size_t k = t.str.fields.size(); k-- > 0;) if (!Pop(t.str.fields[k].type.Unpacked())) return false;
+            }
+            Push(ValType::Ref(false, static_cast<HeapType>(id)));
+            if (!Dead()) Emit(Op::kFbBase + n, id);
+            return true;
+        }
+        case 0x02: case 0x03: case 0x04: case 0x05: {  // struct.get, _s, _u, struct.set
+            if (!ReadTypeIndex(TypeDef::Kind::Struct, id, local)) return false;
+            const uint32_t field = r_.u32();
+            if (!r_.ok()) return Error(r_.error());
+            const CanonType& t = TypeRegistry::Get(id);
+            if (field >= t.str.fields.size()) return Error("unknown field");
+            const FieldType& f = t.str.fields[field];
+            const bool packed = f.type.pack != StorageType::Pack::None;
+            if (n == 0x02 && packed) return Error("struct.get of a packed field needs the signed or unsigned form");
+            if ((n == 0x03 || n == 0x04) && !packed) return Error("struct.get_s and struct.get_u are for packed fields");
+            uint32_t flags = t.fieldIsRef[field] ? 1 : 0;
+            if (f.type.pack == StorageType::Pack::I8) flags |= 2;
+            if (f.type.pack == StorageType::Pack::I16) flags |= 4;
+            if (n == 0x03) flags |= 8;
+            if (f.type.val.kind == ValType::Kind::V128 && !packed) flags |= 16;
+            if (n == 0x05) {
+                if (!f.mut) return Error("struct.set of an immutable field");
+                if (!Pop(f.type.Unpacked()) || !Pop(ValType::Ref(true, static_cast<HeapType>(id)))) return false;
+            } else {
+                if (!Pop(ValType::Ref(true, static_cast<HeapType>(id)))) return false;
+                Push(f.type.Unpacked());
+            }
+            if (!Dead()) { Emit(Op::kFbBase + n); Emit(t.fieldSlot[field], flags); }
+            return true;
+        }
+        case 0x06: case 0x07: case 0x08: case 0x09: case 0x0A: {  // array.new, _default, _fixed, _data, _elem
+            if (!ReadTypeIndex(TypeDef::Kind::Array, id, local)) return false;
+            const CanonType& t = TypeRegistry::Get(id);
+            const StorageType& e = t.arr.element.type;
+            uint32_t extra = 0;
+            bool hasExtra = false;
+            if (n == 0x06) {
+                if (!Pop(i32) || !Pop(e.Unpacked())) return false;
+            } else if (n == 0x07) {
+                if (!StorageDefaultable(e)) return Error("array.new_default of a type that has no default");
+                if (!Pop(i32)) return false;
+            } else if (n == 0x08) {
+                extra = r_.u32();
+                hasExtra = true;
+                if (!r_.ok()) return Error(r_.error());
+                if (extra > r_.remaining() + 100000) return Error("array.new_fixed is too large");
+                for (uint32_t k = 0; k < extra; ++k) if (!Pop(e.Unpacked())) return false;
+            } else if (n == 0x09) {
+                extra = r_.u32();
+                hasExtra = true;
+                if (!r_.ok()) return Error(r_.error());
+                if (e.pack == StorageType::Pack::None && e.val.IsRef()) return Error("array.new_data of an array of references");
+                if (!m_.hasDataCount) return Error("data count section required");
+                if (extra >= m_.dataCount) return Error("unknown data segment");
+                if (!Pop(i32) || !Pop(i32)) return false;
+            } else {
+                extra = r_.u32();
+                hasExtra = true;
+                if (!r_.ok()) return Error(r_.error());
+                if (extra >= m_.elems.size()) return Error("unknown elem segment");
+                if (!(e.pack == StorageType::Pack::None && e.val.IsRef())) return Error("array.new_elem of an array that is not of references");
+                if (!TypeRegistry::Matches(cx_.elemTypes[extra], e.val)) return Error("type mismatch: the elements of the segment are not what the array has");
+                if (!Pop(i32) || !Pop(i32)) return false;
+            }
+            Push(ValType::Ref(false, static_cast<HeapType>(id)));
+            if (!Dead()) { Emit(Op::kFbBase + n, id); if (hasExtra) Emit(extra); }
+            return true;
+        }
+        case 0x0B: case 0x0C: case 0x0D: case 0x0E: {  // array.get, _s, _u, array.set
+            if (!ReadTypeIndex(TypeDef::Kind::Array, id, local)) return false;
+            const CanonType& t = TypeRegistry::Get(id);
+            const FieldType& f = t.arr.element;
+            const bool packed = f.type.pack != StorageType::Pack::None;
+            if (n == 0x0B && packed) return Error("array.get of a packed element needs the signed or unsigned form");
+            if ((n == 0x0C || n == 0x0D) && !packed) return Error("array.get_s and array.get_u are for packed elements");
+            uint32_t info = ElementInfo(t);
+            if (n == 0x0C) info |= 0x200;
+            if (n == 0x0E) {
+                if (!f.mut) return Error("array.set of an immutable array");
+                if (!Pop(f.type.Unpacked()) || !Pop(i32) || !Pop(ValType::Ref(true, static_cast<HeapType>(id)))) return false;
+            } else {
+                if (!Pop(i32) || !Pop(ValType::Ref(true, static_cast<HeapType>(id)))) return false;
+                Push(f.type.Unpacked());
+            }
+            if (!Dead()) Emit(Op::kFbBase + n, info);
+            return true;
+        }
+        case 0x0F: {  // array.len
+            if (!Pop(ValType::Ref(true, Heap::Array))) return false;
+            Push(i32);
+            if (!Dead()) Emit(Op::kFbBase + n);
+            return true;
+        }
+        case 0x10: {  // array.fill
+            if (!ReadTypeIndex(TypeDef::Kind::Array, id, local)) return false;
+            const CanonType& t = TypeRegistry::Get(id);
+            if (!t.arr.element.mut) return Error("array.fill of an immutable array");
+            if (!Pop(i32) || !Pop(t.arr.element.type.Unpacked()) || !Pop(i32) || !Pop(ValType::Ref(true, static_cast<HeapType>(id)))) return false;
+            if (!Dead()) Emit(Op::kFbBase + n, ElementInfo(t));
+            return true;
+        }
+        case 0x11: {  // array.copy
+            uint32_t id2, local2;
+            if (!ReadTypeIndex(TypeDef::Kind::Array, id, local)) return false;
+            if (!ReadTypeIndex(TypeDef::Kind::Array, id2, local2)) return false;
+            const CanonType& dst = TypeRegistry::Get(id);
+            const CanonType& src = TypeRegistry::Get(id2);
+            if (!dst.arr.element.mut) return Error("array.copy into an immutable array");
+            if (!TypeRegistry::Matches(src.arr.element.type, dst.arr.element.type)) return Error("type mismatch: array.copy between arrays of other elements");
+            if (!Pop(i32) || !Pop(i32) || !Pop(ValType::Ref(true, static_cast<HeapType>(id2))) || !Pop(i32) || !Pop(ValType::Ref(true, static_cast<HeapType>(id)))) return false;
+            if (!Dead()) { Emit(Op::kFbBase + n); Emit(ElementInfo(dst), ElementInfo(src)); }
+            return true;
+        }
+        case 0x12: case 0x13: {  // array.init_data, array.init_elem
+            if (!ReadTypeIndex(TypeDef::Kind::Array, id, local)) return false;
+            const uint32_t segment = r_.u32();
+            if (!r_.ok()) return Error(r_.error());
+            const CanonType& t = TypeRegistry::Get(id);
+            const StorageType& e = t.arr.element.type;
+            if (!t.arr.element.mut) return Error("array.init of an immutable array");
+            const bool isRef = e.pack == StorageType::Pack::None && e.val.IsRef();
+            if (n == 0x12) {
+                if (isRef) return Error("array.init_data of an array of references");
+                if (!m_.hasDataCount) return Error("data count section required");
+                if (segment >= m_.dataCount) return Error("unknown data segment");
+            } else {
+                if (!isRef) return Error("array.init_elem of an array that is not of references");
+                if (segment >= m_.elems.size()) return Error("unknown elem segment");
+                if (!TypeRegistry::Matches(cx_.elemTypes[segment], e.val)) return Error("type mismatch: the elements of the segment are not what the array has");
+            }
+            if (!Pop(i32) || !Pop(i32) || !Pop(i32) || !Pop(ValType::Ref(true, static_cast<HeapType>(id)))) return false;
+            if (!Dead()) { Emit(Op::kFbBase + n); Emit(ElementInfo(t), segment); }
+            return true;
+        }
+        case 0x14: case 0x15: case 0x16: case 0x17: {  // ref.test, ref.cast
+            HeapType ht;
+            if (!ReadHeap(ht)) return false;
+            const bool nullable = n == 0x15 || n == 0x17;
+            ValType v;
+            if (!PopAny(v)) return false;
+            if (!v.IsRef() && !v.IsBottom()) return Error("type mismatch: a reference was expected");
+            if (v.IsRef() && !SameHierarchy(v.heap, ht)) return Error("type mismatch: the type is not in the hierarchy of the reference");
+            if (n <= 0x15) Push(i32);
+            else Push(ValType::Ref(nullable, ht));
+            if (!Dead()) { Emit(Op::kFbBase + n); Emit(static_cast<uint32_t>(ht), nullable ? 1 : 0); }
+            return true;
+        }
+        case 0x18: case 0x19: {  // br_on_cast, br_on_cast_fail
+            const uint8_t flags = r_.u8();
+            const uint32_t depth = r_.u32();
+            HeapType ht1, ht2;
+            if (!r_.ok()) return Error(r_.error());
+            if (flags > 3) return Error("invalid cast flags");
+            if (!ReadHeap(ht1) || !ReadHeap(ht2)) return false;
+            Ctl* target = nullptr;
+            if (!Label(depth, target)) return false;
+            const ValType rt1 = ValType::Ref(flags & 1, ht1);
+            const ValType rt2 = ValType::Ref(flags & 2, ht2);
+            if (!TypeRegistry::Matches(rt2, rt1)) return Error("type mismatch: br_on_cast to a type that is not a subtype of the one it takes");
+            const std::vector<ValType> types = LabelTypes(*target);
+            if (types.empty() || !types.back().IsRef()) return Error("type mismatch: br_on_cast needs a label that takes a reference");
+            const ValType diff = ValType::Ref(rt1.nullable && !rt2.nullable, ht1);
+            const ValType& branches = n == 0x18 ? rt2 : diff;
+            if (!TypeRegistry::Matches(branches, types.back())) return Error("type mismatch: what br_on_cast branches with is not what the label takes");
+            std::vector<ValType> prefix(types.begin(), types.end() - 1);
+            const SlotCount keep = SlotsOf(types);
+            if (!Dead()) {
+                Emit(Op::kFbBase + n);
+                EmitTarget(*target);
+                Emit(keep.n);
+                Emit(keep.r);
+                Emit(hN_ - target->baseN - keep.n);
+                Emit(hR_ - target->baseR - keep.r);
+                Emit(static_cast<uint32_t>(ht2), (flags & 2) ? 1 : 0);
+            }
+            if (!Pop(rt1)) return false;
+            if (!PopVals(prefix)) return false;
+            PushVals(prefix);
+            Push(n == 0x18 ? diff : rt2);
+            return true;
+        }
+        case 0x1A: case 0x1B: {  // any.convert_extern, extern.convert_any
+            const HeapType from = n == 0x1A ? Heap::Extern : Heap::Any;
+            ValType v;
+            if (!PopAny(v)) return false;
+            if (!v.IsRef() && !v.IsBottom()) return Error("type mismatch: a reference was expected");
+            if (v.IsRef() && !TypeRegistry::Matches(ValType::Ref(v.nullable, v.heap), ValType::Ref(true, from))) return Error("type mismatch: the conversion takes a reference of the other kind");
+            Push(ValType::Ref(v.IsBottom() ? true : v.nullable, n == 0x1A ? Heap::Any : Heap::Extern));
+            if (!Dead()) Emit(Op::kFbBase + n);
+            return true;
+        }
+        case 0x1C: {  // ref.i31
+            if (!Pop(i32)) return false;
+            Push(ValType::Ref(false, Heap::I31));
+            if (!Dead()) Emit(Op::kFbBase + n);
+            return true;
+        }
+        case 0x1D: case 0x1E: {  // i31.get_s, i31.get_u
+            if (!Pop(ValType::Ref(true, Heap::I31))) return false;
+            Push(i32);
+            if (!Dead()) Emit(Op::kFbBase + n);
+            return true;
+        }
+        default: return Error("invalid opcode");
+    }
 }
 
 // 0xFC: the saturating conversions and the bulk memory and table instructions.

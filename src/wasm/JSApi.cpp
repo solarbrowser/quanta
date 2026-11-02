@@ -208,9 +208,28 @@ bool ToWasm(Context& ctx, const Value& v, const ValType& t, uint64_t* n, Value* 
                 *r = v;
                 return true;
             }
-            if (v.is_null() && t.nullable) { *r = Value::null(); return true; }
-            ctx.throw_type_error("invalid value for a reference type");
-            return false;
+            if (v.is_null()) {
+                if (!t.nullable) { ctx.throw_type_error("invalid value for a reference type"); return false; }
+                *r = Value::null();
+                return true;
+            }
+            if (TypeRegistry::TopOf(t.heap) == Heap::Exn) {
+                if (!DOMObject::Cast<ExceptionObject>(v)) { ctx.throw_type_error("exnref expected"); return false; }
+                *r = v;
+                return true;
+            }
+            // (The any hierarchy: a number of an i31, a struct or an array of a module, or whatever else, as a host reference.)
+            Value ref = v;
+            const bool i31 = v.is_number() && v.as_number() == std::trunc(v.as_number()) && v.as_number() >= -1073741824.0 && v.as_number() <= 1073741823.0 && !(v.as_number() == 0 && std::signbit(v.as_number()));
+            if (!i31 && !DOMObject::Cast<StructObject>(v) && !DOMObject::Cast<ArrayObject>(v)) {
+                HostRefObject* h = ::Quanta::Heap::Allocate<HostRefObject>();
+                h->initialize_prototype(nullptr);
+                h->value.Set(v);
+                ref = Value(static_cast<Object*>(h));
+            }
+            if (!RefMatches(ref, t.heap, t.nullable)) { ctx.throw_type_error("invalid value for a reference type"); return false; }
+            *r = ref;
+            return true;
         }
         default: return false;
     }
@@ -236,6 +255,7 @@ Value ToJS(Context& ctx, const ValType& t, const uint64_t* n, const Value* r) {
             if (IsFuncHeap(t.heap)) {
                 if (FuncObject* f = DOMObject::Cast<FuncObject>(*r)) return WrapperOf(ctx, f);
             }
+            if (HostRefObject* h = DOMObject::Cast<HostRefObject>(*r)) return h->value.Get();
             return *r;
         }
         default: return Value();

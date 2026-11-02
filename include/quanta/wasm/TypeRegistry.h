@@ -25,6 +25,14 @@ struct CanonType {
     bool final = true;
     int64_t super = -1;  // the canonical id of its supertype, or -1
     uint32_t depth = 0;  // how many supertypes there are above it
+
+    // How an instance is laid out: a struct has numbers in slots of 64 bits (a vector in two) and references in a list, and says for each
+    // field which and where; an array has the bytes of its elements (or its references) in one.
+    std::vector<uint32_t> fieldSlot;
+    std::vector<uint8_t> fieldIsRef;
+    uint32_t numSlots = 0, numRefs = 0;
+    uint32_t elemBytes = 0;  // 1, 2, 4, 8 or 16
+    bool elemIsRef = false;
 };
 
 namespace TypeRegistry {
@@ -42,6 +50,9 @@ ValType Map(const ValType& type, const std::vector<uint32_t>& ids);
 bool HeapSubtype(HeapType a, HeapType b);
 bool Matches(const ValType& a, const ValType& b);
 bool Matches(const StorageType& a, const StorageType& b);
+
+// The root of the hierarchy a heap type is in: func, extern, any or exn.
+HeapType TopOf(HeapType h);
 
 // Whether two function types (canonical) are the same.
 bool SameSignature(uint32_t a, uint32_t b);

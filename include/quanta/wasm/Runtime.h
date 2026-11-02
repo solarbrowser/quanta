@@ -90,6 +90,28 @@ ExceptionObject* WrapException(Context& ctx, const Value& thrown);
 // Throws it in the context: as the value it carries if it was thrown with the JS tag, as the object if not.
 void ThrowException(Context& ctx, ExceptionObject* exception);
 
+// The instances of the types of the GC proposal. What script gets of them is an object with nothing in it.
+struct StructObject : DOMObject {
+    uint32_t type = 0;  // the canonical id
+    std::vector<uint64_t> numbers;
+    TracedList refs;
+};
+
+struct ArrayObject : DOMObject {
+    uint32_t type = 0;
+    uint32_t length = 0;
+    std::vector<uint8_t> bytes;  // (the elements that are not references)
+    TracedList refs;
+};
+
+// A value of script as an anyref (one that is not a number of the range of an i31, and not an instance of the types above).
+struct HostRefObject : DOMObject {
+    TracedValue value;
+};
+
+// Whether the reference is of the heap type (a canonical id or an abstract one), null being so only if `nullable`.
+bool RefMatches(const Value& v, HeapType heap, bool nullable);
+
 struct ModuleObject : DOMObject {
     std::shared_ptr<Module> module;
 };

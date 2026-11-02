@@ -141,6 +141,17 @@ bool Matches(const StorageType& a, const StorageType& b) {
 
 bool SameSignature(uint32_t a, uint32_t b) { return a == b; }
 
+HeapType TopOf(HeapType h) {
+    switch (h) {
+        case Heap::Func: case Heap::NoFunc: return Heap::Func;
+        case Heap::Extern: case Heap::NoExtern: return Heap::Extern;
+        case Heap::Exn: case Heap::NoExn: return Heap::Exn;
+        default: break;
+    }
+    if (h < 0) return Heap::Any;
+    return Get(static_cast<uint32_t>(h)).kind == TypeDef::Kind::Func ? Heap::Func : Heap::Any;
+}
+
 namespace {
 
 bool SameStorage(const StorageType& a, const StorageType& b) {
@@ -242,6 +253,26 @@ bool Canonicalize(const Module& module, std::vector<uint32_t>& ids, std::string&
             c.arr = t.arr;
             c.arr.element.type.val = MapIn(t.arr.element.type.val, ids, first, base);
             if (!t.supers.empty()) c.super = t.supers[0] >= first ? base + (t.supers[0] - first) : ids[t.supers[0]];
+            if (t.kind == TypeDef::Kind::Struct) {
+                for (const FieldType& f : c.str.fields) {
+                    const bool isRef = f.type.pack == StorageType::Pack::None && f.type.val.IsRef();
+                    c.fieldIsRef.push_back(isRef ? 1 : 0);
+                    if (isRef) {
+                        c.fieldSlot.push_back(c.numRefs++);
+                    } else {
+                        c.fieldSlot.push_back(c.numSlots);
+                        c.numSlots += f.type.pack == StorageType::Pack::None && f.type.val.kind == ValType::Kind::V128 ? 2 : 1;
+                    }
+                }
+            } else if (t.kind == TypeDef::Kind::Array) {
+                const StorageType& e = c.arr.element.type;
+                c.elemIsRef = e.pack == StorageType::Pack::None && e.val.IsRef();
+                if (e.pack == StorageType::Pack::I8) c.elemBytes = 1;
+                else if (e.pack == StorageType::Pack::I16) c.elemBytes = 2;
+                else if (e.val.kind == ValType::Kind::V128) c.elemBytes = 16;
+                else if (e.val.kind == ValType::Kind::I64 || e.val.kind == ValType::Kind::F64) c.elemBytes = 8;
+                else c.elemBytes = 4;
+            }
             uint32_t id;
             if (!Append(r, std::move(c), id)) { error = "too many types"; return false; }
             ids[first + i] = id;
