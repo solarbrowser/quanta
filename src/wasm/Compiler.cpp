@@ -491,6 +491,7 @@ private:
     bool Prefixed(uint8_t prefix);
     bool MiscInstruction(uint32_t n);
     bool GcInstruction(uint32_t n);
+    bool SimdInstruction(uint32_t n);
     bool ReadHeap(HeapType& canon);
     bool ReadTypeIndex(TypeDef::Kind kind, uint32_t& canon, uint32_t& local);
     uint32_t ElementInfo(const CanonType& t) const;
@@ -822,6 +823,7 @@ bool FuncCompiler::Prefixed(uint8_t prefix) {
     const uint32_t n = r_.u32();
     if (!r_.ok()) return Error(r_.error());
     if (prefix == 0xFC) return MiscInstruction(n);
+    if (prefix == 0xFD) return SimdInstruction(n);
     if (prefix == 0xFB) {
         if (constMode_ && !(n == 0x00 || n == 0x01 || n == 0x06 || n == 0x07 || n == 0x08 || n == 0x1A || n == 0x1B || n == 0x1C)) return Error("constant expression required");
         return GcInstruction(n);
@@ -1073,6 +1075,155 @@ bool FuncCompiler::GcInstruction(uint32_t n) {
         }
         default: return Error("invalid opcode");
     }
+}
+
+// ---- The vector instructions ----
+
+bool FuncCompiler::SimdInstruction(uint32_t n) {
+    const ValType v = ValType::V128(), i32 = ValType::I32(), i64 = ValType::I64(), f32 = ValType::F32(), f64 = ValType::F64();
+    if (constMode_ && n != 0x0C) return Error("constant expression required");
+    // Loads and stores.
+    const auto memory = [&](uint32_t align, bool lane, uint32_t lanes, uint32_t& memIndex, uint64_t& offset, uint32_t& laneIndex, bool& is64) {
+        if (!MemArg(align, memIndex, offset, is64)) return false;
+        if (lane) {
+            laneIndex = r_.u8();
+            if (!r_.ok()) return Error(r_.error());
+            if (laneIndex >= lanes) return Error("invalid lane index");
+        }
+        return true;
+    };
+    if (n <= 0x0B || (n >= 0x54 && n <= 0x5D)) {
+        uint32_t align = 4, lanes = 0;
+        bool store = false, lane = false;
+        switch (n) {
+            case 0x00: align = 4; break;
+            case 0x01: case 0x02: case 0x03: case 0x04: case 0x05: case 0x06: align = 3; break;
+            case 0x07: align = 0; break;
+            case 0x08: align = 1; break;
+            case 0x09: align = 2; break;
+            case 0x0A: align = 3; break;
+            case 0x0B: align = 4; store = true; break;
+            case 0x54: align = 0; lane = true; lanes = 16; break;
+            case 0x55: align = 1; lane = true; lanes = 8; break;
+            case 0x56: align = 2; lane = true; lanes = 4; break;
+            case 0x57: align = 3; lane = true; lanes = 2; break;
+            case 0x58: align = 0; lane = true; lanes = 16; store = true; break;
+            case 0x59: align = 1; lane = true; lanes = 8; store = true; break;
+            case 0x5A: align = 2; lane = true; lanes = 4; store = true; break;
+            case 0x5B: align = 3; lane = true; lanes = 2; store = true; break;
+            case 0x5C: align = 2; break;
+            default: align = 3; break;  // 0x5D
+        }
+        uint32_t memIndex = 0, laneIndex = 0;
+        uint64_t offset = 0;
+        bool is64 = false;
+        if (!memory(align, lane, lanes, memIndex, offset, laneIndex, is64)) return false;
+        const ValType address = is64 ? i64 : i32;
+        if (store) {
+            if (!Pop(v) || !Pop(address)) return false;
+        } else if (lane) {
+            if (!Pop(v) || !Pop(address)) return false;
+            Push(v);
+        } else {
+            if (!Pop(address)) return false;
+            Push(v);
+        }
+        if (!Dead()) {
+            Emit(Op::kFdBase + n);
+            Emit(memIndex);
+            Emit(static_cast<uint32_t>(offset));
+            Emit(static_cast<uint32_t>(offset >> 32));
+            if (lane) Emit(laneIndex);
+        }
+        return true;
+    }
+    if (n == 0x0C) {
+        const uint8_t* bytes = r_.bytes(16);
+        if (!r_.ok()) return Error(r_.error());
+        Push(v);
+        if (!Dead()) {
+            Emit(Op::kConstV);
+            for (int i = 0; i < 4; ++i) {
+                uint32_t w;
+                std::memcpy(&w, bytes + i * 4, 4);
+                Emit(w);
+            }
+        }
+        return true;
+    }
+    if (n == 0x0D) {  // i8x16.shuffle
+        const uint8_t* lanes = r_.bytes(16);
+        if (!r_.ok()) return Error(r_.error());
+        for (int i = 0; i < 16; ++i) if (lanes[i] >= 32) return Error("invalid lane index");
+        if (!Pop(v) || !Pop(v)) return false;
+        Push(v);
+        if (!Dead()) {
+            Emit(Op::kFdBase + n);
+            for (int i = 0; i < 4; ++i) {
+                uint32_t w;
+                std::memcpy(&w, lanes + i * 4, 4);
+                Emit(w);
+            }
+        }
+        return true;
+    }
+    if (n >= 0x15 && n <= 0x22) {  // extract_lane, replace_lane
+        const uint32_t lane = r_.u8();
+        if (!r_.ok()) return Error(r_.error());
+        uint32_t lanes;
+        ValType scalar;
+        switch (n) {
+            case 0x15: case 0x16: case 0x17: lanes = 16; scalar = i32; break;
+            case 0x18: case 0x19: case 0x1A: lanes = 8; scalar = i32; break;
+            case 0x1B: case 0x1C: lanes = 4; scalar = i32; break;
+            case 0x1D: case 0x1E: lanes = 2; scalar = i64; break;
+            case 0x1F: case 0x20: lanes = 4; scalar = f32; break;
+            default: lanes = 2; scalar = f64; break;
+        }
+        if (lane >= lanes) return Error("invalid lane index");
+        const bool replace = n == 0x17 || n == 0x1A || n == 0x1C || n == 0x1E || n == 0x20 || n == 0x22;
+        if (replace) {
+            if (!Pop(scalar) || !Pop(v)) return false;
+            Push(v);
+        } else {
+            if (!Pop(v)) return false;
+            Push(scalar);
+        }
+        if (!Dead()) Emit(Op::kFdBase + n, lane);
+        return true;
+    }
+    if (n >= 0x0F && n <= 0x14) {  // splat
+        const ValType scalar = n == 0x12 ? i64 : n == 0x13 ? f32 : n == 0x14 ? f64 : i32;
+        if (!Pop(scalar)) return false;
+        Push(v);
+        if (!Dead()) Emit(Op::kFdBase + n);
+        return true;
+    }
+    // The rest take vectors (and one scalar for a shift) and give a vector or a number.
+    const auto in = [&](std::initializer_list<ValType> types, ValType out) {
+        for (auto it = types.end(); it != types.begin();) {
+            --it;
+            if (!Pop(*it)) return false;
+        }
+        Push(out);
+        if (!Dead()) Emit(Op::kFdBase + n);
+        return true;
+    };
+    const bool shift = (n >= 0x6B && n <= 0x6D) || (n >= 0x8B && n <= 0x8D) || (n >= 0xAB && n <= 0xAD) || (n >= 0xCB && n <= 0xCD);
+    const bool test = n == 0x53 || n == 0x63 || n == 0x64 || n == 0x83 || n == 0x84 || n == 0xA3 || n == 0xA4 || n == 0xC3 || n == 0xC4;
+    const bool ternary = n == 0x52 || (n >= 0x105 && n <= 0x10C) || n == 0x113;
+    const bool unary = n == 0x5E || n == 0x5F || n == 0x4D || (n >= 0x60 && n <= 0x62) || (n >= 0x67 && n <= 0x6A) || n == 0x74 || n == 0x75 || n == 0x7A || (n >= 0x7C && n <= 0x7F) || n == 0x80 ||
+                       n == 0x81 || (n >= 0x87 && n <= 0x8A) || n == 0x94 || n == 0xA0 || n == 0xA1 || (n >= 0xA7 && n <= 0xAA) || n == 0xC0 || n == 0xC1 || (n >= 0xC7 && n <= 0xCA) || n == 0xE0 ||
+                       n == 0xE1 || n == 0xE3 || n == 0xEC || n == 0xED || n == 0xEF || (n >= 0xF8 && n <= 0xFF) || (n >= 0x101 && n <= 0x104);
+    const bool binary = (n >= 0x0E && n <= 0x0E) || (n >= 0x23 && n <= 0x4C) || (n >= 0x4E && n <= 0x51) || n == 0x65 || n == 0x66 || (n >= 0x6E && n <= 0x73) || (n >= 0x76 && n <= 0x79) || n == 0x7B ||
+                        n == 0x82 || n == 0x85 || n == 0x86 || (n >= 0x8E && n <= 0x93) || (n >= 0x95 && n <= 0x99) || (n >= 0x9B && n <= 0x9F) || n == 0xAE || n == 0xB1 || (n >= 0xB5 && n <= 0xBA) ||
+                        (n >= 0xBC && n <= 0xBF) || n == 0xCE || n == 0xD1 || (n >= 0xD5 && n <= 0xDF) || (n >= 0xE4 && n <= 0xEB) || (n >= 0xF0 && n <= 0xF7) || n == 0x100 || (n >= 0x10D && n <= 0x112);
+    if (shift) return in({v, i32}, v);
+    if (test) return in({v}, i32);
+    if (ternary) return in({v, v, v}, v);
+    if (unary) return in({v}, v);
+    if (binary) return in({v, v}, v);
+    return Error("invalid opcode");
 }
 
 // 0xFC: the saturating conversions and the bulk memory and table instructions.

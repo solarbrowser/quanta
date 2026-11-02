@@ -17,6 +17,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/wasm/Runtime.h"
+#include "Simd.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -1194,7 +1195,117 @@ run:
                 *sp++ = op == Op::kFbBase + 0x1D ? static_cast<uint32_t>(i) : (static_cast<uint32_t>(i) & 0x7FFFFFFFu);
                 break;
             }
+            // ---- 0xFD: the vector instructions that touch memory ----
+            case Op::kFdBase + 0x00: {  // v128.load
+                MemoryObject* m = memoryAt(pc[0]);
+                uint8_t* p;
+                EFFECTIVE(m, sp[-1], 16, p);
+                std::memcpy(&sp[-1], p, 8);
+                std::memcpy(&sp[0], p + 8, 8);
+                ++sp;
+                pc += 3;
+                break;
+            }
+            case Op::kFdBase + 0x01: case Op::kFdBase + 0x02: case Op::kFdBase + 0x03: case Op::kFdBase + 0x04: case Op::kFdBase + 0x05: case Op::kFdBase + 0x06: {
+                MemoryObject* m = memoryAt(pc[0]);
+                uint8_t* p;
+                EFFECTIVE(m, sp[-1], 8, p);
+                uint8_t src[8], out[16];
+                std::memcpy(src, p, 8);
+                const bool sign = !(op & 1) ? false : false;
+                (void)sign;
+                const uint32_t kind = (op - Op::kFdBase - 0x01) / 2;  // 0: 8x8, 1: 16x4, 2: 32x2
+                const bool isSigned = ((op - Op::kFdBase) & 1) == 1;
+                if (kind == 0) {
+                    for (int i = 0; i < 8; ++i) { const int16_t v = isSigned ? static_cast<int16_t>(static_cast<int8_t>(src[i])) : static_cast<int16_t>(src[i]); std::memcpy(out + i * 2, &v, 2); }
+                } else if (kind == 1) {
+                    for (int i = 0; i < 4; ++i) { int16_t h; std::memcpy(&h, src + i * 2, 2); const int32_t v = isSigned ? static_cast<int32_t>(h) : static_cast<int32_t>(static_cast<uint16_t>(h)); std::memcpy(out + i * 4, &v, 4); }
+                } else {
+                    for (int i = 0; i < 2; ++i) { int32_t w; std::memcpy(&w, src + i * 4, 4); const int64_t v = isSigned ? static_cast<int64_t>(w) : static_cast<int64_t>(static_cast<uint32_t>(w)); std::memcpy(out + i * 8, &v, 8); }
+                }
+                std::memcpy(&sp[-1], out, 8);
+                std::memcpy(&sp[0], out + 8, 8);
+                ++sp;
+                pc += 3;
+                break;
+            }
+            case Op::kFdBase + 0x07: case Op::kFdBase + 0x08: case Op::kFdBase + 0x09: case Op::kFdBase + 0x0A: {  // load splat
+                MemoryObject* m = memoryAt(pc[0]);
+                const uint32_t size = 1u << (op - Op::kFdBase - 0x07);
+                uint8_t* p;
+                EFFECTIVE(m, sp[-1], size, p);
+                uint8_t out[16];
+                for (uint32_t i = 0; i < 16; i += size) std::memcpy(out + i, p, size);
+                std::memcpy(&sp[-1], out, 8);
+                std::memcpy(&sp[0], out + 8, 8);
+                ++sp;
+                pc += 3;
+                break;
+            }
+            case Op::kFdBase + 0x5C: case Op::kFdBase + 0x5D: {  // load32_zero, load64_zero
+                MemoryObject* m = memoryAt(pc[0]);
+                const uint32_t size = op == Op::kFdBase + 0x5C ? 4 : 8;
+                uint8_t* p;
+                EFFECTIVE(m, sp[-1], size, p);
+                uint64_t lo = 0;
+                std::memcpy(&lo, p, size);
+                sp[-1] = lo;
+                sp[0] = 0;
+                ++sp;
+                pc += 3;
+                break;
+            }
+            case Op::kFdBase + 0x0B: {  // v128.store
+                MemoryObject* m = memoryAt(pc[0]);
+                sp -= 2;
+                const uint64_t lo = sp[0], hi = sp[1];
+                uint8_t* p;
+                EFFECTIVE(m, sp[-1], 16, p);
+                std::memcpy(p, &lo, 8);
+                std::memcpy(p + 8, &hi, 8);
+                --sp;
+                pc += 3;
+                break;
+            }
+            case Op::kFdBase + 0x54: case Op::kFdBase + 0x55: case Op::kFdBase + 0x56: case Op::kFdBase + 0x57: {  // load lane
+                MemoryObject* m = memoryAt(pc[0]);
+                const uint32_t size = 1u << (op - Op::kFdBase - 0x54);
+                const uint32_t lane = pc[3];
+                sp -= 2;
+                uint8_t vector[16];
+                std::memcpy(vector, &sp[0], 8);
+                std::memcpy(vector + 8, &sp[1], 8);
+                uint8_t* p;
+                EFFECTIVE(m, sp[-1], size, p);
+                std::memcpy(vector + lane * size, p, size);
+                std::memcpy(&sp[-1], vector, 8);
+                std::memcpy(&sp[0], vector + 8, 8);
+                ++sp;
+                pc += 4;
+                break;
+            }
+            case Op::kFdBase + 0x58: case Op::kFdBase + 0x59: case Op::kFdBase + 0x5A: case Op::kFdBase + 0x5B: {  // store lane
+                MemoryObject* m = memoryAt(pc[0]);
+                const uint32_t size = 1u << (op - Op::kFdBase - 0x58);
+                const uint32_t lane = pc[3];
+                sp -= 2;
+                uint8_t vector[16];
+                std::memcpy(vector, &sp[0], 8);
+                std::memcpy(vector + 8, &sp[1], 8);
+                uint8_t* p;
+                EFFECTIVE(m, sp[-1], size, p);
+                std::memcpy(p, vector + lane * size, size);
+                --sp;
+                pc += 4;
+                break;
+            }
             default:
+                if (op >= Op::kFdBase && op < Op::kFdBase + 0x200) {
+                    const uint32_t sub = op - Op::kFdBase;
+                    sp = SimdExec(sub, sp, pc);
+                    pc += SimdImmediateWords(sub);
+                    break;
+                }
                 std::fprintf(stderr, "wasm: internal opcode %u is not implemented\n", op);
                 TRAP(TrapKind::Unreachable);
         }
