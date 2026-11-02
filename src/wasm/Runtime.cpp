@@ -39,25 +39,29 @@ bool MemoryObject::Init(const MemType& t) {
     const uint64_t implementationMax = t.limits.is64 ? kMaxPages64 : kMaxPages32;
     maxPages = t.limits.hasMax ? std::min(t.limits.max, implementationMax) : implementationMax;
     if (t.limits.min > maxPages) return false;
-    reserved = maxPages;
     pages = 0;
+    reserved = maxPages;
     if (reserved == 0) return true;
+    // (As much address space as can be had, down from what the memory may grow to, and no less than what it begins with.)
 #if defined(_WIN32)
-    data = static_cast<uint8_t*>(VirtualAlloc(nullptr, static_cast<size_t>(reserved << 16), MEM_RESERVE, PAGE_NOACCESS));
+    while (reserved >= t.limits.min && !data) {
+        data = static_cast<uint8_t*>(VirtualAlloc(nullptr, static_cast<size_t>(reserved << 16), MEM_RESERVE, PAGE_NOACCESS));
+        if (!data) reserved >>= 1;
+    }
     if (!data) return false;
     if (t.limits.min && !VirtualAlloc(data, static_cast<size_t>(t.limits.min << 16), MEM_COMMIT, PAGE_READWRITE)) return false;
 #else
-    void* p = mmap(nullptr, static_cast<size_t>(reserved << 16), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) {
-        // (Not that much address space: what is wanted now will do.)
-        reserved = std::max<uint64_t>(t.limits.min, 1);
+    void* p = MAP_FAILED;
+    while (reserved >= std::max<uint64_t>(t.limits.min, 1)) {
         p = mmap(nullptr, static_cast<size_t>(reserved << 16), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        if (p == MAP_FAILED) return false;
-        maxPages = reserved;
+        if (p != MAP_FAILED) break;
+        reserved >>= 1;
     }
+    if (p == MAP_FAILED) return false;
     data = static_cast<uint8_t*>(p);
     if (t.limits.min && mprotect(data, static_cast<size_t>(t.limits.min << 16), PROT_READ | PROT_WRITE) != 0) return false;
 #endif
+    if (reserved < maxPages) maxPages = reserved;
     pages = t.limits.min;
     return true;
 }

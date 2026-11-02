@@ -13,7 +13,7 @@
 
 #include "quanta/wasm/Decoder.h"
 #include "quanta/wasm/Reader.h"
-#include "Internal.h"
+#include "quanta/wasm/Internal.h"
 
 namespace Quanta::Wasm {
 

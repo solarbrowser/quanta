@@ -11,7 +11,7 @@
 #include <cstring>
 
 #include "quanta/wasm/Reader.h"
-#include "Internal.h"
+#include "quanta/wasm/Internal.h"
 
 namespace Quanta::Wasm {
 

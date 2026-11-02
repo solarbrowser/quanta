@@ -17,7 +17,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/wasm/Runtime.h"
-#include "Simd.h"
+#include "quanta/wasm/Simd.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -908,6 +908,7 @@ run:
                 const CanonType& t = TypeRegistry::Get(pc[0]);
                 StructObject* o = ::Quanta::Heap::Allocate<StructObject>();
                 o->initialize_prototype(nullptr);
+                o->prevent_extensions();
                 o->type = pc[0];
                 if (op == Op::kFbBase + 0x00) {
                     o->numbers.assign(sp - t.numSlots, sp);
@@ -979,6 +980,7 @@ run:
                 if (length * (t.elemIsRef ? 8 : eb) > kMaxArrayBytes) TRAP(TrapKind::OutOfMemory);
                 ArrayObject* o = ::Quanta::Heap::Allocate<ArrayObject>();
                 o->initialize_prototype(nullptr);
+                o->prevent_extensions();
                 o->type = pc[0];
                 o->length = static_cast<uint32_t>(length);
                 if (!t.elemIsRef) o->bytes.assign(static_cast<size_t>(length) * eb, 0);
@@ -1178,6 +1180,7 @@ run:
                 if (DOMObject::Cast<StructObject>(v) || DOMObject::Cast<ArrayObject>(v)) break;
                 HostRefObject* h = ::Quanta::Heap::Allocate<HostRefObject>();
                 h->initialize_prototype(nullptr);
+                h->prevent_extensions();
                 h->value.Set(v);
                 rsp[-1] = Value(static_cast<Object*>(h));
                 break;

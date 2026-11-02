@@ -7,7 +7,7 @@
 // The vector instructions that work on the stack alone (the loads and stores are the interpreter's). A vector is two slots, the low half
 // first, which is the order the bytes of a lane have in memory.
 
-#include "Simd.h"
+#include "quanta/wasm/Simd.h"
 
 #include <algorithm>
 #include <cmath>

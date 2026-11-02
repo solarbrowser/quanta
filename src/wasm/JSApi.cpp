@@ -40,6 +40,7 @@ struct RealmData {
 };
 
 const char kRealmKey = 0;
+const char kModuleKey = 0, kInstanceKey = 0, kMemoryKey = 0, kTableKey = 0, kGlobalKey = 0, kTagKey = 0, kExceptionKey = 0;
 
 RealmData& R(Context& ctx) { return *static_cast<RealmData*>(E::GetRealmData(ctx, &kRealmKey)); }
 
@@ -56,6 +57,7 @@ void ThrowLink(Context& ctx, const std::string& message) { ThrowKind(ctx, R(ctx)
 void ThrowRuntime(Context& ctx, const std::string& message) { ThrowKind(ctx, R(ctx).runtimeError, message); }
 
 Value Undef() { return Value(); }
+bool IsObjectLike(const Value& v) { return v.is_object() || v.is_function(); }
 
 // ---- Numbers ----
 
@@ -116,6 +118,31 @@ Value FromInt64Bits(uint64_t v) { return Value(new BigInt(static_cast<int64_t>(v
 bool ToNumberChecked(Context& ctx, const Value& v, double& out) {
     out = E::ToNumber(ctx, v);
     return !E::HasException(ctx);
+}
+
+// The values an iterable gives.
+bool IterateToVector(Context& ctx, const Value& iterable, std::vector<Value>& out) {
+    if (!IsObjectLike(iterable)) { ctx.throw_type_error("value must be iterable"); return false; }
+    Symbol* symbol = Symbol::get_well_known(Symbol::ITERATOR);
+    const Value method = E::Get(ctx, iterable, Value(symbol));
+    if (E::HasException(ctx)) return false;
+    if (!method.is_function()) { ctx.throw_type_error("value must be iterable"); return false; }
+    const Value iterator = E::Call(ctx, method, iterable);
+    if (E::HasException(ctx)) return false;
+    if (!IsObjectLike(iterator)) { ctx.throw_type_error("iterator must be an object"); return false; }
+    const Value next = E::Get(ctx, iterator, "next");
+    if (E::HasException(ctx)) return false;
+    for (;;) {
+        const Value result = E::Call(ctx, next, iterator);
+        if (E::HasException(ctx)) return false;
+        if (!IsObjectLike(result)) { ctx.throw_type_error("iterator result must be an object"); return false; }
+        const Value done = E::Get(ctx, result, "done");
+        if (E::HasException(ctx)) return false;
+        if (E::ToBoolean(done)) return true;
+        out.push_back(E::Get(ctx, result, "value"));
+        if (E::HasException(ctx)) return false;
+        if (out.size() > 1000000) { ctx.throw_range_error("too many values"); return false; }
+    }
 }
 
 // ---- Functions ----
@@ -195,9 +222,14 @@ bool ToWasm(Context& ctx, const Value& v, const ValType& t, uint64_t* n, Value* 
                 }
                 FuncObject* f = FunctionOf(v);
                 if (!f) { ctx.throw_type_error("function-typed object expected"); return false; }
-                if (t.heap >= 0 && !TypeRegistry::HeapSubtype(static_cast<HeapType>(f->sig), t.heap)) { ctx.throw_type_error("function-typed object has the wrong type"); return false; }
+                if (t.heap != Heap::Func && !TypeRegistry::HeapSubtype(static_cast<HeapType>(f->sig), t.heap)) { ctx.throw_type_error("function-typed object has the wrong type"); return false; }
                 *r = Value(static_cast<Object*>(f));
                 return true;
+            }
+            if (t.heap == Heap::NoExtern) {
+                if (v.is_null() && t.nullable) { *r = Value::null(); return true; }
+                ctx.throw_type_error("invalid value for a reference type");
+                return false;
             }
             if (t.heap == Heap::Extern) {
                 if (v.is_null()) {
@@ -224,6 +256,7 @@ bool ToWasm(Context& ctx, const Value& v, const ValType& t, uint64_t* n, Value* 
             if (!i31 && !DOMObject::Cast<StructObject>(v) && !DOMObject::Cast<ArrayObject>(v)) {
                 HostRefObject* h = ::Quanta::Heap::Allocate<HostRefObject>();
                 h->initialize_prototype(nullptr);
+                h->prevent_extensions();
                 h->value.Set(v);
                 ref = Value(static_cast<Object*>(h));
             }
@@ -336,17 +369,9 @@ Machine::Status Machine::CallHost(Context& ctx, FuncObject* f, uint64_t* n, Valu
     if (results.size() == 1) {
         values.push_back(result);
     } else {
-        // (More than one: the result is read as a list of that many.)
-        if (!result.is_object()) { ctx.throw_type_error("multi-return value must be iterable"); return Status::Exception; }
-        const Value lengthValue = E::Get(ctx, result, "length");
-        if (E::HasException(ctx)) return Status::Exception;
-        const double length = E::ToNumber(ctx, lengthValue);
-        if (E::HasException(ctx)) return Status::Exception;
-        if (length != static_cast<double>(results.size())) { ctx.throw_type_error("multi-return length mismatch"); return Status::Exception; }
-        for (size_t i = 0; i < results.size(); ++i) {
-            values.push_back(E::GetIndex(ctx, result, static_cast<uint32_t>(i)));
-            if (E::HasException(ctx)) return Status::Exception;
-        }
+        // (More than one: the result is read as an iterable of that many.)
+        if (!IterateToVector(ctx, result, values)) return Status::Exception;
+        if (values.size() != results.size()) { ctx.throw_type_error("multi-return length mismatch"); return Status::Exception; }
     }
     ni = 0;
     ri = 0;
@@ -702,13 +727,11 @@ InstanceObject* Instantiate(Context& ctx, const std::shared_ptr<Module>& module,
 
 // ---- The classes ----
 
-bool IsObjectLike(const Value& v) { return v.is_object() || v.is_function(); }
-
 Value ModuleConstructor(Context& ctx, Value, Args args, Value newTarget) {
     if (newTarget.is_undefined()) { ctx.throw_type_error("WebAssembly.Module must be invoked with 'new'"); return Value(); }
     std::shared_ptr<Module> module;
     if (!Compile(ctx, args.empty() ? Value() : args[0], "WebAssembly.Module()", module)) return Value();
-    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kModuleKey);
     if (E::HasException(ctx)) return Value();
     ModuleObject* o = NewObjectOf<ModuleObject>(proto ? proto : R(ctx).moduleProto);
     o->module = std::move(module);
@@ -767,7 +790,7 @@ Value InstanceConstructor(Context& ctx, Value, Args args, Value newTarget) {
     if (!m) return Value();
     const Value imports = args.size() > 1 ? args[1] : Value();
     if (!imports.is_undefined() && !IsObjectLike(imports)) { ctx.throw_type_error("WebAssembly.Instance(): Argument 1 must be an object"); return Value(); }
-    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kInstanceKey);
     if (E::HasException(ctx)) return Value();
     InstanceObject* inst = Instantiate(ctx, m->module, imports, "WebAssembly.Instance()");
     if (!inst) return Value();
@@ -829,12 +852,19 @@ Value WasmInstantiate(Context& ctx, Value, Args args, Value) {
     }
     std::shared_ptr<Module> module;
     if (!Compile(ctx, first, "WebAssembly.instantiate()", module)) return Rejected(ctx);
-    InstanceObject* inst = Instantiate(ctx, module, imports, "WebAssembly.instantiate()");
-    if (!inst) return Rejected(ctx);
-    Value result = E::NewObject(ctx);
-    E::Set(ctx, result, "module", MakeModuleObject(ctx, module));
-    E::Set(ctx, result, "instance", Value(static_cast<Object*>(inst)));
-    return Settled(ctx, true, result);
+    // The module is instantiated later, as it is when it has to be compiled first: the imports are not read before then.
+    auto heldImports = std::make_shared<E::Persistent>(ctx, imports);
+    Value step = E::NewFunction(ctx, "", 1, [module, heldImports](Context& c, Value, Args, Value) -> Value {
+        InstanceObject* inst = Instantiate(c, module, heldImports->Get(), "WebAssembly.instantiate()");
+        if (!inst) return Value();
+        Value result = E::NewObject(c);
+        E::Set(c, result, "module", MakeModuleObject(c, module));
+        E::Set(c, result, "instance", Value(static_cast<Object*>(inst)));
+        return result;
+    });
+    const Value start = Settled(ctx, true, Value());
+    const Value then = E::Get(ctx, start, "then");
+    return E::Call(ctx, then, start, Args(&step, 1));
 }
 
 // ---- Descriptors ----
@@ -919,7 +949,7 @@ Value MemoryConstructor(Context& ctx, Value, Args args, Value newTarget) {
     if (initial > pageLimit) { ctx.throw_range_error(std::string(who) + ": Property 'initial': value " + std::to_string(initial) + " is above the upper bound " + std::to_string(pageLimit)); return Value(); }
     if (hasMax && maximum < initial) { ctx.throw_range_error(std::string(who) + ": Property 'maximum': value " + std::to_string(maximum) + " is below the lower bound " + std::to_string(initial)); return Value(); }
     if (hasMax && maximum > pageLimit) { ctx.throw_range_error(std::string(who) + ": Property 'maximum': value " + std::to_string(maximum) + " is above the upper bound " + std::to_string(pageLimit)); return Value(); }
-    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kMemoryKey);
     if (E::HasException(ctx)) return Value();
     MemType type;
     type.limits.min = initial;
@@ -951,14 +981,13 @@ Value MemoryGrow(Context& ctx, Value self, Args args, Value) {
     MemoryObject* m = ThisMemory(ctx, self, "WebAssembly.Memory.grow()");
     if (!m) return Value();
     uint64_t delta = 0;
-    bool present;
-    const Value d = Value();
-    (void)d;
+    bool present = false;
     if (args.empty()) { ctx.throw_type_error("WebAssembly.Memory.grow(): Argument 0 must be convertible to a valid number"); return Value(); }
     // (A descriptor-like read of the argument: the same conversion as the descriptors' members.)
     Value holder = E::NewObject(ctx);
     E::Set(ctx, holder, "delta", args[0]);
     if (!ReadSize(ctx, holder, "delta", m->type.limits.is64, delta, present, "WebAssembly.Memory.grow()")) return Value();
+    if (!present) { ctx.throw_type_error("WebAssembly.Memory.grow(): Argument 0 must be convertible to a valid number"); return Value(); }
     const int64_t before = m->Grow(delta);
     if (before < 0) { ctx.throw_range_error("WebAssembly.Memory.grow(): failed to grow memory"); return Value(); }
     NotifyMemoryGrown(ctx, m);
@@ -997,7 +1026,7 @@ Value TableConstructor(Context& ctx, Value, Args args, Value newTarget) {
     } else if (args.size() >= 2 && type.heap == Heap::Extern) {
         init = Value();
     }
-    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kTableKey);
     if (E::HasException(ctx)) return Value();
     TableType tt;
     tt.elem = type;
@@ -1026,8 +1055,10 @@ Value TableLength(Context& ctx, Value self, Args, Value) {
 bool ReadIndex(Context& ctx, TableObject* t, const Value& v, uint64_t& out, const char* who) {
     Value holder = E::NewObject(ctx);
     E::Set(ctx, holder, "index", v);
-    bool present;
-    return ReadSize(ctx, holder, "index", t->type.limits.is64, out, present, who);
+    bool present = false;
+    if (!ReadSize(ctx, holder, "index", t->type.limits.is64, out, present, who)) return false;
+    if (!present) { ctx.throw_type_error(std::string(who) + ": Argument 0 must be convertible to a valid number"); return false; }
+    return true;
 }
 
 Value TableGet(Context& ctx, Value self, Args args, Value) {
@@ -1096,7 +1127,7 @@ Value GlobalConstructor(Context& ctx, Value, Args args, Value newTarget) {
     if (!ParseValType(ctx, typeName, type)) { ctx.throw_type_error(std::string(who) + ": Descriptor property 'value' must be a WebAssembly type"); return Value(); }
     if (type.kind == ValType::Kind::V128) { ctx.throw_type_error(std::string(who) + ": type v128 is not allowed in the JavaScript API"); return Value(); }
     const Value v = args.size() > 1 ? args[1] : Value();
-    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kGlobalKey);
     if (E::HasException(ctx)) return Value();
     GlobalObject* g = NewObjectOf<GlobalObject>(proto ? proto : R(ctx).globalProto);
     g->type.type = type;
@@ -1132,10 +1163,9 @@ Value GlobalSetValue(Context& ctx, Value self, Args args, Value) {
     GlobalObject* g = ThisGlobal(ctx, self, "set WebAssembly.Global.value");
     if (!g) return Value();
     if (!g->type.mut) { ctx.throw_type_error("set WebAssembly.Global.value: Can't set the value of an immutable global."); return Value(); }
-    if (args.empty()) { ctx.throw_type_error("set WebAssembly.Global.value: Argument 0 is required"); return Value(); }
     uint64_t lo = 0;
     Value ref = Value::null();
-    if (!ToWasm(ctx, args[0], g->type.type, &lo, &ref)) return Value();
+    if (!ToWasm(ctx, args.empty() ? Value() : args[0], g->type.type, &lo, &ref)) return Value();
     g->lo = lo;
     if (g->type.type.IsRef()) g->ref.Set(ref);
     return Value();
@@ -1174,7 +1204,7 @@ Value TagConstructor(Context& ctx, Value, Args args, Value newTarget) {
     std::vector<uint32_t> ids;
     std::string error;
     if (!TypeRegistry::Canonicalize(module, ids, error)) { ctx.throw_type_error(std::string(who) + ": " + error); return Value(); }
-    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kTagKey);
     if (E::HasException(ctx)) return Value();
     TagObject* t = NewObjectOf<TagObject>(proto ? proto : R(ctx).tagProto);
     t->sig = ids[0];
@@ -1202,18 +1232,15 @@ Value ExceptionConstructor(Context& ctx, Value, Args args, Value newTarget) {
     const Value payload = args.size() > 1 ? args[1] : Value();
     if (!IsObjectLike(payload)) { ctx.throw_type_error(std::string(who) + ": Argument 1 must be an iterable"); return Value(); }
     const std::vector<ValType>& params = TypeRegistry::Get(tag->sig).func.params;
-    const Value lengthValue = E::Get(ctx, payload, "length");
-    if (E::HasException(ctx)) return Value();
-    const double length = E::ToNumber(ctx, lengthValue);
-    if (E::HasException(ctx)) return Value();
-    if (length != static_cast<double>(params.size())) { ctx.throw_type_error(std::string(who) + ": Number of exception values does not match signature length"); return Value(); }
-    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    std::vector<Value> items;
+    if (!IterateToVector(ctx, payload, items)) return Value();
+    if (items.size() != params.size()) { ctx.throw_type_error(std::string(who) + ": Number of exception values does not match signature length"); return Value(); }
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kExceptionKey);
     if (E::HasException(ctx)) return Value();
     std::vector<uint64_t> numbers;
     std::vector<Value> refs;
     for (size_t i = 0; i < params.size(); ++i) {
-        const Value item = E::GetIndex(ctx, payload, static_cast<uint32_t>(i));
-        if (E::HasException(ctx)) return Value();
+        const Value item = items[i];
         uint64_t n[2] = {0, 0};
         Value r = Value::null();
         if (!ToWasm(ctx, item, params[i], n, &r)) return Value();
@@ -1301,6 +1328,7 @@ void register_webassembly_builtins(Context& ctx) {
     {
         E::ClassRef c = E::DefineClass(ctx, "Module", ModuleConstructor, 1);
         data->moduleProto = c.prototype;
+        E::SetRealmData(ctx, &kModuleKey, c.prototype);
         E::DefineStaticMethod(c.constructor, "exports", ModuleExports, 1);
         E::DefineStaticMethod(c.constructor, "imports", ModuleImports, 1);
         E::DefineStaticMethod(c.constructor, "customSections", ModuleCustomSections, 2);
@@ -1309,12 +1337,14 @@ void register_webassembly_builtins(Context& ctx) {
     {
         E::ClassRef c = E::DefineClass(ctx, "Instance", InstanceConstructor, 1);
         data->instanceProto = c.prototype;
+        E::SetRealmData(ctx, &kInstanceKey, c.prototype);
         E::DefineAccessor(c.prototype, "exports", InstanceExports, nullptr);
         attach("Instance", c.constructor);
     }
     {
         E::ClassRef c = E::DefineClass(ctx, "Memory", MemoryConstructor, 1);
         data->memoryProto = c.prototype;
+        E::SetRealmData(ctx, &kMemoryKey, c.prototype);
         E::DefineMethod(c.prototype, "grow", MemoryGrow, 1);
         E::DefineAccessor(c.prototype, "buffer", MemoryBuffer, nullptr);
         attach("Memory", c.constructor);
@@ -1322,6 +1352,7 @@ void register_webassembly_builtins(Context& ctx) {
     {
         E::ClassRef c = E::DefineClass(ctx, "Table", TableConstructor, 1);
         data->tableProto = c.prototype;
+        E::SetRealmData(ctx, &kTableKey, c.prototype);
         E::DefineAccessor(c.prototype, "length", TableLength, nullptr);
         E::DefineMethod(c.prototype, "grow", TableGrow, 1);
         E::DefineMethod(c.prototype, "get", TableGet, 1);
@@ -1331,6 +1362,7 @@ void register_webassembly_builtins(Context& ctx) {
     {
         E::ClassRef c = E::DefineClass(ctx, "Global", GlobalConstructor, 1);
         data->globalProto = c.prototype;
+        E::SetRealmData(ctx, &kGlobalKey, c.prototype);
         E::DefineMethod(c.prototype, "valueOf", GlobalValueOf, 0);
         E::DefineAccessor(c.prototype, "value", GlobalValue, GlobalSetValue);
         attach("Global", c.constructor);
@@ -1338,11 +1370,13 @@ void register_webassembly_builtins(Context& ctx) {
     {
         E::ClassRef c = E::DefineClass(ctx, "Tag", TagConstructor, 1);
         data->tagProto = c.prototype;
+        E::SetRealmData(ctx, &kTagKey, c.prototype);
         attach("Tag", c.constructor);
     }
     {
-        E::ClassRef c = E::DefineClass(ctx, "Exception", ExceptionConstructor, 1);
+        E::ClassRef c = E::DefineClass(ctx, "Exception", ExceptionConstructor, 2);
         data->exceptionProto = c.prototype;
+        E::SetRealmData(ctx, &kExceptionKey, c.prototype);
         E::DefineMethod(c.prototype, "is", ExceptionIs, 1);
         E::DefineMethod(c.prototype, "getArg", ExceptionGetArg, 2);
         attach("Exception", c.constructor);
