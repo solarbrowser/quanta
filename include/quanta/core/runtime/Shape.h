@@ -106,13 +106,27 @@ public:
     void for_each_property(Fn&& fn) const {
         // The chain is gathered and then walked from the root: a call per link would put a frame for each of the
         // properties on a stack that may be a fiber's, which is not a big one.
+        // (A chain may be longer than kMaxSlots, up to kMaxChainSlots: the buffer on the frame takes what is usual, and a longer one is
+        // gathered in a vector -- it used to stop at the last kMaxSlots + 1 links, and an object with more fields than that lost its
+        // first ones from every enumeration.)
         const Shape* chain[kMaxSlots + 1];
         size_t n = 0;
-        for (const Shape* s = this; s->parent_ && n <= kMaxSlots; s = s->parent_) chain[n++] = s;
+        const Shape* s = this;
+        for (; s->parent_ && n <= kMaxSlots; s = s->parent_) chain[n++] = s;
+        if (s->parent_) {
+            std::vector<const Shape*> longer(chain, chain + n);
+            for (; s->parent_; s = s->parent_) longer.push_back(s);
+            for (size_t at = longer.size(); at > 0;) {
+                const Shape* link = longer[--at];
+                const uint32_t width = link->is_accessor_added_ ? 2u : 1u;
+                fn(PropertyInfo{link->added_key_, link->slot_count_ - width, link->is_accessor_added_});
+            }
+            return;
+        }
         while (n > 0) {
-            const Shape* s = chain[--n];
-            const uint32_t width = s->is_accessor_added_ ? 2u : 1u;
-            fn(PropertyInfo{s->added_key_, s->slot_count_ - width, s->is_accessor_added_});
+            const Shape* link = chain[--n];
+            const uint32_t width = link->is_accessor_added_ ? 2u : 1u;
+            fn(PropertyInfo{link->added_key_, link->slot_count_ - width, link->is_accessor_added_});
         }
     }
 
