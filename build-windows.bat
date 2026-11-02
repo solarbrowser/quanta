@@ -120,7 +120,7 @@ set "STACK=-Xlinker /STACK:67108864"
 echo [%time%] Compiler flags: %CXXFLAGS% >> "%LOG_FILE%"
 
 set /a TOTAL_FILES=0
-for %%f in (src\core\engine\*.cpp src\core\gc\*.cpp src\core\modules\*.cpp src\core\runtime\*.cpp src\core\vm\*.cpp src\lexer\*.cpp src\parser\*.cpp) do set /a TOTAL_FILES+=1
+for %%f in (src\core\engine\*.cpp src\core\gc\*.cpp src\core\modules\*.cpp src\core\runtime\*.cpp src\core\vm\*.cpp src\lexer\*.cpp src\parser\*.cpp src\wasm\*.cpp) do set /a TOTAL_FILES+=1
 for /r src\core\engine\builtins %%f in (*.cpp) do set /a TOTAL_FILES+=1
 for /r src\parser\ast %%f in (*.cpp) do set /a TOTAL_FILES+=1
 set /a TOTAL_FILES+=32
@@ -139,6 +139,8 @@ if errorlevel 1 exit /b 1
 call :phase "Compile front-end" phase_frontend
 if errorlevel 1 exit /b 1
 call :phase "Compile VM" phase_vm
+if errorlevel 1 exit /b 1
+call :phase "Compile WebAssembly" phase_wasm
 if errorlevel 1 exit /b 1
 call :phase "Link executable" phase_link
 if errorlevel 1 exit /b 1
@@ -198,6 +200,7 @@ if not exist "build\obj\core\gc" mkdir build\obj\core\gc
 if not exist "build\obj\core\modules" mkdir build\obj\core\modules
 if not exist "build\obj\core\runtime" mkdir build\obj\core\runtime
 if not exist "build\obj\core\vm" mkdir build\obj\core\vm
+if not exist "build\obj\wasm" mkdir build\obj\wasm
 if not exist "build\obj\lexer" mkdir build\obj\lexer
 if not exist "build\obj\parser" mkdir build\obj\parser
 if not exist "build\obj\parser\ast" mkdir build\obj\parser\ast
@@ -269,11 +272,18 @@ for %%f in (src\core\vm\*.cpp) do (
 )
 goto :eof
 
+:phase_wasm
+for %%f in (src\wasm\*.cpp) do (
+    call :compile_cpp "%%f" "build\obj\wasm\%%~nf.o"
+    if errorlevel 1 exit /b 1
+)
+goto :eof
+
 :phase_link
 REM cmd.exe does not expand *.o wildcards on a plain command line (only
 REM inside a `for` loop does) -- build the object list explicitly first.
 set "OBJLIST="
-for %%d in (core\engine core\engine\builtins core\gc core\modules core\runtime core\vm lexer parser parser\ast pcre2 utf8proc mimalloc) do (
+for %%d in (core\engine core\engine\builtins core\gc core\modules core\runtime core\vm lexer parser parser\ast wasm pcre2 utf8proc mimalloc) do (
     for %%f in (build\obj\%%d\*.o) do set "OBJLIST=!OBJLIST! "%%f""
 )
 clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp ^

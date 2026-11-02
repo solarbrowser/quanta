@@ -273,6 +273,10 @@ phase_vm() {
     compile_group core/vm CORE_VM_OBJECTS "${CORE_VM_SOURCES[@]}"
 }
 
+phase_wasm() {
+    compile_group wasm WASM_OBJECTS "${WASM_SOURCES[@]}"
+}
+
 phase_link() {
     local errfile
     errfile=$(mktemp)
@@ -286,7 +290,7 @@ phase_link() {
     link_args+=(-DMAIN_EXECUTABLE -o "$BIN_DIR/quanta" console.cpp
         "${CORE_ENGINE_OBJECTS[@]}" "${BUILTIN_OBJECTS[@]}" "${CORE_GC_OBJECTS[@]}"
         "${CORE_MODULE_OBJECTS[@]}" "${CORE_RUNTIME_OBJECTS[@]}" "${CORE_VM_OBJECTS[@]}"
-        "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}"
+        "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}" "${WASM_OBJECTS[@]}"
         "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" "${MIMALLOC_OBJECTS[@]}" "${LIBS[@]}")
     [ "${#STACK_FLAGS[@]}" -gt 0 ] && link_args+=("${STACK_FLAGS[@]}")
     run_compile "console.cpp (link)" "$errfile" clang++ "${link_args[@]}"
@@ -469,6 +473,7 @@ CORE_GC_SOURCES=(src/core/gc/*.cpp)
 CORE_MODULE_SOURCES=(src/core/modules/*.cpp)
 CORE_RUNTIME_SOURCES=(src/core/runtime/*.cpp)
 CORE_VM_SOURCES=(src/core/vm/*.cpp)
+WASM_SOURCES=(src/wasm/*.cpp)
 LEXER_SOURCES=(src/lexer/*.cpp)
 PARSER_SOURCES=(src/parser/*.cpp)
 AST_SOURCES=()
@@ -484,6 +489,7 @@ TOTAL_FILES=$((
     ${#CORE_MODULE_SOURCES[@]} +
     ${#CORE_RUNTIME_SOURCES[@]} +
     ${#CORE_VM_SOURCES[@]} +
+    ${#WASM_SOURCES[@]} +
     ${#LEXER_SOURCES[@]} +
     ${#PARSER_SOURCES[@]} +
     ${#AST_SOURCES[@]}
@@ -498,6 +504,7 @@ CORE_GC_OBJECTS=()
 CORE_MODULE_OBJECTS=()
 CORE_RUNTIME_OBJECTS=()
 CORE_VM_OBJECTS=()
+WASM_OBJECTS=()
 LEXER_OBJECTS=()
 PARSER_OBJECTS=()
 AST_OBJECTS=()
@@ -516,7 +523,7 @@ phase_archive() {
     rm -f "$lib_dir/libquanta.a" "$lib_dir/quanta_mimalloc_override.o"
     for obj in "${CORE_ENGINE_OBJECTS[@]}" "${BUILTIN_OBJECTS[@]}" "${CORE_GC_OBJECTS[@]}" \
                "${CORE_MODULE_OBJECTS[@]}" "${CORE_RUNTIME_OBJECTS[@]}" "${CORE_VM_OBJECTS[@]}" \
-               "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}" \
+               "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}" "${WASM_OBJECTS[@]}" \
                "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" "${MIMALLOC_OBJECTS[@]}"; do
         if [[ "$(basename "$obj")" == "MiMalloc.o" ]]; then
             cp "$obj" "$lib_dir/quanta_mimalloc_override.o"
@@ -555,6 +562,7 @@ phase "Compile GC"          phase_gc
 phase "Compile runtime"     phase_runtime
 phase "Compile front-end"   phase_frontend
 phase "Compile VM"          phase_vm
+phase "Compile WebAssembly" phase_wasm
 if [[ "$BUILD_MODE" == exe ]]; then
     phase "Link executable"     phase_link
 else
