@@ -44,6 +44,8 @@ struct Ctl {
     size_t ifFixup = kNone;      // the target of the jump of an if that is not taken
     size_t elseFixup = kNone;    // the jump from the end of the then part
     size_t initMark = 0;
+    int tryIndex = -1;  // (a try_table: its place in the function's list)
+    std::vector<std::pair<size_t, size_t>> catchFixups;  // the catch clauses (try, clause) that go to the end of this block
 };
 
 class FuncCompiler {
@@ -290,9 +292,30 @@ private:
         return true;
     }
 
+    struct RawCatch {
+        uint8_t kind = 0;
+        uint32_t tag = 0, label = 0;
+    };
+
     bool BeginBlock(Ctl::Kind kind) {
         std::vector<ValType> params, results;
         if (!ReadBlockType(params, results)) return false;
+        std::vector<RawCatch> rawCatches;
+        if (kind == Ctl::Kind::TryTable) {
+            const uint32_t count = r_.u32();
+            if (!r_.ok()) return Error(r_.error());
+            if (count > r_.remaining()) return Error("too many catch clauses");
+            for (uint32_t i = 0; i < count; ++i) {
+                RawCatch c;
+                c.kind = r_.u8();
+                if (!r_.ok()) return Error(r_.error());
+                if (c.kind > 3) return Error("invalid catch kind");
+                if (c.kind <= 1) c.tag = r_.u32();
+                c.label = r_.u32();
+                if (!r_.ok()) return Error(r_.error());
+                rawCatches.push_back(c);
+            }
+        }
         if (kind == Ctl::Kind::If) {
             if (!Pop(ValType::I32())) return false;
             if (!Dead()) {
@@ -307,7 +330,47 @@ private:
             Emit(0);
         }
         if (!PopVals(params)) return false;
+        int tryIndex = -1;
+        if (kind == Ctl::Kind::TryTable) {
+            TryEntry entry;
+            entry.start = static_cast<uint32_t>(Here());
+            entry.baseN = hN_;
+            entry.baseR = hR_;
+            for (const RawCatch& rc : rawCatches) {
+                if (rc.label >= ctls_.size()) return Error("unknown label");
+                const size_t targetIndex = ctls_.size() - 1 - rc.label;
+                std::vector<ValType> pushed;
+                if (rc.kind <= 1) {
+                    if (rc.tag >= cx_.tagSigs.size()) return Error("unknown tag");
+                    pushed = TypeRegistry::Get(cx_.tagSigs[rc.tag]).func.params;
+                }
+                if (rc.kind & 1) pushed.push_back(ValType::Ref(false, Heap::Exn));
+                const std::vector<ValType>& wanted = LabelTypes(ctls_[targetIndex]);
+                if (wanted.size() != pushed.size()) return Error("type mismatch: a catch clause gives other values than its label takes");
+                for (size_t k = 0; k < pushed.size(); ++k) {
+                    if (!TypeRegistry::Matches(pushed[k], wanted[k])) return Error("type mismatch: a catch clause gives other values than its label takes");
+                }
+                CatchClause clause;
+                clause.kind = rc.kind;
+                clause.tag = rc.tag;
+                if (!deadEntry) {
+                    clause.dropN = entry.baseN - ctls_[targetIndex].baseN;
+                    clause.dropR = entry.baseR - ctls_[targetIndex].baseR;
+                    if (ctls_[targetIndex].kind == Ctl::Kind::Loop) clause.target = static_cast<uint32_t>(ctls_[targetIndex].loopStart);
+                }
+                entry.catches.push_back(clause);
+            }
+            if (!deadEntry) {
+                tryIndex = static_cast<int>(out_.tries.size());
+                for (size_t k = 0; k < rawCatches.size(); ++k) {
+                    Ctl& target = ctls_[ctls_.size() - 1 - rawCatches[k].label];
+                    if (target.kind != Ctl::Kind::Loop) target.catchFixups.push_back({static_cast<size_t>(tryIndex), k});
+                }
+                out_.tries.push_back(std::move(entry));
+            }
+        }
         Ctl c;
+        c.tryIndex = tryIndex;
         c.kind = kind;
         c.params = params;
         c.results = results;
@@ -334,6 +397,7 @@ private:
         Ctl done = std::move(c);
         ctls_.pop_back();
         ForgetInits(done.initMark);
+        if (done.tryIndex >= 0) out_.tries[static_cast<size_t>(done.tryIndex)].end = static_cast<uint32_t>(Here());
         if (done.kind == Ctl::Kind::Func) {
             if (!done.deadEntry) {
                 const SlotCount s = SlotsOf(done.results);
@@ -342,6 +406,7 @@ private:
                 Emit(s.n);
                 Emit(s.r);
                 for (size_t f : done.fixups) out_.code[f] = static_cast<uint32_t>(returnAt);
+                for (const auto& cf : done.catchFixups) out_.tries[cf.first].catches[cf.second].target = static_cast<uint32_t>(returnAt);
             }
             if (!r_.atEnd()) return Error("operators remaining after end of function");
             (void)error;
@@ -351,6 +416,7 @@ private:
             if (done.ifFixup != kNone) out_.code[done.ifFixup] = static_cast<uint32_t>(Here());
             if (done.elseFixup != kNone) out_.code[done.elseFixup] = static_cast<uint32_t>(Here());
             for (size_t f : done.fixups) out_.code[f] = static_cast<uint32_t>(Here());
+            for (const auto& cf : done.catchFixups) out_.tries[cf.first].catches[cf.second].target = static_cast<uint32_t>(Here());
         }
         PushValsAfterBlock(done);
         return true;
@@ -887,6 +953,22 @@ bool FuncCompiler::Instruction(std::string& error) {
         case 0x03: return BeginBlock(Ctl::Kind::Loop);
         case 0x04: return BeginBlock(Ctl::Kind::If);
         case 0x05: return Else();
+        case 0x08: {
+            const uint32_t tag = r_.u32();
+            if (!r_.ok()) return Error(r_.error());
+            if (tag >= cx_.tagSigs.size()) return Error("unknown tag");
+            if (!PopVals(TypeRegistry::Get(cx_.tagSigs[tag]).func.params)) return false;
+            if (!Dead()) Emit(Op::kThrow, tag);
+            SetUnreachable();
+            return true;
+        }
+        case 0x0A: {
+            if (!Pop(ValType::Ref(true, Heap::Exn))) return false;
+            if (!Dead()) Emit(Op::kThrowRef);
+            SetUnreachable();
+            return true;
+        }
+        case 0x1F: return BeginBlock(Ctl::Kind::TryTable);
         case 0x0B: return End(error);
         case 0x0C: return Br(false);
         case 0x0D: return Br(true);

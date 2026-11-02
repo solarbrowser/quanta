@@ -75,6 +75,21 @@ struct FuncObject : DOMObject {
     WeakHandle<Object> wrapper;  // the function script sees, while there is one (it keeps this alive, not the other way)
 };
 
+// A thrown exception: the tag it was thrown with and the values it carries (numbers in slots, references as Values).
+struct ExceptionObject : DOMObject {
+    TracedValue tag;  // the TagObject
+    std::vector<uint64_t> numbers;
+    TracedList refs;
+    TracedValue stack;
+};
+
+// The exception for a tag (its values to be filled in), made in the realm of `ctx`; and what the interpreter needs of the rest of the host.
+ExceptionObject* NewException(Context& ctx, TagObject* tag);
+// An exception that JavaScript threw, as one of WebAssembly (thrown with the JS tag), or the exception itself if it is one already.
+ExceptionObject* WrapException(Context& ctx, const Value& thrown);
+// Throws it in the context: as the value it carries if it was thrown with the JS tag, as the object if not.
+void ThrowException(Context& ctx, ExceptionObject* exception);
+
 struct ModuleObject : DOMObject {
     std::shared_ptr<Module> module;
 };

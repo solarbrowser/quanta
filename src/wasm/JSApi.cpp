@@ -35,6 +35,7 @@ struct RealmData {
     Object* globalProto = nullptr;
     Object* tagProto = nullptr;
     Object* exceptionProto = nullptr;
+    TagObject* jsTag = nullptr;
     Value compileError, linkError, runtimeError;
 };
 
@@ -362,6 +363,25 @@ void NotifyMemoryGrown(Context& ctx, MemoryObject* memory) {
         E::DetachArrayBuffer(ctx, old);
         memory->buffer.Clear();
     }
+}
+
+ExceptionObject* NewException(Context& ctx, TagObject* tag) {
+    ExceptionObject* e = ::Quanta::Heap::Allocate<ExceptionObject>();
+    e->initialize_prototype(R(ctx).exceptionProto);
+    e->tag.Set(Value(static_cast<Object*>(tag)));
+    return e;
+}
+
+ExceptionObject* WrapException(Context& ctx, const Value& thrown) {
+    if (ExceptionObject* e = DOMObject::Cast<ExceptionObject>(thrown)) return e;
+    ExceptionObject* e = NewException(ctx, R(ctx).jsTag);
+    e->refs.push_back(thrown);
+    return e;
+}
+
+void ThrowException(Context& ctx, ExceptionObject* e) {
+    if (DOMObject::Cast<TagObject>(e->tag.Get()) == R(ctx).jsTag && e->refs.size() == 1) E::Throw(ctx, e->refs[0]);
+    else E::Throw(ctx, Value(static_cast<Object*>(e)));
 }
 
 namespace {
@@ -1141,6 +1161,88 @@ Value TagConstructor(Context& ctx, Value, Args args, Value newTarget) {
     return Value(static_cast<Object*>(t));
 }
 
+// ---- Exception ----
+
+uint32_t SignatureOf(const std::vector<ValType>& params, std::string& error) {
+    Module module;
+    TypeDef def;
+    def.kind = TypeDef::Kind::Func;
+    def.func.params = params;
+    module.types.push_back(def);
+    std::vector<uint32_t> ids;
+    if (!TypeRegistry::Canonicalize(module, ids, error)) return 0;
+    return ids[0];
+}
+
+Value ExceptionConstructor(Context& ctx, Value, Args args, Value newTarget) {
+    const char* who = "WebAssembly.Exception()";
+    if (newTarget.is_undefined()) { ctx.throw_type_error("WebAssembly.Exception must be invoked with 'new'"); return Value(); }
+    TagObject* tag = DOMObject::Cast<TagObject>(args.empty() ? Value() : args[0]);
+    if (!tag) { ctx.throw_type_error(std::string(who) + ": Argument 0 must be a WebAssembly tag"); return Value(); }
+    const Value payload = args.size() > 1 ? args[1] : Value();
+    if (!IsObjectLike(payload)) { ctx.throw_type_error(std::string(who) + ": Argument 1 must be an iterable"); return Value(); }
+    const std::vector<ValType>& params = TypeRegistry::Get(tag->sig).func.params;
+    const Value lengthValue = E::Get(ctx, payload, "length");
+    if (E::HasException(ctx)) return Value();
+    const double length = E::ToNumber(ctx, lengthValue);
+    if (E::HasException(ctx)) return Value();
+    if (length != static_cast<double>(params.size())) { ctx.throw_type_error(std::string(who) + ": Number of exception values does not match signature length"); return Value(); }
+    Object* proto = E::PrototypeFromNewTarget(ctx, newTarget, &kRealmKey);
+    if (E::HasException(ctx)) return Value();
+    std::vector<uint64_t> numbers;
+    std::vector<Value> refs;
+    for (size_t i = 0; i < params.size(); ++i) {
+        const Value item = E::GetIndex(ctx, payload, static_cast<uint32_t>(i));
+        if (E::HasException(ctx)) return Value();
+        uint64_t n[2] = {0, 0};
+        Value r = Value::null();
+        if (!ToWasm(ctx, item, params[i], n, &r)) return Value();
+        if (params[i].IsRef()) refs.push_back(r);
+        else numbers.push_back(n[0]);
+    }
+    Value traceOptions = args.size() > 2 ? args[2] : Value();
+    bool traceStack = false;
+    if (IsObjectLike(traceOptions)) {
+        const Value t = E::Get(ctx, traceOptions, "traceStack");
+        if (E::HasException(ctx)) return Value();
+        traceStack = E::ToBoolean(t);
+    }
+    ExceptionObject* e = NewObjectOf<ExceptionObject>(proto ? proto : R(ctx).exceptionProto);
+    e->tag.Set(Value(static_cast<Object*>(tag)));
+    e->numbers = std::move(numbers);
+    for (const Value& r : refs) e->refs.push_back(r);
+    if (traceStack) E::Set(ctx, Value(static_cast<Object*>(e)), "stack", E::NewString(ctx, "WebAssembly.Exception"));
+    return Value(static_cast<Object*>(e));
+}
+
+Value ExceptionIs(Context& ctx, Value self, Args args, Value) {
+    ExceptionObject* e = DOMObject::Cast<ExceptionObject>(self);
+    if (!e) { ctx.throw_type_error("WebAssembly.Exception.is(): Receiver is not a WebAssembly.Exception"); return Value(); }
+    TagObject* tag = DOMObject::Cast<TagObject>(args.empty() ? Value() : args[0]);
+    if (!tag) { ctx.throw_type_error("WebAssembly.Exception.is(): Argument 0 must be a WebAssembly tag"); return Value(); }
+    return Value(DOMObject::Cast<TagObject>(e->tag.Get()) == tag);
+}
+
+Value ExceptionGetArg(Context& ctx, Value self, Args args, Value) {
+    ExceptionObject* e = DOMObject::Cast<ExceptionObject>(self);
+    if (!e) { ctx.throw_type_error("WebAssembly.Exception.getArg(): Receiver is not a WebAssembly.Exception"); return Value(); }
+    TagObject* tag = DOMObject::Cast<TagObject>(args.empty() ? Value() : args[0]);
+    if (!tag) { ctx.throw_type_error("WebAssembly.Exception.getArg(): Argument 0 must be a WebAssembly tag"); return Value(); }
+    if (DOMObject::Cast<TagObject>(e->tag.Get()) != tag) { ctx.throw_type_error("WebAssembly.Exception.getArg(): First argument does not match the exception tag"); return Value(); }
+    if (args.size() < 2) { ctx.throw_type_error("WebAssembly.Exception.getArg(): Argument 1 must be convertible to a valid number"); return Value(); }
+    double index;
+    if (!ToNumberChecked(ctx, args[1], index)) return Value();
+    const std::vector<ValType>& params = TypeRegistry::Get(tag->sig).func.params;
+    if (!(index >= 0) || index >= static_cast<double>(params.size()) || index != std::trunc(index)) { ctx.throw_range_error("WebAssembly.Exception.getArg(): Index out of range"); return Value(); }
+    size_t ni = 0, ri = 0;
+    for (size_t i = 0; i < static_cast<size_t>(index); ++i) { if (params[i].IsRef()) ++ri; else ++ni; }
+    const ValType& t = params[static_cast<size_t>(index)];
+    uint64_t zero = 0;
+    Value nothing = Value::null();
+    if (t.IsRef()) return ToJS(ctx, t, &zero, &e->refs[ri]);
+    return ToJS(ctx, t, &e->numbers[ni], &nothing);
+}
+
 // ---- The errors ----
 
 Value MakeErrorClass(Context& ctx, const char* name, Value (*constructor)(Context&, Value, Args, Value), Value& out) {
@@ -1217,6 +1319,30 @@ void register_webassembly_builtins(Context& ctx) {
         E::ClassRef c = E::DefineClass(ctx, "Tag", TagConstructor, 1);
         data->tagProto = c.prototype;
         attach("Tag", c.constructor);
+    }
+    {
+        E::ClassRef c = E::DefineClass(ctx, "Exception", ExceptionConstructor, 1);
+        data->exceptionProto = c.prototype;
+        E::DefineMethod(c.prototype, "is", ExceptionIs, 1);
+        E::DefineMethod(c.prototype, "getArg", ExceptionGetArg, 2);
+        attach("Exception", c.constructor);
+    }
+    for (const auto& [proto, tag] : {std::pair<Object*, const char*>{data->moduleProto, "WebAssembly.Module"}, {data->instanceProto, "WebAssembly.Instance"}, {data->memoryProto, "WebAssembly.Memory"},
+                                     {data->tableProto, "WebAssembly.Table"}, {data->globalProto, "WebAssembly.Global"}, {data->tagProto, "WebAssembly.Tag"}, {data->exceptionProto, "WebAssembly.Exception"}}) {
+        E::DefineToStringTag(proto, tag);
+    }
+    {
+        // WebAssembly.JSTag: the tag of what JavaScript throws, as it is when it passes through a module.
+        std::string error;
+        TagObject* t = NewObjectOf<TagObject>(data->tagProto);
+        t->sig = SignatureOf({ValType::Ref(true, Heap::Extern)}, error);
+        data->jsTag = t;
+        E::Descriptor d;
+        d.value = Value(static_cast<Object*>(t)); d.has_value = true;
+        d.has_writable = true; d.writable = false;
+        d.has_enumerable = true; d.enumerable = false;
+        d.has_configurable = true; d.configurable = false;
+        E::DefineProperty(ctx, ns, "JSTag", d);
     }
     const Value errorProtoHolder = E::Get(ctx, Value(static_cast<Object*>(ctx.get_global_object())), "Error");
     Object* errorProto = nullptr;

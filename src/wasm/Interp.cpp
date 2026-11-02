@@ -14,6 +14,7 @@
 #include <cstring>
 #include <limits>
 
+#include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/wasm/Runtime.h"
 
@@ -206,6 +207,8 @@ static Machine::Status Execute(Machine& machine, Context& ctx, const CompiledFun
     } while (0)
 
     static const bool trace = std::getenv("QUANTA_WASM_TRACE") != nullptr;
+    Value exception;  // what is being thrown, while it is looked for a handler
+run:
     for (;;) {
         const uint32_t op = *pc++;
         if (trace) std::fprintf(stderr, "  [%zu] op %x  sp[-1]=%llx sp[-2]=%llx depth=%zu\n", static_cast<size_t>(pc - 1 - code->code.data()), op, sp > fp ? static_cast<unsigned long long>(sp[-1]) : 0ull, sp > fp + 1 ? static_cast<unsigned long long>(sp[-2]) : 0ull, s.frames.size());
@@ -306,6 +309,13 @@ static Machine::Status Execute(Machine& machine, Context& ctx, const CompiledFun
                     s.nsp = static_cast<size_t>(sp - s.numbers);
                     s.rsp = static_cast<size_t>(rsp - s.refs.data());
                     const Machine::Status result = machine.CallHost(ctx, callee, args, refs);
+                    if (result == Machine::Status::Exception) {
+                        // (What the host threw is an exception of the module's world now: the handlers of the function look at it.)
+                        const Value thrown = ctx.get_exception();
+                        ctx.clear_exception();
+                        exception = Value(static_cast<Object*>(WrapException(ctx, thrown)));
+                        goto raise;
+                    }
                     if (result != Machine::Status::Ok) { status = result; goto stop; }
                     sp -= pn;
                     rsp -= pr;
@@ -359,6 +369,24 @@ static Machine::Status Execute(Machine& machine, Context& ctx, const CompiledFun
                 for (uint32_t i = 0; i < c->localsR; ++i) rsp[i] = Value::null();
                 rsp += c->localsR;
                 break;
+            }
+            case Op::kThrow: {
+                TagObject* tag = inst->tags[pc[0]];
+                const CanonType& sig = TypeRegistry::Get(tag->sig);
+                uint32_t pn = 0, pr = 0;
+                for (const ValType& t : sig.func.params) { if (t.IsRef()) ++pr; else pn += t.kind == ValType::Kind::V128 ? 2 : 1; }
+                ExceptionObject* e = NewException(ctx, tag);
+                e->numbers.assign(sp - pn, sp);
+                for (uint32_t i = 0; i < pr; ++i) e->refs.push_back(rsp[-static_cast<ptrdiff_t>(pr) + i]);
+                sp -= pn;
+                rsp -= pr;
+                exception = Value(static_cast<Object*>(e));
+                goto raise;
+            }
+            case Op::kThrowRef: {
+                exception = *--rsp;
+                if (exception.is_null()) TRAP(TrapKind::NullReference);
+                goto raise;
             }
             case Op::kDropN: --sp; break;
             case Op::kDropV: sp -= 2; break;
@@ -834,6 +862,48 @@ static Machine::Status Execute(Machine& machine, Context& ctx, const CompiledFun
                 std::fprintf(stderr, "wasm: internal opcode %u is not implemented\n", op);
                 TRAP(TrapKind::Unreachable);
         }
+    }
+raise:
+    {
+        // The exception is looked for a handler in the function it was thrown in, and then in the ones that called it.
+        ExceptionObject* e = DOMObject::Cast<ExceptionObject>(exception);
+        for (;;) {
+            const uint32_t position = static_cast<uint32_t>(pc - code->code.data());
+            for (size_t i = code->tries.size(); i-- > 0;) {
+                const TryEntry& entry = code->tries[i];
+                if (!(entry.start < position && position <= entry.end)) continue;
+                for (const CatchClause& clause : entry.catches) {
+                    if (clause.kind <= 1 && DOMObject::Cast<TagObject>(e->tag.Get()) != inst->tags[clause.tag]) continue;
+                    uint64_t* opN = fp + code->paramsN + code->localsN;
+                    Value* opR = fr + code->paramsR + code->localsR;
+                    sp = opN + entry.baseN;
+                    rsp = opR + entry.baseR;
+                    uint32_t keepN = 0, keepR = 0;
+                    if (clause.kind <= 1) {
+                        for (uint64_t v : e->numbers) *sp++ = v;
+                        for (size_t k = 0; k < e->refs.size(); ++k) *rsp++ = e->refs[k];
+                        keepN = static_cast<uint32_t>(e->numbers.size());
+                        keepR = static_cast<uint32_t>(e->refs.size());
+                    }
+                    if (clause.kind & 1) { *rsp++ = exception; ++keepR; }
+                    if (clause.dropN) { std::memmove(sp - keepN - clause.dropN, sp - keepN, keepN * sizeof(uint64_t)); sp -= clause.dropN; }
+                    if (clause.dropR) { std::memmove(rsp - keepR - clause.dropR, rsp - keepR, keepR * sizeof(Value)); rsp -= clause.dropR; }
+                    pc = code->code.data() + clause.target;
+                    goto run;
+                }
+            }
+            if (s.frames.size() == entryDepth) break;
+            const Frame f = s.frames.back();
+            s.frames.pop_back();
+            code = f.code;
+            inst = f.instance;
+            pc = f.pc;
+            fp = f.fp;
+            fr = f.fr;
+        }
+        // Nothing in the function takes it: it is the caller's, in whatever it is that called.
+        ThrowException(ctx, e);
+        status = Machine::Status::Exception;
     }
 stop:
     // Whatever frames the function pushed and did not get to pop are gone.

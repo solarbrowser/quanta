@@ -61,11 +61,28 @@ enum : uint32_t {
     kStore,
     kMemorySize, kMemoryGrow,   // memory
     kUnreachable,
-    kTrapStackless,
+    kThrow,             // tag
+    kThrowRef,
     kEnd,
 };
 
 }  // namespace Op
+
+// A catch clause of a try_table: what it catches, and what is done with the stack when it does.
+struct CatchClause {
+    uint8_t kind = 0;  // 0 catch, 1 catch_ref, 2 catch_all, 3 catch_all_ref
+    uint32_t tag = 0;
+    uint32_t target = 0;
+    uint32_t dropN = 0, dropR = 0;  // what is taken off below what is pushed (the values of the tag, and the exception for the _ref ones)
+};
+
+// The code between `start` and `end` (word indices) is caught by these, in the order they are written; the stack is back to the heights
+// the try_table began at when one of them takes it.
+struct TryEntry {
+    uint32_t start = 0, end = 0;
+    uint32_t baseN = 0, baseR = 0;
+    std::vector<CatchClause> catches;
+};
 
 struct CompiledFunction {
     std::vector<uint32_t> code;
@@ -74,6 +91,7 @@ struct CompiledFunction {
     uint32_t localsN = 0, localsR = 0;      // the slots of the locals that are not parameters
     uint32_t resultsN = 0, resultsR = 0;
     uint32_t maxN = 0, maxR = 0;            // the most the operands of it take above its locals
+    std::vector<TryEntry> tries;
 };
 
 }  // namespace Quanta::Wasm
