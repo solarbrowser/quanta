@@ -93,6 +93,8 @@ enum : uint32_t {
     kSyncSp,            // height: the stack pointer is brought to the height the code that follows works from
     kThrow,             // tag
     kThrowRef,
+    kEntry,             // the first word of a function: counts its calls for the JIT (see Jit.h)
+    kJitEnter,          // the same, once the function has native code (or cannot have any): runs it, and returns
     kEnd,
 };
 
@@ -122,6 +124,10 @@ struct CompiledFunction {
     uint32_t resultsN = 0, resultsR = 0;
     uint32_t maxN = 0, maxR = 0;            // the most the operands of it take above its locals
     std::vector<TryEntry> tries;
+    // The native code of the function, if the JIT made some (see Jit.h); it is only ever a faster way of doing what the words above say.
+    mutable struct WasmJitCode* jit = nullptr;
+    mutable uint32_t calls = 0;
+    mutable bool jitFailed = false;
 };
 
 }  // namespace Quanta::Wasm

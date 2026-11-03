@@ -216,6 +216,22 @@ public:
     void cvtsi2sd64(Xmm d, Reg r) { byte(0xF2); rex(true, d >> 3, 0, r >> 3); byte(0x0F); byte(0x2A); modrm_rr(static_cast<Reg>(d), r); }
     void cvttsd2si32(Reg d, Xmm s) { byte(0xF2); rex(false, d >> 3, 0, s >> 3); byte(0x0F); byte(0x2C); modrm_rr(d, static_cast<Reg>(s)); }
 
+    // ---- additions for the WebAssembly JIT ----------------------------------
+    void alu_rm(uint8_t opcode, Reg r, Mem m, bool w) { rex_rm(w, r, m); byte(opcode); modrm_mem(r, m); }   // op r, [m]: 03 add, 2B sub, 23 and, 0B or, 33 xor, 3B cmp
+    void alu_mr(uint8_t opcode, Mem m, Reg r, bool w) { rex_rm(w, r, m); byte(opcode); modrm_mem(r, m); }   // op [m], r: 01 add, 29 sub, 21 and, 09 or, 31 xor, 39 cmp
+    void imul_rm(Reg r, Mem m, bool w) { rex_rm(w, r, m); byte(0x0F); byte(0xAF); modrm_mem(r, m); }
+    void imul64(Reg d, Reg s) { rex_rr(true, d, s); byte(0x0F); byte(0xAF); modrm_rr(d, s); }
+    void shift_cl(uint8_t ext, Reg r, bool w) { rex(w, 0, 0, r >> 3); byte(0xD3); modrm_rr(static_cast<Reg>(ext), r); }   // 0 rol, 1 ror, 4 shl, 5 shr, 7 sar (by cl)
+    void unary_f7(uint8_t ext, Reg r, bool w) { rex(w, 0, 0, r >> 3); byte(0xF7); modrm_rr(static_cast<Reg>(ext), r); }  // 2 not, 3 neg, 4 mul, 6 div, 7 idiv
+    void shift_imm_n(uint8_t ext, Reg r, uint8_t n, bool w) { shift_imm(ext, r, n, w); }
+    void cqo() { byte(0x48); byte(0x99); }
+    void movsx8_load64(Reg d, Mem m) { rex_rm(true, d, m); byte(0x0F); byte(0xBE); modrm_mem(d, m); }
+    void movsx16_load64(Reg d, Mem m) { rex_rm(true, d, m); byte(0x0F); byte(0xBF); modrm_mem(d, m); }
+    void movsxd_load(Reg d, Mem m) { rex_rm(true, d, m); byte(0x63); modrm_mem(d, m); }
+    void movsxd(Reg d, Reg s) { rex_rr(true, d, s); byte(0x63); modrm_rr(d, s); }
+    void cmp_mem_reg(Mem m, Reg r, bool w) { alu_mr(0x39, m, r, w); }
+    void mov_store64_imm32(Mem m, int32_t imm) { rex_rm(true, RAX, m); byte(0xC7); modrm_mem(RAX, m); u32(static_cast<uint32_t>(imm)); }   // mov qword [m], sign-extended imm32
+
 private:
     void rex(bool w, int r, int x, int b) {
         uint8_t v = static_cast<uint8_t>(0x40 | (w ? 8 : 0) | (r ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0));

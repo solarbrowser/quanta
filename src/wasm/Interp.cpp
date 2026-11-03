@@ -16,6 +16,7 @@
 
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
+#include "quanta/wasm/Jit.h"
 #include "quanta/wasm/Runtime.h"
 #include "quanta/wasm/Simd.h"
 
@@ -1403,6 +1404,40 @@ run:
                 break;
             }
             default:
+#if QUANTA_WASM_JIT
+                // The first word of every function (see Jit.h): it counts the calls until the function is compiled, and then runs the native code.
+                if (op == Op::kEntry || op == Op::kJitEnter) {
+                    if (op == Op::kEntry) {
+                        JitConsider(*code, inst);
+                        if (!code->jit && !code->jitFailed) break;
+                        const_cast<uint32_t&>(code->code[0]) = Op::kJitEnter;  // (from now on it is not counting)
+                        if (code->jit) --pc;  // (and the native code is run now)
+                        break;
+                    }
+                    if (code->jit && JitDepthOk()) {
+                        const Machine::Status r = JitRun(machine, ctx, *code, inst, fp, rsp);
+                        if (r == Machine::Status::Ok) {
+                            if (s.frames.size() == entryDepth) goto stop;
+                            const Frame f = s.frames.back();
+                            s.frames.pop_back();
+                            code = f.code;
+                            inst = f.instance;
+                            pc = f.pc;
+                            fp = f.fp;
+                            fr = f.fr;
+                            break;
+                        }
+                        if (r == Machine::Status::Trap) { status = r; goto stop; }
+                        const Value thrown = ctx.get_exception();
+                        ctx.clear_exception();
+                        exception = Value(static_cast<Object*>(WrapException(ctx, thrown)));
+                        goto raise;
+                    }
+                    break;
+                }
+#else
+                if (op == Op::kEntry || op == Op::kJitEnter) break;  // (no native code on this target)
+#endif
                 // The loads and stores with a constant in them (see Code.h) are not cases of the switch: more cases make the compiler lay the whole of it out
                 // worse for every instruction. They are told by their numbers here.
                 if ((op >= Op::kAbs + 0x28 && op <= Op::kAbs + 0x3E) || (op >= Op::kImm + 0x36 && op <= Op::kImm + 0x3E) || (op >= Op::kImmAbs + 0x28 && op <= Op::kImmAbs + 0x3E)) {
@@ -1496,4 +1531,86 @@ stop:
     return status;
 }
 
+#if QUANTA_WASM_JIT
+// ---- Native code (see Jit.h) ----
+
+static thread_local uint32_t gJitDepth = 0;
+constexpr uint32_t kMaxJitDepth = 2000;  // (native frames: past it, calls go to the interpreter, whose frames are not on the native stack)
+
+bool JitDepthOk() { return gJitDepth < kMaxJitDepth; }
+
+Machine::Status JitRun(Machine& machine, Context& context, const CompiledFunction& function, InstanceObject* instance, uint64_t* frame, Value* refs) {
+    JitCtx jc;
+    MemoryObject* memory = instance->memories.empty() ? nullptr : instance->memories[0];
+    jc.memBase = memory ? memory->data : nullptr;
+    jc.memBytes = memory ? memory->Bytes() : 0;
+    jc.reserved = 0;
+    jc.globals = instance->globals.data();
+    jc.instance = instance;
+    jc.context = &context;
+    jc.machine = &machine;
+    jc.refs = refs;
+    jc.status = Machine::Status::Ok;
+    ++gJitDepth;
+    const uint32_t r = function.jit->entry(frame, &jc);
+    --gJitDepth;
+    if (r == 0) return Machine::Status::Ok;
+    if (r == 1) return jc.status;
+    machine.lastTrap = static_cast<TrapKind>(r - 16);
+    return Machine::Status::Trap;
+}
+
+static uint32_t JitCallFunction(JitCtx* jc, uint64_t* frame, FuncObject* callee) {
+    MachineState& s = State();
+    Machine& machine = *jc->machine;
+    Context& ctx = *jc->context;
+    const CompiledFunction* c = callee->code;
+    Machine::Status status;
+    if (!c) {
+        // A function of the host: its arguments from the frame, its results back there.
+        const CanonType& sig = TypeRegistry::Get(callee->sig);
+        uint32_t pn = 0, rn = 0;
+        for (const ValType& t : sig.func.params) { if (!t.IsRef()) pn += t.kind == ValType::Kind::V128 ? 2 : 1; }
+        for (const ValType& t : sig.func.results) { if (!t.IsRef()) rn += t.kind == ValType::Kind::V128 ? 2 : 1; }
+        std::vector<uint64_t> args(std::max(pn, rn) + 1);
+        for (uint32_t i = 0; i < pn; ++i) args[i] = frame[i];
+        s.nsp = static_cast<size_t>(frame + pn - s.numbers);
+        s.rsp = static_cast<size_t>(jc->refs - s.refs.data());
+        status = machine.CallHost(ctx, callee, args.data(), nullptr);
+        if (status == Machine::Status::Ok) for (uint32_t i = 0; i < rn; ++i) frame[i] = args[i];
+    } else {
+        uint64_t* const nEnd = s.numbers + kNumSlots - kStackSlack;
+        const size_t needR = static_cast<size_t>(jc->refs - s.refs.data()) + c->paramsR + c->localsR + c->maxR + kStackSlack;
+        if (frame + c->paramsN + c->localsN + c->maxN + kStackSlack >= nEnd || needR >= kRefSlots || s.frames.size() >= kMaxFrames) {
+            machine.lastTrap = TrapKind::StackOverflow;
+            jc->status = Machine::Status::Trap;
+            return 1;
+        }
+        if (s.refs.size() < needR) s.refs.resize(needR, Value::null());
+        if (!c->jit) JitConsider(*c, callee->instance);
+        if (c->jit && JitDepthOk()) status = JitRun(machine, ctx, *c, callee->instance, frame, jc->refs);
+        else status = Execute(machine, ctx, c, callee->instance, frame, jc->refs);
+    }
+    if (status == Machine::Status::Ok) return 0;
+    jc->status = status;
+    return 1;
+}
+
+uint32_t JitCallHelper(JitCtx* jc, uint64_t* frame, uint32_t index) { return JitCallFunction(jc, frame, jc->instance->funcs[index]); }
+
+uint32_t JitCallIndirectHelper(JitCtx* jc, uint64_t* frame, uint32_t type, uint32_t tableIndex, uint64_t index) {
+    TableObject* table = jc->instance->tables[tableIndex];
+    auto trap = [&](TrapKind kind) { jc->machine->lastTrap = kind; jc->status = Machine::Status::Trap; return 1u; };
+    if (!table->type.limits.is64) index = static_cast<uint32_t>(index);
+    if (index >= table->Size()) return trap(TrapKind::TableOutOfBounds);
+    const Value& element = table->elems[static_cast<size_t>(index)];
+    if (element.is_null()) return trap(TrapKind::UninitializedElement);
+    FuncObject* callee = DOMObject::Cast<FuncObject>(element);
+    if (!callee) return trap(TrapKind::UninitializedElement);
+    if (callee->sig != type && !TypeRegistry::HeapSubtype(static_cast<HeapType>(callee->sig), static_cast<HeapType>(type))) return trap(TrapKind::IndirectCallTypeMismatch);
+    return JitCallFunction(jc, frame, callee);
+}
+#endif
+
 }  // namespace Quanta::Wasm
+

@@ -86,6 +86,7 @@ public:
         f.results = sig.results;
         ctls_.push_back(std::move(f));
         nBase_ = out_.paramsN + out_.localsN;
+        out_.code.push_back(Op::kEntry);
         return Run(error);
     }
 
