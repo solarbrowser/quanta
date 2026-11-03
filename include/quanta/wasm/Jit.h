@@ -35,6 +35,8 @@ struct JitCtx {
     Machine* machine;
     Value* refs;             // where the reference stack is free (generated code uses none; what it calls may)
     Machine::Status status;  // set when generated code returns 1
+    uintptr_t stackLimit;    // the native stack pointer must stay above this (generated code calls generated code directly)
+    uint64_t* numbersEnd;    // the end of the stack of numbers, less some slack
 };
 
 struct WasmJitCode {

@@ -1535,9 +1535,17 @@ stop:
 // ---- Native code (see Jit.h) ----
 
 static thread_local uint32_t gJitDepth = 0;
-constexpr uint32_t kMaxJitDepth = 2000;  // (native frames: past it, calls go to the interpreter, whose frames are not on the native stack)
+static thread_local uintptr_t gJitStackLimit = 0;
+constexpr size_t kJitStackBudget = 256 * 1024;  // (of native stack that generated code may use, from where it is first entered: past it, calls go to the interpreter, whose frames are not on the native stack)
 
-bool JitDepthOk() { return gJitDepth < kMaxJitDepth; }
+bool JitDepthOk() { return gJitDepth == 0 || reinterpret_cast<uintptr_t>(__builtin_frame_address(0)) > gJitStackLimit; }
+
+// The base and size of memory 0 that generated code works from, after something that may have changed them has run.
+static void JitRefreshMemory(JitCtx* jc) {
+    MemoryObject* memory = jc->instance->memories.empty() ? nullptr : jc->instance->memories[0];
+    jc->memBase = memory ? memory->data : nullptr;
+    jc->memBytes = memory ? memory->Bytes() : 0;
+}
 
 Machine::Status JitRun(Machine& machine, Context& context, const CompiledFunction& function, InstanceObject* instance, uint64_t* frame, Value* refs) {
     JitCtx jc;
@@ -1551,6 +1559,9 @@ Machine::Status JitRun(Machine& machine, Context& context, const CompiledFunctio
     jc.machine = &machine;
     jc.refs = refs;
     jc.status = Machine::Status::Ok;
+    if (gJitDepth == 0) gJitStackLimit = reinterpret_cast<uintptr_t>(__builtin_frame_address(0)) - kJitStackBudget;
+    jc.stackLimit = gJitStackLimit;
+    jc.numbersEnd = State().numbers + kNumSlots - kStackSlack;
     ++gJitDepth;
     const uint32_t r = function.jit->entry(frame, &jc);
     --gJitDepth;
@@ -1591,6 +1602,7 @@ static uint32_t JitCallFunction(JitCtx* jc, uint64_t* frame, FuncObject* callee)
         if (c->jit && JitDepthOk()) status = JitRun(machine, ctx, *c, callee->instance, frame, jc->refs);
         else status = Execute(machine, ctx, c, callee->instance, frame, jc->refs);
     }
+    JitRefreshMemory(jc);
     if (status == Machine::Status::Ok) return 0;
     jc->status = status;
     return 1;

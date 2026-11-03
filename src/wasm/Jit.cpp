@@ -14,6 +14,7 @@
 #if QUANTA_WASM_JIT
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -228,8 +229,11 @@ private:
     void TrapIf(Cond c, TrapKind k) { a_.jcc(c, TrapLabel(k)); }
     void CallAbs(const void* fn) { a_.call_abs(fn); }
 
+    // The registers it keeps are saved by it (the callee-saved ones it uses), and the stack is aligned for the calls it makes.
     void Prologue() {
-        a_.push(RBP); a_.push(RBX); a_.push(R12); a_.push(R13); a_.push(R14); a_.push(R15);
+        a_.push(RBX); a_.push(R14);
+        if (usesMemory) { a_.push(R12); a_.push(R13); }
+        pad_ = 8;   // (entry: rsp is 8 mod 16, and each push is 8: an even number of them, as there are, leaves it that, and a call wants 0)
         a_.sub_imm(RSP, 8);
         a_.mov(RBX, RDI);
         a_.mov(R14, RSI);
@@ -251,8 +255,9 @@ private:
 
     void Epilogue() {
         a_.bind(epilogue_);
-        a_.add_imm(RSP, 8);
-        a_.pop(R15); a_.pop(R14); a_.pop(R13); a_.pop(R12); a_.pop(RBX); a_.pop(RBP);
+        if (pad_) a_.add_imm(RSP, 8);
+        if (usesMemory) { a_.pop(R13); a_.pop(R12); }
+        a_.pop(R14); a_.pop(RBX);
         a_.ret();
         for (size_t k = 0; k < traps_.size(); ++k) {
             if (traps_[k].fixups.empty()) continue;
@@ -358,11 +363,33 @@ private:
                 (void)len;
                 return true;
             }
-            case Op::kCallR:
+            case Op::kCallR: {
+                const Module& module = *inst_->module;
+                const CompiledFunction* callee = p[0] >= module.importedFuncs && p[0] - module.importedFuncs < module.compiled.size() ? &module.compiled[p[0] - module.importedFuncs] : nullptr;
+                Label slow, after;
+                if (callee && !callee->paramsR && !callee->localsR && !callee->maxR) {
+                    // A function of this module: straight to its native code if it has some (and the stacks have room), else through the helper.
+                    const uint32_t need = callee->paramsN + callee->localsN + callee->maxN + 64;
+                    a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(&callee->jit));
+                    a_.mov_load(RAX, mem(RAX, 0));
+                    a_.test(RAX, RAX);
+                    a_.jcc(CC_E, slow);
+                    a_.lea(RDI, Slot(p[1]));
+                    a_.lea(RCX, mem(RDI, static_cast<int32_t>(need * 8)));
+                    a_.cmp_load(RCX, mem(R14, static_cast<int32_t>(offsetof(JitCtx, numbersEnd))));
+                    a_.jcc(CC_AE, slow);
+                    a_.alu_rm(0x3B, RSP, mem(R14, static_cast<int32_t>(offsetof(JitCtx, stackLimit))), true);
+                    a_.jcc(CC_BE, slow);
+                    a_.mov(RSI, R14);
+                    a_.call_mem(mem(RAX, static_cast<int32_t>(offsetof(WasmJitCode, entry))));
+                    a_.jmp(after);
+                }
+                a_.bind(slow);
                 a_.mov(RDI, R14);
                 a_.lea(RSI, Slot(p[1]));
                 a_.mov_imm32(RDX, p[0]);
                 CallAbs(reinterpret_cast<const void*>(&JitCallHelper));
+                a_.bind(after);
                 a_.test32(RAX, RAX);
                 a_.jcc(CC_NE, epilogue_);
                 if (usesMemory) {
@@ -370,6 +397,7 @@ private:
                     a_.mov_load(R13, mem(R14, 8));
                 }
                 return true;
+            }
             case Op::kCallIndirectR:  // type table firstArgumentSlot indexSlot
                 a_.mov(RDI, R14);
                 a_.lea(RSI, Slot(p[2]));
@@ -689,6 +717,7 @@ private:
     std::vector<int32_t> native_;
     std::vector<LocalJump> jumps_;
     std::vector<BrTable> tables_;
+    uint32_t pad_ = 0;
 };
 
 }  // namespace
