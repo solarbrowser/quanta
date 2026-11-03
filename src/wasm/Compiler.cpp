@@ -391,6 +391,30 @@ private:
         return false;
     }
 
+    // A function that gives one number gives it from the slot it is in (or from the local it was read from, or as a constant): no moving it first.
+    bool EmitFastReturn(const std::vector<ValType>& results) {
+        const SlotCount keep = SlotsOf(results);
+        if (keep.n != 1 || opnds_.size() < ctls_.back().height + results.size()) return false;
+        size_t k = 0;
+        while (k < results.size() && !results[k].IsNum()) ++k;
+        if (k >= results.size()) return false;
+        const Operand o = opnds_[opnds_.size() - results.size() + k];
+        uint32_t slot;
+        if (o.kind == Operand::Kind::Local) {
+            slot = o.src;
+        } else if (o.kind == Operand::Kind::Const) {
+            Emit(Op::kConstSlot, 0);
+            Emit(static_cast<uint32_t>(o.value), static_cast<uint32_t>(o.value >> 32));
+            slot = 0;
+        } else {
+            slot = o.home;
+        }
+        Emit(Op::kRet1);
+        Emit(slot);
+        Emit(keep.r);
+        return true;
+    }
+
     // The results are moved to the first slots of the frame, where the caller has them, and the function returns.
     void EmitReturn(uint32_t firstResultSlot, const std::vector<ValType>& results) {
         const SlotCount keep = SlotsOf(results);
@@ -623,7 +647,11 @@ private:
     }
 
     bool End(std::string& error) {
-        if (!Dead()) Spill();
+        bool returned = false;  // (the function has returned from where it is, with the number it gives where it is)
+        if (!Dead()) {
+            if (ctls_.back().kind == Ctl::Kind::Func && EmitFastReturn(ctls_.back().results)) returned = true;
+            else Spill();
+        }
         Ctl& c = ctls_.back();
         if (!PopVals(c.results)) return false;
         if (vals_.size() != c.height) return Error("type mismatch: values left on the stack at the end of a block");
@@ -636,7 +664,7 @@ private:
         ForgetInits(done.initMark);
         if (done.tryIndex >= 0) out_.tries[static_cast<size_t>(done.tryIndex)].end = static_cast<uint32_t>(Here());
         if (done.kind == Ctl::Kind::Func) {
-            if (!done.deadEntry) {
+            if (!done.deadEntry && (!returned || !done.fixups.empty() || !done.catchFixups.empty())) {
                 const size_t returnAt = Here();
                 EmitReturn(nBase_, done.results);  // (the values of a branch to the function are where the first of them is: the base of the operands)
                 for (size_t f : done.fixups) out_.code[f] = static_cast<uint32_t>(returnAt);
@@ -871,34 +899,57 @@ bool FuncCompiler::MemoryAccess(uint8_t op) {
     bool is64;
     if (!MemArg(align, memory, offset, is64)) return false;
     const ValType address = is64 ? ValType::I64() : ValType::I32();
+    // (An address that is a constant is added to the offset in the instruction, unless it overflows, which is a trap that the general form makes.)
+    const auto absolute = [&](const Operand& where, uint64_t& effective) {
+        if (where.kind != Operand::Kind::Const) return false;
+        const uint64_t base = is64 ? where.value : static_cast<uint32_t>(where.value);
+        effective = base + offset;
+        return effective >= base;
+    };
     if (store) {
         if (!Pop(t)) return false;
         const Operand value = lastPopped_;
         if (!Pop(address)) return false;
         const Operand where = lastPopped_;
         if (!Dead()) {
-            const uint32_t sv = SlotOf(value), sw = SlotOf(where);
-            Emit(op);
+            uint64_t effective = 0;
+            const bool isAbsolute = absolute(where, effective);
+            bool isImmediate = false;
+            uint32_t number = 0;
+            if (value.kind == Operand::Kind::Const) {
+                if (t.kind == ValType::Kind::I32) {
+                    isImmediate = true;
+                    number = static_cast<uint32_t>(value.value);
+                } else if (t.kind == ValType::Kind::I64 && static_cast<int64_t>(value.value) >= INT32_MIN && static_cast<int64_t>(value.value) <= INT32_MAX) {
+                    isImmediate = true;
+                    number = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int64_t>(value.value)));
+                }
+            }
+            const uint32_t sv = isImmediate ? number : SlotOf(value);
+            const uint32_t sw = isAbsolute ? 0 : SlotOf(where);
+            Emit(op + (isImmediate ? (isAbsolute ? Op::kImmAbs : Op::kImm) : (isAbsolute ? Op::kAbs : 0)));
             Emit(sv);
             Emit(sw);
             Emit(memory);
-            Emit(static_cast<uint32_t>(offset));
-            Emit(static_cast<uint32_t>(offset >> 32));
+            Emit(static_cast<uint32_t>(isAbsolute ? effective : offset));
+            Emit(static_cast<uint32_t>((isAbsolute ? effective : offset) >> 32));
             lastEnd_ = kNone;
         }
     } else {
         if (!Pop(address)) return false;
         const Operand where = lastPopped_;
         if (!Dead()) {
-            const uint32_t sw = SlotOf(where);
+            uint64_t effective = 0;
+            const bool isAbsolute = absolute(where, effective);
+            const uint32_t sw = isAbsolute ? 0 : SlotOf(where);
             const uint32_t dst = nBase_ + hN_;
-            Emit(op);
+            Emit(isAbsolute ? op + Op::kAbs : op);
             lastDstAt_ = Here();
             Emit(dst);
             Emit(sw);
             Emit(memory);
-            Emit(static_cast<uint32_t>(offset));
-            Emit(static_cast<uint32_t>(offset >> 32));
+            Emit(static_cast<uint32_t>(isAbsolute ? effective : offset));
+            Emit(static_cast<uint32_t>((isAbsolute ? effective : offset) >> 32));
             lastDst_ = dst;
             lastOp_ = 0;  // (a load is not a comparison that a jump can be made of)
             lastEnd_ = Here();
@@ -1647,7 +1698,7 @@ bool FuncCompiler::Instruction(std::string& error) {
     const bool registerForm = (first >= 0x45 && first <= 0xC4) || (first >= 0x41 && first <= 0x44) || (first >= 0x20 && first <= 0x24) || first == 0xFC || (first >= 0x28 && first <= 0x3E) ||
                               first == 0x1A || first == 0x1B || first == 0x1C;
     // (The control instructions and the calls say for themselves what they need: the stack pointer is not it.)
-    const bool control = first == 0x02 || first == 0x03 || first == 0x04 || first == 0x05 || first == 0x0B || first == 0x0C || first == 0x0D || first == 0x0F || first == 0x10 || first == 0x11 ||
+    const bool control = first == 0x02 || first == 0x03 || first == 0x04 || first == 0x05 || first == 0x0B || first == 0x0C || first == 0x0D || first == 0x0E || first == 0x0F || first == 0x10 || first == 0x11 ||
                          first == 0x12 || first == 0x14;
     if (!registerForm && !control) Materialize();
     const bool ok = InstructionBody(error);
@@ -1700,11 +1751,28 @@ bool FuncCompiler::InstructionBody(std::string& error) {
             std::vector<uint32_t> depths(count + 1);
             for (uint32_t i = 0; i <= count; ++i) depths[i] = r_.u32();
             if (!r_.ok()) return Error(r_.error());
+            // Whether no value has to be moved for any of the targets (what is usual): then the table is of targets alone, and the index is read from its slot.
+            bool simple = vals_.size() > ctls_.back().height;
+            for (uint32_t i = 0; i <= count && simple; ++i) {
+                if (depths[i] >= ctls_.size()) { simple = false; break; }
+                const Ctl& t = ctls_[ctls_.size() - 1 - depths[i]];
+                const SlotCount keep = SlotsOf(LabelTypes(t));
+                // (The heights are those with the index taken off.)
+                if (keep.n != 0 || hR_ - t.baseR - keep.r != 0) simple = false;
+            }
+            if (!simple) Materialize();
             if (!Pop(ValType::I32())) return false;
+            const Operand index = lastPopped_;
             Ctl* def = nullptr;
             if (!Label(depths[count], def)) return false;
             const size_t arity = LabelTypes(*def).size();
-            if (!Dead()) {
+            if (!Dead() && simple) {
+                Spill();
+                const uint32_t slot = SlotOf(index);
+                Emit(Op::kBrTableS);
+                Emit(slot);
+                Emit(count);
+            } else if (!Dead()) {
                 Emit(Op::kBrTable);
                 Emit(count);
             }
@@ -1717,7 +1785,7 @@ bool FuncCompiler::InstructionBody(std::string& error) {
                 if (!Dead()) {
                     const SlotCount keep = SlotsOf(types);
                     EmitTarget(*target);
-                    BranchWords(*target, keep.n, keep.r);
+                    if (!simple) BranchWords(*target, keep.n, keep.r);
                 }
             }
             if (!PopVals(LabelTypes(*def))) return false;
@@ -1727,7 +1795,7 @@ bool FuncCompiler::InstructionBody(std::string& error) {
         case 0x0F: {
             const std::vector<ValType>& results = ctls_.front().results;
             const SlotCount keep = SlotsOf(results);
-            if (!Dead()) {
+            if (!Dead() && !EmitFastReturn(results)) {
                 Spill();
                 EmitReturn(nBase_ + hN_ - keep.n, results);
             }

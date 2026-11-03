@@ -32,6 +32,10 @@ namespace Op {
 constexpr uint32_t kImm = 0x400;
 constexpr uint32_t kJumpIf = 0x500;
 constexpr uint32_t kJumpIfImm = 0x600;
+// A load or store whose address is a constant has it, added to the offset, in the instruction (the word of the address slot is not used); a store of
+// a constant has the number in the word of the slot of the value (sign-extended, if it is an i64).
+constexpr uint32_t kAbs = 0x488;     // (these two are only added to the opcodes of memory instructions, 0x28 to 0x3E, and come to 0x4B0 and 0x4D0 on: holes of the numbers)
+constexpr uint32_t kImmAbs = 0x4A8;
 
 constexpr uint32_t kFcBase = 0x100;   // 0xFC n
 constexpr uint32_t kFdBase = 0x200;   // 0xFD n (the vector instructions)
@@ -75,6 +79,8 @@ enum : uint32_t {
     kCopyN,             // dst src: a slot of the frame to another
     kJzSlot, kJnzSlot,  // slot target: jumps if the number in the slot is zero, or is not
     kRet,               // resultsN resultsR: the numbers are in the first slots of the frame already
+    kRet1,              // slot resultsR: the one number it gives is in the slot
+    kBrTableS,          // slot count target...: the index is in the slot (the targets take no values)
     kCallR,             // function firstArgumentSlot
     kCallIndirectR,     // type(canonical) table firstArgumentSlot indexSlot
     kCallRefR,          // type(canonical) firstArgumentSlot (the reference is on the reference stack)

@@ -463,6 +463,28 @@ run:
                 fr = f.fr;
                 break;
             }
+            case Op::kRet1: {
+                fp[0] = fp[pc[0]];
+                const uint32_t resR = pc[1];
+                if (rsp - resR != fr) std::memmove(fr, rsp - resR, resR * sizeof(Value));
+                if (s.frames.size() == entryDepth) goto stop;
+                const Frame f = s.frames.back();
+                s.frames.pop_back();
+                rsp = fr + resR;
+                code = f.code;
+                inst = f.instance;
+                pc = f.pc;
+                fp = f.fp;
+                fr = f.fr;
+                break;
+            }
+            case Op::kBrTableS: {
+                const uint32_t count = pc[1];
+                uint32_t index = static_cast<uint32_t>(fp[pc[0]]);
+                if (index > count) index = count;
+                pc = code->code.data() + pc[2 + index];
+                break;
+            }
             case Op::kJzSlot:
                 if (static_cast<uint32_t>(fp[pc[0]]) == 0) pc = code->code.data() + pc[1];
                 else pc += 2;
@@ -1381,6 +1403,41 @@ run:
                 break;
             }
             default:
+                // The loads and stores with a constant in them (see Code.h) are not cases of the switch: more cases make the compiler lay the whole of it out
+                // worse for every instruction. They are told by their numbers here.
+                if ((op >= Op::kAbs + 0x28 && op <= Op::kAbs + 0x3E) || (op >= Op::kImm + 0x36 && op <= Op::kImm + 0x3E) || (op >= Op::kImmAbs + 0x28 && op <= Op::kImmAbs + 0x3E)) {
+                    const bool absolute = op >= Op::kImmAbs + 0x28 || (op >= Op::kAbs + 0x28 && op <= Op::kAbs + 0x3E);
+                    const bool immediate = op >= Op::kImmAbs + 0x28 || (op >= Op::kImm + 0x36 && op <= Op::kImm + 0x3E);
+                    const uint32_t base = op >= Op::kImmAbs + 0x28 ? op - Op::kImmAbs : op >= Op::kAbs + 0x28 && op <= Op::kAbs + 0x3E ? op - Op::kAbs : op - Op::kImm;
+                    static const uint8_t kSize[] = {4, 8, 4, 8, 1, 1, 2, 2, 1, 1, 2, 2, 4, 4, 4, 8, 4, 8, 1, 2, 1, 2, 4};  // 0x28 to 0x3E
+                    const uint32_t size = kSize[base - 0x28];
+                    MemoryObject* m = memoryAt(pc[2]);
+                    uint8_t* p;
+                    EFFECTIVE_AT(m, absolute ? uint64_t(0) : fp[pc[1]], size, p, pc[3], pc[4]);
+                    if (base < 0x36) {
+                        uint64_t v = 0;
+                        switch (base) {
+                            case 0x28: case 0x2A: { uint32_t x; std::memcpy(&x, p, 4); v = x; break; }
+                            case 0x29: case 0x2B: std::memcpy(&v, p, 8); break;
+                            case 0x2C: v = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(*p))); break;
+                            case 0x2D: v = *p; break;
+                            case 0x2E: { int16_t x; std::memcpy(&x, p, 2); v = static_cast<uint32_t>(static_cast<int32_t>(x)); break; }
+                            case 0x2F: { uint16_t x; std::memcpy(&x, p, 2); v = x; break; }
+                            case 0x30: v = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int8_t>(*p))); break;
+                            case 0x31: v = *p; break;
+                            case 0x32: { int16_t x; std::memcpy(&x, p, 2); v = static_cast<uint64_t>(static_cast<int64_t>(x)); break; }
+                            case 0x33: { uint16_t x; std::memcpy(&x, p, 2); v = x; break; }
+                            case 0x34: { int32_t x; std::memcpy(&x, p, 4); v = static_cast<uint64_t>(static_cast<int64_t>(x)); break; }
+                            default: { uint32_t x; std::memcpy(&x, p, 4); v = x; break; }  // 0x35
+                        }
+                        fp[pc[0]] = v;
+                    } else {
+                        const uint64_t v = immediate ? static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(pc[0]))) : fp[pc[0]];
+                        std::memcpy(p, &v, size);
+                    }
+                    pc += 5;
+                    break;
+                }
                 if (op >= Op::kFdBase && op < Op::kFdBase + 0x120) {
                     const uint32_t sub = op - Op::kFdBase;
                     sp = SimdExec(sub, sp, pc);
