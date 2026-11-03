@@ -251,12 +251,16 @@ static Machine::Status Execute(Machine& machine, Context& ctx, const CompiledFun
         (out) = (mem)->data + ea;                                                                          \
     } while (0)
 
+#ifdef QUANTA_WASM_TRACING
     static const bool trace = std::getenv("QUANTA_WASM_TRACE") != nullptr;
+#endif
     Value exception;  // what is being thrown, while it is looked for a handler
 run:
     for (;;) {
         const uint32_t op = *pc++;
+#ifdef QUANTA_WASM_TRACING
         if (trace) std::fprintf(stderr, "  [%zu] op %x  sp[-1]=%llx sp[-2]=%llx depth=%zu\n", static_cast<size_t>(pc - 1 - code->code.data()), op, sp > fp ? static_cast<unsigned long long>(sp[-1]) : 0ull, sp > fp + 1 ? static_cast<unsigned long long>(sp[-2]) : 0ull, s.frames.size());
+#endif
         switch (op) {
             case Op::kUnreachable: TRAP(TrapKind::Unreachable);
             case Op::kJmp: pc = code->code.data() + pc[0]; break;
