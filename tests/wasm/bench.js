@@ -13,3 +13,13 @@ time("wasm fib(30)", () => fib(30));
 time("js   fib(30)", () => jsfib(30));
 time("wasm sum(2e7)", () => sum(20000000));
 time("js   sum(2e7)", () => jssum(20000000));
+
+// A loop of floating point work: the sum of the square roots of 1 to n.
+{
+    const body = [0x01, 0x01, 0x7c, 0x02, 0x40, 0x03, 0x40, 0x20, 0, 0x45, 0x0d, 1, 0x20, 1, 0x20, 0, 0xb7, 0x9f, 0xa0, 0x21, 1, 0x20, 0, 0x41, 1, 0x6b, 0x21, 0, 0x0c, 0, 0x0b, 0x0b, 0x20, 1, 0x0b];
+    const fbytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 6, 1, 0x60, 1, 0x7f, 1, 0x7c, 3, 2, 1, 0, 7, 8, 1, 4, 0x66, 0x73, 0x75, 0x6d, 0, 0, 0x0a, body.length + 2, 1, body.length, ...body]);
+    const { fsum } = new WebAssembly.Instance(new WebAssembly.Module(fbytes)).exports;
+    function jsfsum(n) { let s = 0; while (n !== 0) { s += Math.sqrt(n); n = (n - 1) | 0; } return s; }
+    time("wasm fsum(2e7)", () => fsum(20000000));
+    time("js   fsum(2e7)", () => jsfsum(20000000));
+}

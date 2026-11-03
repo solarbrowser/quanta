@@ -224,6 +224,9 @@ public:
     void shift_cl(uint8_t ext, Reg r, bool w) { rex(w, 0, 0, r >> 3); byte(0xD3); modrm_rr(static_cast<Reg>(ext), r); }   // 0 rol, 1 ror, 4 shl, 5 shr, 7 sar (by cl)
     void unary_f7(uint8_t ext, Reg r, bool w) { rex(w, 0, 0, r >> 3); byte(0xF7); modrm_rr(static_cast<Reg>(ext), r); }  // 2 not, 3 neg, 4 mul, 6 div, 7 idiv
     void shift_imm_n(uint8_t ext, Reg r, uint8_t n, bool w) { shift_imm(ext, r, n, w); }
+    void sse_op(uint8_t prefix, uint8_t op, Xmm d, Xmm s) { if (prefix) byte(prefix); rex(false, d >> 3, 0, s >> 3); byte(0x0F); byte(op); modrm_rr(static_cast<Reg>(d), static_cast<Reg>(s)); }
+    void sse_gpr(uint8_t prefix, uint8_t op, Xmm d, Reg r, bool w) { byte(prefix); rex(w, d >> 3, 0, r >> 3); byte(0x0F); byte(op); modrm_rr(static_cast<Reg>(d), r); }   // cvtsi2ss / cvtsi2sd
+    void movd_from_xmm(Reg r, Xmm x) { byte(0x66); rex(false, x >> 3, 0, r >> 3); byte(0x0F); byte(0x7E); modrm_rr(static_cast<Reg>(x), r); }   // the low 32 bits, the rest of r zero
     void cqo() { byte(0x48); byte(0x99); }
     void movsx8_load64(Reg d, Mem m) { rex_rm(true, d, m); byte(0x0F); byte(0xBE); modrm_mem(d, m); }
     void movsx16_load64(Reg d, Mem m) { rex_rm(true, d, m); byte(0x0F); byte(0xBF); modrm_mem(d, m); }
