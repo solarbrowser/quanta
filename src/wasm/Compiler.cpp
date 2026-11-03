@@ -8,6 +8,7 @@
 // instruction what is on the stack, and the instruction is made to say so.
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 #include "quanta/wasm/Reader.h"
@@ -318,7 +319,8 @@ private:
     void EmitRegister(uint32_t op, int arity, const Operand& a, const Operand& b) {
         bool immediate = false;
         uint32_t number = 0;
-        if (arity == 2 && b.kind == Operand::Kind::Const && ImmediateCapable(op)) {
+        static const bool noImm = std::getenv("QUANTA_WASM_NO_IMM") != nullptr;
+        if (!noImm && arity == 2 && b.kind == Operand::Kind::Const && ImmediateCapable(op)) {
             if (!Is64(op)) {
                 immediate = true;
                 number = static_cast<uint32_t>(b.value);
@@ -363,6 +365,8 @@ private:
     // A jump on a condition that was just made by a comparison (or by i32.eqz) is the comparison and the jump in one instruction: the one that made the condition
     // is taken away and what is emitted instead is everything of the jump but its target, which the caller emits.
     bool FuseCondition(const Operand& condition, bool jumpIfTrue) {
+        static const bool off = std::getenv("QUANTA_WASM_NO_FUSE") != nullptr;
+        if (off) return false;
         if (condition.kind != Operand::Kind::Stack || lastEnd_ != Here() || lastDst_ != condition.home) return false;
         const bool compare32 = lastOp_ >= 0x46 && lastOp_ <= 0x4F, compare64 = lastOp_ >= 0x51 && lastOp_ <= 0x5A;
         if (compare32 || compare64) {
@@ -613,6 +617,7 @@ private:
         c.loopStart = Here();
         ctls_.push_back(std::move(c));
         PushVals(params);
+        lastEnd_ = kNone;
         if (kind == Ctl::Kind::Loop) spHeight_ = kUnknownSp;  // (a jump comes back to it)
         return true;
     }
@@ -649,6 +654,7 @@ private:
         }
         PushValsAfterBlock(done);
         spHeight_ = kUnknownSp;  // (the ways in come from other places)
+        lastEnd_ = kNone;        // (and so what was made last is not the only way to what comes next)
         return true;
     }
 
@@ -678,6 +684,7 @@ private:
         }
         ForgetInits(c.initMark);
         spHeight_ = kUnknownSp;
+        lastEnd_ = kNone;
         c.kind = Ctl::Kind::Else;
         c.unreachable = false;
         vals_.resize(c.height);
@@ -893,6 +900,7 @@ bool FuncCompiler::MemoryAccess(uint8_t op) {
             Emit(static_cast<uint32_t>(offset));
             Emit(static_cast<uint32_t>(offset >> 32));
             lastDst_ = dst;
+            lastOp_ = 0;  // (a load is not a comparison that a jump can be made of)
             lastEnd_ = Here();
         }
         Push(t);
@@ -1831,7 +1839,8 @@ bool FuncCompiler::InstructionBody(std::string& error) {
                 if (number && !Dead()) {
                     SpillLocal(slot);
                     if (v.kind == Operand::Kind::Stack) {
-                        if (lastEnd_ == Here() && lastDst_ == v.home) {
+                        static const bool noFold = std::getenv("QUANTA_WASM_NO_FOLD") != nullptr;
+                        if (!noFold && lastEnd_ == Here() && lastDst_ == v.home) {
                             out_.code[lastDstAt_] = slot;  // (the instruction that made the value writes the local itself)
                         } else {
                             Emit(Op::kCopyN, slot);

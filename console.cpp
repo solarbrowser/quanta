@@ -6,6 +6,8 @@
 
 #include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/Realm.h"
+#include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/Iterator.h"
@@ -116,6 +118,18 @@ public:
             }
             std::cout << std::endl;
             return Value();
+        });
+
+        // readbuffer(path): the bytes of a file as an ArrayBuffer (a shell convenience for trying WebAssembly modules and the like).
+        engine_->register_function("readbuffer", [](const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value();
+            std::ifstream in(args[0].to_string(), std::ios::binary);
+            if (!in) return Value();
+            std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            auto buffer = std::make_unique<ArrayBuffer>(bytes.data(), bytes.size());
+            buffer->set_property("_isArrayBuffer", Value(true));
+            buffer->initialize_prototype(current_realm().array_buffer_proto);
+            return Value(buffer.release());
         });
     }
     
