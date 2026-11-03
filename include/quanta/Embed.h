@@ -709,6 +709,11 @@ Value Construct(Context& ctx, const Value& ctor, Args args = {}, const Value& ne
 using NativeClosure = std::function<Value(Context& ctx, Value thisValue, Args args, Value newTarget)>;
 Value NewFunction(Context& ctx, std::string_view name, int length, NativeClosure closure);
 
+// Makes `function` (a value NewFunction made) keep `held` alive for as long as it lives. The collector sees the link: unlike a Persistent captured
+// by the closure, which is a root, it does not keep alive what reaches the function back (an exported function of a module and the instance that
+// has it in its exports would never be collected). The closure may then use a plain pointer to what it holds: it is alive when the function is called.
+void HoldValue(const Value& function, const Value& held);
+
 // A property descriptor, in the form of Object.defineProperty's argument: a field is present
 // when its has_ flag says so. The Values are not seen by the collector from here: keep a
 // Descriptor on the native stack, not in a member.

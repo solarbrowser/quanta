@@ -1191,6 +1191,11 @@ Value NewFunction(Context& ctx, std::string_view name, int length, NativeClosure
     return Value(fn.release());
 }
 
+void HoldValue(const Value& function, const Value& held) {
+    // (A native function has no use for the `this` an arrow function captures, and the collector visits it for every function that has one.)
+    if (function.is_function()) function.as_function()->set_arrow_this(held);
+}
+
 // The internal methods go through the Reflect functions, which dispatch on the kind of object
 // (a Proxy's trap, a legacy platform object's hooks) as the spec's [[...]] methods do.
 static bool require_object(Context& ctx, const Value& object) {

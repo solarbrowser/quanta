@@ -51,6 +51,9 @@ struct WasmJitCode {
 // Native code for `function` (as run by `instance`), or false (and `function.jitFailed`) if it has an instruction the JIT does not do.
 bool JitCompile(const CompiledFunction& function, InstanceObject* instance);
 
+// How much memory all the native code of WebAssembly functions has mapped, now.
+size_t WasmJitMappedBytes();
+
 // Whether it is time for `function` to be compiled (it has been called enough, or it has a loop), and doing it.
 void JitConsider(const CompiledFunction& function, InstanceObject* instance);
 

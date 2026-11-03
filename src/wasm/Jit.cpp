@@ -13,6 +13,7 @@
 
 #if QUANTA_WASM_JIT
 
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -1091,6 +1092,21 @@ private:
 
 }  // namespace
 
+std::atomic<size_t> gMappedBytes{0};
+constexpr size_t kMaxMappedBytes = size_t(128) << 20;
+
+void WasmJitFree(WasmJitCode* code) noexcept {
+    if (!code) return;
+    if (code->memory) {
+        platform::unmap(code->memory, code->size);
+        gMappedBytes.fetch_sub(code->size, std::memory_order_relaxed);
+        if (kStats) std::fprintf(stderr, "[wasm jit] freed %zu bytes\n", code->size);
+    }
+    delete code;
+}
+
+size_t WasmJitMappedBytes() { return gMappedBytes.load(std::memory_order_relaxed); }
+
 bool JitCompile(const CompiledFunction& function, InstanceObject* instance) {
     function.jitFailed = true;  // (until it is not)
     Generator g(function, instance);
@@ -1102,6 +1118,11 @@ bool JitCompile(const CompiledFunction& function, InstanceObject* instance) {
     std::vector<uint8_t>& code = g.Code();
     const size_t page = platform::page_size();
     const size_t size = (code.size() + page - 1) / page * page;
+    // (A ceiling on what all the modules together have mapped, as the JIT of scripts has.)
+    if (gMappedBytes.load(std::memory_order_relaxed) + size > kMaxMappedBytes) {
+        if (kStats) std::fprintf(stderr, "[wasm jit] refused: the code is at its ceiling (%zu bytes)\n", gMappedBytes.load());
+        return false;
+    }
     void* memory = platform::map_writable(size);
     if (!memory) return false;
     std::memcpy(memory, code.data(), code.size());
@@ -1111,7 +1132,8 @@ bool JitCompile(const CompiledFunction& function, InstanceObject* instance) {
     jit->size = size;
     jit->usesMemory = g.usesMemory;
     jit->entry = reinterpret_cast<uint32_t (*)(uint64_t*, JitCtx*)>(memory);
-    function.jit = jit;
+    gMappedBytes.fetch_add(size, std::memory_order_relaxed);
+    function.jit.reset(jit);
     function.jitFailed = false;
     if (kStats) std::fprintf(stderr, "[wasm jit] compiled %zu words -> %zu bytes\n", function.code.size(), code.size());
     return true;
@@ -1138,6 +1160,8 @@ void JitConsider(const CompiledFunction& function, InstanceObject* instance) {
 
 namespace Quanta::Wasm {
 bool JitCompile(const CompiledFunction&, InstanceObject*) { return false; }
+void WasmJitFree(WasmJitCode* code) noexcept { delete code; }
+size_t WasmJitMappedBytes() { return 0; }
 void JitConsider(const CompiledFunction&, InstanceObject*) {}
 }  // namespace Quanta::Wasm
 

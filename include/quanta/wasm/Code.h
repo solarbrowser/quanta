@@ -8,6 +8,7 @@
 #define QUANTA_WASM_CODE_H
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace Quanta::Wasm {
@@ -116,6 +117,13 @@ struct TryEntry {
     std::vector<CatchClause> catches;
 };
 
+// The native code of a function is released with it (defined in Jit.cpp).
+struct WasmJitCode;
+void WasmJitFree(WasmJitCode* code) noexcept;
+struct WasmJitDeleter {
+    void operator()(WasmJitCode* code) const noexcept { WasmJitFree(code); }
+};
+
 struct CompiledFunction {
     std::vector<uint32_t> code;
     uint32_t type = 0;  // the canonical id of its type
@@ -125,7 +133,7 @@ struct CompiledFunction {
     uint32_t maxN = 0, maxR = 0;            // the most the operands of it take above its locals
     std::vector<TryEntry> tries;
     // The native code of the function, if the JIT made some (see Jit.h); it is only ever a faster way of doing what the words above say.
-    mutable struct WasmJitCode* jit = nullptr;
+    mutable std::unique_ptr<struct WasmJitCode, WasmJitDeleter> jit;   // (it goes with the function: the module that owns it dies, the code is unmapped)
     mutable uint32_t calls = 0;
     mutable bool jitFailed = false;
 };

@@ -166,13 +166,14 @@ Value CallExport(Context& ctx, FuncObject* f, Args args);
 Value WrapperOf(Context& ctx, FuncObject* f) {
     if (Object* existing = f->wrapper.Get()) return Value(existing);
     const CanonType& sig = TypeRegistry::Get(f->sig);
-    auto held = std::make_shared<E::Persistent>(ctx, Value(static_cast<Object*>(f)));
+    // (The function keeps its FuncObject alive, and the collector sees that: a Persistent here would be a root, and the function, the instance that has it in its
+    // exports and the module of the instance would never be collected.)
     // (The map forgets the function when it is swept: its closure, which owns the guard, goes with it.)
     auto guard = std::make_shared<MapGuard>();
-    Value fn = E::NewFunction(ctx, std::to_string(f->index), static_cast<int>(sig.func.params.size()), [held, guard](Context& c, Value, Args a, Value) -> Value {
-        FuncObject* target = DOMObject::Cast<FuncObject>(held->Get());
-        return CallExport(c, target, a);
+    Value fn = E::NewFunction(ctx, std::to_string(f->index), static_cast<int>(sig.func.params.size()), [f, guard](Context& c, Value, Args a, Value) -> Value {
+        return CallExport(c, f, a);
     });
+    E::HoldValue(fn, Value(static_cast<Object*>(f)));
     Object* object = fn.is_function() ? static_cast<Object*>(fn.as_function()) : fn.as_object();
     FunctionMap()[object] = f;
     guard->function = object;
