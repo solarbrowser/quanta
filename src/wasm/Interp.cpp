@@ -21,6 +21,12 @@
 #include "quanta/wasm/Simd.h"
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX  // (windows.h defines min and max, which std::min and std::max are not)
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #else
 #include <sys/mman.h>

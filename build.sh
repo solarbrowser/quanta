@@ -226,7 +226,7 @@ phase_configure() {
     setup_pcre2
     mkdir -p \
         "$OBJ_DIR/core/engine" "$OBJ_DIR/core/engine/builtins" "$OBJ_DIR/core/gc" \
-        "$OBJ_DIR/core/modules" "$OBJ_DIR/core/runtime" "$OBJ_DIR/core/vm" \
+        "$OBJ_DIR/core/modules" "$OBJ_DIR/core/runtime" "$OBJ_DIR/core/vm" "$OBJ_DIR/wasm" \
         "$OBJ_DIR/lexer" "$OBJ_DIR/parser" "$OBJ_DIR/parser/ast" \
         "$OBJ_DIR/pcre2" "$OBJ_DIR/utf8proc" "$OBJ_DIR/mimalloc"
 }

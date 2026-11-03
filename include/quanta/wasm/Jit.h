@@ -16,10 +16,12 @@
 
 #include "quanta/wasm/Runtime.h"
 
+#ifndef QUANTA_WASM_JIT  // (-DQUANTA_WASM_JIT=0 turns it off)
 #if defined(__x86_64__) && !defined(_WIN32)
 #define QUANTA_WASM_JIT 1
 #else
 #define QUANTA_WASM_JIT 0
+#endif
 #endif
 
 namespace Quanta::Wasm {
