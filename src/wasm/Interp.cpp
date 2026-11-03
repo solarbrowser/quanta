@@ -571,22 +571,27 @@ run:
             STORE(0x3D, uint16_t)
             STORE(0x3E, uint32_t)
 
+            // ---- Register form: the slots are those of the frame (see Code.h) ----
+            case Op::kCopyN: fp[pc[0]] = fp[pc[1]]; pc += 2; break;
+            case Op::kConstSlot: fp[pc[0]] = static_cast<uint64_t>(pc[1]) | (static_cast<uint64_t>(pc[2]) << 32); pc += 3; break;
+            case Op::kSyncSp: sp = fp + code->paramsN + code->localsN + pc[0]; ++pc; break;
+
             // ---- Numbers ----
 #define U32(x) static_cast<uint32_t>(x)
 #define S32(x) static_cast<int32_t>(static_cast<uint32_t>(x))
 #define S64(x) static_cast<int64_t>(x)
-#define BIN32(opcode, expr) case opcode: { const uint32_t b = U32(sp[-1]); const uint32_t a = U32(sp[-2]); --sp; sp[-1] = static_cast<uint64_t>(static_cast<uint32_t>(expr)); break; }
-#define BIN64(opcode, expr) case opcode: { const uint64_t b = sp[-1]; const uint64_t a = sp[-2]; --sp; sp[-1] = static_cast<uint64_t>(expr); break; }
-#define CMP32(opcode, expr) case opcode: { const uint32_t b = U32(sp[-1]); const uint32_t a = U32(sp[-2]); --sp; sp[-1] = (expr) ? 1 : 0; break; }
-#define CMP64(opcode, expr) case opcode: { const uint64_t b = sp[-1]; const uint64_t a = sp[-2]; --sp; sp[-1] = (expr) ? 1 : 0; break; }
-#define CMPF32(opcode, expr) case opcode: { const float b = AsF32(sp[-1]); const float a = AsF32(sp[-2]); --sp; sp[-1] = (expr) ? 1 : 0; break; }
-#define CMPF64(opcode, expr) case opcode: { const double b = AsF64(sp[-1]); const double a = AsF64(sp[-2]); --sp; sp[-1] = (expr) ? 1 : 0; break; }
-#define BINF32(opcode, expr) case opcode: { const float b = AsF32(sp[-1]); const float a = AsF32(sp[-2]); --sp; sp[-1] = FromF32(expr); break; }
-#define BINF64(opcode, expr) case opcode: { const double b = AsF64(sp[-1]); const double a = AsF64(sp[-2]); --sp; sp[-1] = FromF64(expr); break; }
-#define UNF32(opcode, expr) case opcode: { const float a = AsF32(sp[-1]); sp[-1] = FromF32(expr); break; }
-#define UNF64(opcode, expr) case opcode: { const double a = AsF64(sp[-1]); sp[-1] = FromF64(expr); break; }
+#define BIN32(opcode, expr) case opcode: { const uint32_t b = U32(fp[pc[2]]); const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = static_cast<uint64_t>(static_cast<uint32_t>(expr)); pc += 3; break; }
+#define BIN64(opcode, expr) case opcode: { const uint64_t b = fp[pc[2]]; const uint64_t a = fp[pc[1]]; fp[pc[0]] = static_cast<uint64_t>(expr); pc += 3; break; }
+#define CMP32(opcode, expr) case opcode: { const uint32_t b = U32(fp[pc[2]]); const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
+#define CMP64(opcode, expr) case opcode: { const uint64_t b = fp[pc[2]]; const uint64_t a = fp[pc[1]]; fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
+#define CMPF32(opcode, expr) case opcode: { const float b = AsF32(fp[pc[2]]); const float a = AsF32(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
+#define CMPF64(opcode, expr) case opcode: { const double b = AsF64(fp[pc[2]]); const double a = AsF64(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
+#define BINF32(opcode, expr) case opcode: { const float b = AsF32(fp[pc[2]]); const float a = AsF32(fp[pc[1]]); fp[pc[0]] = FromF32(expr); pc += 3; break; }
+#define BINF64(opcode, expr) case opcode: { const double b = AsF64(fp[pc[2]]); const double a = AsF64(fp[pc[1]]); fp[pc[0]] = FromF64(expr); pc += 3; break; }
+#define UNF32(opcode, expr) case opcode: { const float a = AsF32(fp[pc[1]]); fp[pc[0]] = FromF32(expr); pc += 2; break; }
+#define UNF64(opcode, expr) case opcode: { const double a = AsF64(fp[pc[1]]); fp[pc[0]] = FromF64(expr); pc += 2; break; }
 
-            case 0x45: sp[-1] = U32(sp[-1]) == 0 ? 1 : 0; break;
+            case 0x45: fp[pc[0]] = U32(fp[pc[1]]) == 0 ? 1 : 0; pc += 2; break;
             CMP32(0x46, a == b)
             CMP32(0x47, a != b)
             CMP32(0x48, S32(a) < S32(b))
@@ -597,7 +602,7 @@ run:
             CMP32(0x4D, a <= b)
             CMP32(0x4E, S32(a) >= S32(b))
             CMP32(0x4F, a >= b)
-            case 0x50: sp[-1] = sp[-1] == 0 ? 1 : 0; break;
+            case 0x50: fp[pc[0]] = fp[pc[1]] == 0 ? 1 : 0; pc += 2; break;
             CMP64(0x51, a == b)
             CMP64(0x52, a != b)
             CMP64(0x53, S64(a) < S64(b))
@@ -620,40 +625,40 @@ run:
             CMPF64(0x64, a > b)
             CMPF64(0x65, a <= b)
             CMPF64(0x66, a >= b)
-            case 0x67: { const uint32_t a = U32(sp[-1]); sp[-1] = a ? __builtin_clz(a) : 32; break; }
-            case 0x68: { const uint32_t a = U32(sp[-1]); sp[-1] = a ? __builtin_ctz(a) : 32; break; }
-            case 0x69: sp[-1] = __builtin_popcount(U32(sp[-1])); break;
+            case 0x67: { const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = a ? __builtin_clz(a) : 32; pc += 2; break; }
+            case 0x68: { const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = a ? __builtin_ctz(a) : 32; pc += 2; break; }
+            case 0x69: fp[pc[0]] = __builtin_popcount(U32(fp[pc[1]])); pc += 2; break;
             BIN32(0x6A, a + b)
             BIN32(0x6B, a - b)
             BIN32(0x6C, a * b)
             case 0x6D: {  // i32.div_s
-                const int32_t b = S32(sp[-1]), a = S32(sp[-2]);
+                const int32_t b = S32(fp[pc[2]]), a = S32(fp[pc[1]]);
                 if (b == 0) TRAP(TrapKind::DivideByZero);
                 if (a == std::numeric_limits<int32_t>::min() && b == -1) TRAP(TrapKind::IntegerOverflow);
-                --sp;
-                sp[-1] = static_cast<uint32_t>(a / b);
-                break;
+                
+                fp[pc[0]] = static_cast<uint32_t>(a / b);
+                pc += 3; break;
             }
             case 0x6E: {  // i32.div_u
-                const uint32_t b = U32(sp[-1]), a = U32(sp[-2]);
+                const uint32_t b = U32(fp[pc[2]]), a = U32(fp[pc[1]]);
                 if (b == 0) TRAP(TrapKind::DivideByZero);
-                --sp;
-                sp[-1] = a / b;
-                break;
+                
+                fp[pc[0]] = a / b;
+                pc += 3; break;
             }
             case 0x6F: {  // i32.rem_s
-                const int32_t b = S32(sp[-1]), a = S32(sp[-2]);
+                const int32_t b = S32(fp[pc[2]]), a = S32(fp[pc[1]]);
                 if (b == 0) TRAP(TrapKind::DivideByZero);
-                --sp;
-                sp[-1] = b == -1 ? 0 : static_cast<uint32_t>(a % b);
-                break;
+                
+                fp[pc[0]] = b == -1 ? 0 : static_cast<uint32_t>(a % b);
+                pc += 3; break;
             }
             case 0x70: {  // i32.rem_u
-                const uint32_t b = U32(sp[-1]), a = U32(sp[-2]);
+                const uint32_t b = U32(fp[pc[2]]), a = U32(fp[pc[1]]);
                 if (b == 0) TRAP(TrapKind::DivideByZero);
-                --sp;
-                sp[-1] = a % b;
-                break;
+                
+                fp[pc[0]] = a % b;
+                pc += 3; break;
             }
             BIN32(0x71, a & b)
             BIN32(0x72, a | b)
@@ -663,40 +668,40 @@ run:
             BIN32(0x76, a >> (b & 31))
             BIN32(0x77, (a << (b & 31)) | (a >> ((32 - (b & 31)) & 31)))
             BIN32(0x78, (a >> (b & 31)) | (a << ((32 - (b & 31)) & 31)))
-            case 0x79: { const uint64_t a = sp[-1]; sp[-1] = a ? __builtin_clzll(a) : 64; break; }
-            case 0x7A: { const uint64_t a = sp[-1]; sp[-1] = a ? __builtin_ctzll(a) : 64; break; }
-            case 0x7B: sp[-1] = __builtin_popcountll(sp[-1]); break;
+            case 0x79: { const uint64_t a = fp[pc[1]]; fp[pc[0]] = a ? __builtin_clzll(a) : 64; pc += 2; break; }
+            case 0x7A: { const uint64_t a = fp[pc[1]]; fp[pc[0]] = a ? __builtin_ctzll(a) : 64; pc += 2; break; }
+            case 0x7B: fp[pc[0]] = __builtin_popcountll(fp[pc[1]]); pc += 2; break;
             BIN64(0x7C, a + b)
             BIN64(0x7D, a - b)
             BIN64(0x7E, a * b)
             case 0x7F: {  // i64.div_s
-                const int64_t b = S64(sp[-1]), a = S64(sp[-2]);
+                const int64_t b = S64(fp[pc[2]]), a = S64(fp[pc[1]]);
                 if (b == 0) TRAP(TrapKind::DivideByZero);
                 if (a == std::numeric_limits<int64_t>::min() && b == -1) TRAP(TrapKind::IntegerOverflow);
-                --sp;
-                sp[-1] = static_cast<uint64_t>(a / b);
-                break;
+                
+                fp[pc[0]] = static_cast<uint64_t>(a / b);
+                pc += 3; break;
             }
             case 0x80: {  // i64.div_u
-                const uint64_t b = sp[-1], a = sp[-2];
+                const uint64_t b = fp[pc[2]], a = fp[pc[1]];
                 if (b == 0) TRAP(TrapKind::DivideByZero);
-                --sp;
-                sp[-1] = a / b;
-                break;
+                
+                fp[pc[0]] = a / b;
+                pc += 3; break;
             }
             case 0x81: {  // i64.rem_s
-                const int64_t b = S64(sp[-1]), a = S64(sp[-2]);
+                const int64_t b = S64(fp[pc[2]]), a = S64(fp[pc[1]]);
                 if (b == 0) TRAP(TrapKind::DivideByZero);
-                --sp;
-                sp[-1] = b == -1 ? 0 : static_cast<uint64_t>(a % b);
-                break;
+                
+                fp[pc[0]] = b == -1 ? 0 : static_cast<uint64_t>(a % b);
+                pc += 3; break;
             }
             case 0x82: {  // i64.rem_u
-                const uint64_t b = sp[-1], a = sp[-2];
+                const uint64_t b = fp[pc[2]], a = fp[pc[1]];
                 if (b == 0) TRAP(TrapKind::DivideByZero);
-                --sp;
-                sp[-1] = a % b;
-                break;
+                
+                fp[pc[0]] = a % b;
+                pc += 3; break;
             }
             BIN64(0x83, a & b)
             BIN64(0x84, a | b)
@@ -706,8 +711,8 @@ run:
             BIN64(0x88, a >> (b & 63))
             BIN64(0x89, (a << (b & 63)) | (a >> ((64 - (b & 63)) & 63)))
             BIN64(0x8A, (a >> (b & 63)) | (a << ((64 - (b & 63)) & 63)))
-            case 0x8B: sp[-1] = (sp[-1] & 0xFFFFFFFFull) & ~0x80000000ull; break;  // f32.abs
-            case 0x8C: sp[-1] = (sp[-1] & 0xFFFFFFFFull) ^ 0x80000000ull; break;   // f32.neg
+            case 0x8B: fp[pc[0]] = (fp[pc[1]] & 0xFFFFFFFFull) & ~0x80000000ull; pc += 2; break;  // f32.abs
+            case 0x8C: fp[pc[0]] = (fp[pc[1]] & 0xFFFFFFFFull) ^ 0x80000000ull; pc += 2; break;   // f32.neg
             UNF32(0x8D, std::ceil(a))
             UNF32(0x8E, std::floor(a))
             UNF32(0x8F, std::trunc(a))
@@ -719,9 +724,9 @@ run:
             BINF32(0x95, a / b)
             BINF32(0x96, Min(a, b))
             BINF32(0x97, Max(a, b))
-            case 0x98: { const uint32_t b = U32(sp[-1]), a = U32(sp[-2]); --sp; sp[-1] = (a & 0x7FFFFFFFu) | (b & 0x80000000u); break; }
-            case 0x99: sp[-1] = sp[-1] & ~0x8000000000000000ull; break;  // f64.abs
-            case 0x9A: sp[-1] = sp[-1] ^ 0x8000000000000000ull; break;   // f64.neg
+            case 0x98: { const uint32_t b = U32(fp[pc[2]]), a = U32(fp[pc[1]]);  fp[pc[0]] = (a & 0x7FFFFFFFu) | (b & 0x80000000u); pc += 3; break; }
+            case 0x99: fp[pc[0]] = fp[pc[1]] & ~0x8000000000000000ull; pc += 2; break;  // f64.abs
+            case 0x9A: fp[pc[0]] = fp[pc[1]] ^ 0x8000000000000000ull; pc += 2; break;   // f64.neg
             UNF64(0x9B, std::ceil(a))
             UNF64(0x9C, std::floor(a))
             UNF64(0x9D, std::trunc(a))
@@ -733,93 +738,94 @@ run:
             BINF64(0xA3, a / b)
             BINF64(0xA4, Min(a, b))
             BINF64(0xA5, Max(a, b))
-            case 0xA6: { const uint64_t b = sp[-1], a = sp[-2]; --sp; sp[-1] = (a & 0x7FFFFFFFFFFFFFFFull) | (b & 0x8000000000000000ull); break; }
-            case 0xA7: sp[-1] = U32(sp[-1]); break;  // i32.wrap_i64
+            case 0xA6: { const uint64_t b = fp[pc[2]], a = fp[pc[1]];  fp[pc[0]] = (a & 0x7FFFFFFFFFFFFFFFull) | (b & 0x8000000000000000ull); pc += 3; break; }
+            case 0xA7: fp[pc[0]] = U32(fp[pc[1]]); pc += 2; break;  // i32.wrap_i64
             case 0xA8: {  // i32.trunc_f32_s
-                const float f = AsF32(sp[-1]);
+                const float f = AsF32(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f >= -2147483648.0f && f < 2147483648.0f)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint32_t>(static_cast<int32_t>(f));
-                break;
+                fp[pc[0]] = static_cast<uint32_t>(static_cast<int32_t>(f));
+                pc += 2; break;
             }
             case 0xA9: {  // i32.trunc_f32_u
-                const float f = AsF32(sp[-1]);
+                const float f = AsF32(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f > -1.0f && f < 4294967296.0f)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint32_t>(f);
-                break;
+                fp[pc[0]] = static_cast<uint32_t>(f);
+                pc += 2; break;
             }
             case 0xAA: {  // i32.trunc_f64_s
-                const double f = AsF64(sp[-1]);
+                const double f = AsF64(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f > -2147483649.0 && f < 2147483648.0)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint32_t>(static_cast<int32_t>(f));
-                break;
+                fp[pc[0]] = static_cast<uint32_t>(static_cast<int32_t>(f));
+                pc += 2; break;
             }
             case 0xAB: {  // i32.trunc_f64_u
-                const double f = AsF64(sp[-1]);
+                const double f = AsF64(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f > -1.0 && f < 4294967296.0)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint32_t>(f);
-                break;
+                fp[pc[0]] = static_cast<uint32_t>(f);
+                pc += 2; break;
             }
-            case 0xAC: sp[-1] = static_cast<uint64_t>(static_cast<int64_t>(S32(sp[-1]))); break;  // i64.extend_i32_s
-            case 0xAD: sp[-1] = U32(sp[-1]); break;                                                // i64.extend_i32_u
+            case 0xAC: fp[pc[0]] = static_cast<uint64_t>(static_cast<int64_t>(S32(fp[pc[1]]))); pc += 2; break;  // i64.extend_i32_s
+            case 0xAD: fp[pc[0]] = U32(fp[pc[1]]); pc += 2; break;                                                // i64.extend_i32_u
             case 0xAE: {  // i64.trunc_f32_s
-                const float f = AsF32(sp[-1]);
+                const float f = AsF32(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f >= -9223372036854775808.0f && f < 9223372036854775808.0f)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint64_t>(static_cast<int64_t>(f));
-                break;
+                fp[pc[0]] = static_cast<uint64_t>(static_cast<int64_t>(f));
+                pc += 2; break;
             }
             case 0xAF: {  // i64.trunc_f32_u
-                const float f = AsF32(sp[-1]);
+                const float f = AsF32(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f > -1.0f && f < 18446744073709551616.0f)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint64_t>(f);
-                break;
+                fp[pc[0]] = static_cast<uint64_t>(f);
+                pc += 2; break;
             }
             case 0xB0: {  // i64.trunc_f64_s
-                const double f = AsF64(sp[-1]);
+                const double f = AsF64(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f >= -9223372036854775808.0 && f < 9223372036854775808.0)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint64_t>(static_cast<int64_t>(f));
-                break;
+                fp[pc[0]] = static_cast<uint64_t>(static_cast<int64_t>(f));
+                pc += 2; break;
             }
             case 0xB1: {  // i64.trunc_f64_u
-                const double f = AsF64(sp[-1]);
+                const double f = AsF64(fp[pc[1]]);
                 if (f != f) TRAP(TrapKind::InvalidConversion);
                 if (!(f > -1.0 && f < 18446744073709551616.0)) TRAP(TrapKind::IntegerOverflow);
-                sp[-1] = static_cast<uint64_t>(f);
-                break;
+                fp[pc[0]] = static_cast<uint64_t>(f);
+                pc += 2; break;
             }
-            case 0xB2: sp[-1] = FromF32(static_cast<float>(S32(sp[-1]))); break;
-            case 0xB3: sp[-1] = FromF32(static_cast<float>(U32(sp[-1]))); break;
-            case 0xB4: sp[-1] = FromF32(static_cast<float>(S64(sp[-1]))); break;
-            case 0xB5: sp[-1] = FromF32(static_cast<float>(sp[-1])); break;
-            case 0xB6: sp[-1] = FromF32(static_cast<float>(AsF64(sp[-1]))); break;
-            case 0xB7: sp[-1] = FromF64(static_cast<double>(S32(sp[-1]))); break;
-            case 0xB8: sp[-1] = FromF64(static_cast<double>(U32(sp[-1]))); break;
-            case 0xB9: sp[-1] = FromF64(static_cast<double>(S64(sp[-1]))); break;
-            case 0xBA: sp[-1] = FromF64(static_cast<double>(sp[-1])); break;
-            case 0xBB: sp[-1] = FromF64(static_cast<double>(AsF32(sp[-1]))); break;
-            case 0xBC: sp[-1] = U32(sp[-1]); break;  // (reinterpret: the bits are where they were)
-            case 0xBD: case 0xBE: case 0xBF: break;
-            case 0xC0: sp[-1] = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(sp[-1]))); break;
-            case 0xC1: sp[-1] = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(sp[-1]))); break;
-            case 0xC2: sp[-1] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int8_t>(sp[-1]))); break;
-            case 0xC3: sp[-1] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int16_t>(sp[-1]))); break;
-            case 0xC4: sp[-1] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(sp[-1]))); break;
+            case 0xB2: fp[pc[0]] = FromF32(static_cast<float>(S32(fp[pc[1]]))); pc += 2; break;
+            case 0xB3: fp[pc[0]] = FromF32(static_cast<float>(U32(fp[pc[1]]))); pc += 2; break;
+            case 0xB4: fp[pc[0]] = FromF32(static_cast<float>(S64(fp[pc[1]]))); pc += 2; break;
+            case 0xB5: fp[pc[0]] = FromF32(static_cast<float>(fp[pc[1]])); pc += 2; break;
+            case 0xB6: fp[pc[0]] = FromF32(static_cast<float>(AsF64(fp[pc[1]]))); pc += 2; break;
+            case 0xB7: fp[pc[0]] = FromF64(static_cast<double>(S32(fp[pc[1]]))); pc += 2; break;
+            case 0xB8: fp[pc[0]] = FromF64(static_cast<double>(U32(fp[pc[1]]))); pc += 2; break;
+            case 0xB9: fp[pc[0]] = FromF64(static_cast<double>(S64(fp[pc[1]]))); pc += 2; break;
+            case 0xBA: fp[pc[0]] = FromF64(static_cast<double>(fp[pc[1]])); pc += 2; break;
+            case 0xBB: fp[pc[0]] = FromF64(static_cast<double>(AsF32(fp[pc[1]]))); pc += 2; break;
+            case 0xBC: fp[pc[0]] = U32(fp[pc[1]]); pc += 2; break;  // (reinterpret: the bits are where they were)
+            case 0xBD: case 0xBE: case 0xBF: fp[pc[0]] = fp[pc[1]]; pc += 2; break;
+            case 0xC0: fp[pc[0]] = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(fp[pc[1]]))); pc += 2; break;
+            case 0xC1: fp[pc[0]] = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(fp[pc[1]]))); pc += 2; break;
+            case 0xC2: fp[pc[0]] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int8_t>(fp[pc[1]]))); pc += 2; break;
+            case 0xC3: fp[pc[0]] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int16_t>(fp[pc[1]]))); pc += 2; break;
+            case 0xC4: fp[pc[0]] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(fp[pc[1]]))); pc += 2; break;
+
 
             // ---- 0xFC: saturating conversions and bulk operations ----
-            case Op::kFcBase + 0: sp[-1] = static_cast<uint32_t>(Saturate<int32_t, float>(AsF32(sp[-1]), -2147483648.0f, 2147483648.0f, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max())); break;
-            case Op::kFcBase + 1: sp[-1] = Saturate<uint32_t, float>(AsF32(sp[-1]), 0.0f, 4294967296.0f, 0u, 0xFFFFFFFFu); break;
-            case Op::kFcBase + 2: sp[-1] = static_cast<uint32_t>(Saturate<int32_t, double>(AsF64(sp[-1]), -2147483648.0, 2147483648.0, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max())); break;
-            case Op::kFcBase + 3: sp[-1] = Saturate<uint32_t, double>(AsF64(sp[-1]), 0.0, 4294967296.0, 0u, 0xFFFFFFFFu); break;
-            case Op::kFcBase + 4: sp[-1] = static_cast<uint64_t>(Saturate<int64_t, float>(AsF32(sp[-1]), -9223372036854775808.0f, 9223372036854775808.0f, std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max())); break;
-            case Op::kFcBase + 5: sp[-1] = Saturate<uint64_t, float>(AsF32(sp[-1]), 0.0f, 18446744073709551616.0f, 0ull, ~0ull); break;
-            case Op::kFcBase + 6: sp[-1] = static_cast<uint64_t>(Saturate<int64_t, double>(AsF64(sp[-1]), -9223372036854775808.0, 9223372036854775808.0, std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max())); break;
-            case Op::kFcBase + 7: sp[-1] = Saturate<uint64_t, double>(AsF64(sp[-1]), 0.0, 18446744073709551616.0, 0ull, ~0ull); break;
+            case Op::kFcBase + 0: fp[pc[0]] = static_cast<uint32_t>(Saturate<int32_t, float>(AsF32(fp[pc[1]]), -2147483648.0f, 2147483648.0f, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max())); pc += 2; break;
+            case Op::kFcBase + 1: fp[pc[0]] = Saturate<uint32_t, float>(AsF32(fp[pc[1]]), 0.0f, 4294967296.0f, 0u, 0xFFFFFFFFu); pc += 2; break;
+            case Op::kFcBase + 2: fp[pc[0]] = static_cast<uint32_t>(Saturate<int32_t, double>(AsF64(fp[pc[1]]), -2147483648.0, 2147483648.0, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max())); pc += 2; break;
+            case Op::kFcBase + 3: fp[pc[0]] = Saturate<uint32_t, double>(AsF64(fp[pc[1]]), 0.0, 4294967296.0, 0u, 0xFFFFFFFFu); pc += 2; break;
+            case Op::kFcBase + 4: fp[pc[0]] = static_cast<uint64_t>(Saturate<int64_t, float>(AsF32(fp[pc[1]]), -9223372036854775808.0f, 9223372036854775808.0f, std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max())); pc += 2; break;
+            case Op::kFcBase + 5: fp[pc[0]] = Saturate<uint64_t, float>(AsF32(fp[pc[1]]), 0.0f, 18446744073709551616.0f, 0ull, ~0ull); pc += 2; break;
+            case Op::kFcBase + 6: fp[pc[0]] = static_cast<uint64_t>(Saturate<int64_t, double>(AsF64(fp[pc[1]]), -9223372036854775808.0, 9223372036854775808.0, std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max())); pc += 2; break;
+            case Op::kFcBase + 7: fp[pc[0]] = Saturate<uint64_t, double>(AsF64(fp[pc[1]]), 0.0, 18446744073709551616.0, 0ull, ~0ull); pc += 2; break;
             case Op::kFcBase + 8: {  // memory.init data memory
                 const uint32_t dataIndex = pc[0];
                 MemoryObject* m = memoryAt(pc[1]);

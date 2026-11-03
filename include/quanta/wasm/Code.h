@@ -18,6 +18,10 @@ namespace Quanta::Wasm {
 // There are two stacks. Numbers (i32, i64, f32, f64, and v128 as two slots) are 64-bit slots of one; references are Values of the other,
 // which the collector reads. The validator knows which each value is, so each instruction names the stack it works on.
 //
+// The numbers of a frame have a slot each, as locals first and then, above them, the operands: the operand stack of a height is always
+// the same slot. The instructions on numbers give their slots (dst, then the sources) and do not touch the stack pointer; the others work
+// from the stack pointer, which the code brings to the height they expect (kSyncSp) first.
+//
 // The code is words. The first word of an instruction is its opcode: a single byte opcode of WebAssembly under its own number, the ones with
 // a prefix under a base and their number, and the instructions of this format from kJmp on. What follows is its immediates.
 namespace Op {
@@ -61,6 +65,9 @@ enum : uint32_t {
     kStore,
     kMemorySize, kMemoryGrow,   // memory
     kUnreachable,
+    kCopyN,             // dst src: a slot of the frame to another
+    kConstSlot,         // dst lo hi
+    kSyncSp,            // height: the stack pointer is brought to the height the code that follows works from
     kThrow,             // tag
     kThrowRef,
     kEnd,

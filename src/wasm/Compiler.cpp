@@ -84,6 +84,7 @@ public:
         f.kind = Ctl::Kind::Func;
         f.results = sig.results;
         ctls_.push_back(std::move(f));
+        nBase_ = out_.paramsN + out_.localsN;
         return Run(error);
     }
 
@@ -111,6 +112,21 @@ private:
     std::vector<uint32_t> initLog_;  // the ones that were set since each block began, for the end of it to forget
     std::vector<uint32_t> localSlot_;
     std::vector<ValType> vals_;
+    // What each value of vals_ is: in the slot of its height (Stack), or not there yet because it is only a local that was read or a constant
+    // (it is put there when something needs it to be, see Materialize).
+    struct Operand {
+        enum class Kind : uint8_t { Stack, Local, Const } kind = Kind::Stack;
+        uint32_t src = 0;   // (a Local: its slot)
+        uint32_t home = 0;  // the slot of its height
+        uint64_t value = 0; // (a Const)
+    };
+    std::vector<Operand> opnds_;
+    Operand lastPopped_;
+    uint32_t nBase_ = 0;      // where the operands begin in the numbers of the frame (above the parameters and locals)
+    uint32_t spHeight_ = 0;   // the height the stack pointer is at when the code that is made runs (what the stack instructions work from)
+    bool touchedSp_ = false;
+    size_t lastEnd_ = kNone, lastDstAt_ = kNone;  // the end of the last instruction on numbers and the word of its destination
+    uint32_t lastDst_ = 0;
     std::vector<Ctl> ctls_;
     uint32_t hN_ = 0, hR_ = 0;
     std::string err_;
@@ -157,8 +173,13 @@ private:
         return false;
     }
 
-    void Push(const ValType& t) {
+    void Push(const ValType& t) { PushOperand(t, Operand{}); }
+
+    void PushOperand(const ValType& t, Operand o) {
         vals_.push_back(t);
+        o.home = nBase_ + hN_;
+        if (o.kind == Operand::Kind::Stack) o.src = o.home;
+        opnds_.push_back(o);
         if (!Dead()) {
             const SlotCount s = Slots(t);
             hN_ += s.n;
@@ -180,6 +201,8 @@ private:
         }
         const ValType t = vals_.back();
         vals_.pop_back();
+        lastPopped_ = opnds_.back();
+        opnds_.pop_back();
         if (!Dead()) {
             const SlotCount s = Slots(t);
             hN_ -= s.n;
@@ -198,6 +221,8 @@ private:
         }
         t = vals_.back();
         vals_.pop_back();
+        lastPopped_ = opnds_.back();
+        opnds_.pop_back();
         if (!Dead()) {
             const SlotCount s = Slots(t);
             hN_ -= s.n;
@@ -219,7 +244,71 @@ private:
     void SetUnreachable() {
         Ctl& c = ctls_.back();
         vals_.resize(c.height);
+        opnds_.resize(c.height);
         c.unreachable = true;
+    }
+
+    // ---- Register form ----
+
+    // A value that is only a local that was read, or a constant, is put in the slot of its height.
+    void MaterializeEntry(size_t i) {
+        Operand& o = opnds_[i];
+        if (o.kind == Operand::Kind::Local) {
+            if (o.src != o.home) {
+                Emit(Op::kCopyN, o.home);
+                Emit(o.src);
+            }
+        } else if (o.kind == Operand::Kind::Const) {
+            Emit(Op::kConstSlot, o.home);
+            Emit(static_cast<uint32_t>(o.value), static_cast<uint32_t>(o.value >> 32));
+        }
+        o.kind = Operand::Kind::Stack;
+        o.src = o.home;
+    }
+
+    // Before an instruction that works from the stack pointer: what is not in its slot is put there, and the stack pointer is brought to the height.
+    void Materialize() {
+        touchedSp_ = true;
+        if (Dead()) return;
+        for (size_t i = ctls_.back().height; i < opnds_.size(); ++i) {
+            if (opnds_[i].kind != Operand::Kind::Stack) MaterializeEntry(i);
+        }
+        if (spHeight_ != hN_) {
+            Emit(Op::kSyncSp, hN_);
+            spHeight_ = hN_;
+        }
+    }
+
+    // The slot a value can be read from by an instruction on numbers.
+    uint32_t SlotOf(const Operand& o) {
+        if (o.kind == Operand::Kind::Local) return o.src;
+        if (o.kind == Operand::Kind::Const) {
+            Emit(Op::kConstSlot, o.home);
+            Emit(static_cast<uint32_t>(o.value), static_cast<uint32_t>(o.value >> 32));
+            return o.home;
+        }
+        return o.home;
+    }
+
+    // Values that were read from the local are put in their slots before it is written to.
+    void SpillLocal(uint32_t slot) {
+        for (size_t i = ctls_.back().height; i < opnds_.size(); ++i) {
+            if (opnds_[i].kind == Operand::Kind::Local && opnds_[i].src == slot) MaterializeEntry(i);
+        }
+    }
+
+    // An instruction on numbers: its operands (already taken off) are slots, and the result is in the slot of the height it has afterwards.
+    void EmitRegister(uint32_t op, int arity, const Operand& a, const Operand& b) {
+        const uint32_t sa = SlotOf(a);
+        const uint32_t sb = arity == 2 ? SlotOf(b) : 0;
+        const uint32_t dst = nBase_ + hN_;
+        Emit(op);
+        lastDstAt_ = Here();
+        Emit(dst);
+        Emit(sa);
+        if (arity == 2) Emit(sb);
+        lastDst_ = dst;
+        lastEnd_ = Here();
     }
 
     // ---- Control ----
@@ -449,6 +538,7 @@ private:
         c.kind = Ctl::Kind::Else;
         c.unreachable = false;
         vals_.resize(c.height);
+        opnds_.resize(c.height);
         if (!c.deadEntry) {
             hN_ = c.baseN;
             hR_ = c.baseR;
@@ -486,6 +576,7 @@ private:
     }
 
     bool Instruction(std::string& error);
+    bool InstructionBody(std::string& error);
     bool Numeric(uint8_t op);
     bool MemoryAccess(uint8_t op);
     bool Prefixed(uint8_t prefix);
@@ -689,10 +780,15 @@ bool FuncCompiler::Numeric(uint8_t op) {
             default: return Error("invalid opcode");
         }
     }
-    if (arity == 2 && !Pop(b)) return false;
+    Operand ob;
+    if (arity == 2) {
+        if (!Pop(b)) return false;
+        ob = lastPopped_;
+    }
     if (!Pop(a)) return false;
+    const Operand oa = lastPopped_;
+    if (!Dead()) EmitRegister(op, arity, oa, ob);
     Push(out);
-    if (!Dead()) Emit(op);
     return true;
 }
 
@@ -779,41 +875,35 @@ bool FuncCompiler::CallRef(bool tail) {
 // ---- The rest ----
 
 bool FuncCompiler::ConstInstruction(uint8_t op) {
+    Operand o;
+    o.kind = Operand::Kind::Const;
     switch (op) {
         case 0x41: {
             const int32_t v = r_.s32();
             if (!r_.ok()) return Error(r_.error());
-            Push(ValType::I32());
-            if (!Dead()) Emit(Op::kConstN, static_cast<uint32_t>(v));
+            o.value = static_cast<uint32_t>(v);
+            PushOperand(ValType::I32(), o);
             return true;
         }
         case 0x42: {
             const int64_t v = r_.s64();
             if (!r_.ok()) return Error(r_.error());
-            Push(ValType::I64());
-            if (!Dead()) {
-                Emit(Op::kConstW);
-                Emit(static_cast<uint32_t>(static_cast<uint64_t>(v)));
-                Emit(static_cast<uint32_t>(static_cast<uint64_t>(v) >> 32));
-            }
+            o.value = static_cast<uint64_t>(v);
+            PushOperand(ValType::I64(), o);
             return true;
         }
         case 0x43: {
             const uint32_t v = r_.fixed32();
             if (!r_.ok()) return Error(r_.error());
-            Push(ValType::F32());
-            if (!Dead()) Emit(Op::kConstN, v);
+            o.value = v;
+            PushOperand(ValType::F32(), o);
             return true;
         }
         default: {
             const uint64_t v = r_.fixed64();
             if (!r_.ok()) return Error(r_.error());
-            Push(ValType::F64());
-            if (!Dead()) {
-                Emit(Op::kConstW);
-                Emit(static_cast<uint32_t>(v));
-                Emit(static_cast<uint32_t>(v >> 32));
-            }
+            o.value = v;
+            PushOperand(ValType::F64(), o);
             return true;
         }
     }
@@ -1238,10 +1328,12 @@ bool FuncCompiler::MiscInstruction(uint32_t n) {
             default: from = ValType::F64(); to = i64; break;
         }
         if (!Pop(from)) return false;
+        const Operand oa = lastPopped_;
+        if (!Dead()) EmitRegister(Op::kFcBase + n, 1, oa, Operand{});
         Push(to);
-        if (!Dead()) Emit(Op::kFcBase + n);
         return true;
     }
+    Materialize();  // (the rest work from the stack pointer)
     const auto memoryAddress = [&](uint32_t memory) { return cx_.memories[memory].limits.is64 ? i64 : i32; };
     const auto tableAddress = [&](uint32_t table) { return cx_.tables[table].limits.is64 ? i64 : i32; };
     switch (n) {
@@ -1341,6 +1433,19 @@ bool FuncCompiler::MiscInstruction(uint32_t n) {
 }
 
 bool FuncCompiler::Instruction(std::string& error) {
+    touchedSp_ = false;
+    const uint8_t first = r_.peek();
+    if (!r_.ok()) return Error(r_.error());
+    // (The instructions on numbers, the constants and the locals do not work from the stack pointer: they are in register form. The locals and
+    // the 0xFC group say for themselves which of them are not.)
+    const bool registerForm = (first >= 0x45 && first <= 0xC4) || (first >= 0x41 && first <= 0x44) || (first >= 0x20 && first <= 0x22) || first == 0xFC;
+    if (!registerForm) Materialize();
+    const bool ok = InstructionBody(error);
+    if (ok && touchedSp_ && !Dead()) spHeight_ = hN_;
+    return ok;
+}
+
+bool FuncCompiler::InstructionBody(std::string& error) {
     const uint8_t op = r_.u8();
     if (!r_.ok()) return Error(r_.error());
     if (constMode_) {
@@ -1478,19 +1583,58 @@ bool FuncCompiler::Instruction(std::string& error) {
             if (index >= locals_.size()) return Error("unknown local");
             const ValType t = locals_[index];
             const uint32_t slot = localSlot_[index];
+            const bool number = t.IsNum();
+            if (!number) Materialize();
             if (op == 0x20) {
                 if (!inited_[index]) return Error("uninitialized local");
-                Push(t);
+                if (number) {
+                    Operand o;
+                    o.kind = Operand::Kind::Local;
+                    o.src = slot;
+                    PushOperand(t, o);
+                } else {
+                    Push(t);
+                }
             } else {
                 if (!Pop(t)) return false;
+                const Operand v = lastPopped_;
                 if (!inited_[index]) {
                     inited_[index] = true;
                     initLog_.push_back(index);
                 }
-                if (op == 0x22) Push(t);
+                if (number && !Dead()) {
+                    SpillLocal(slot);
+                    if (v.kind == Operand::Kind::Stack) {
+                        if (lastEnd_ == Here() && lastDst_ == v.home) {
+                            out_.code[lastDstAt_] = slot;  // (the instruction that made the value writes the local itself)
+                        } else {
+                            Emit(Op::kCopyN, slot);
+                            Emit(v.home);
+                        }
+                    } else if (v.kind == Operand::Kind::Local) {
+                        if (v.src != slot) {
+                            Emit(Op::kCopyN, slot);
+                            Emit(v.src);
+                        }
+                    } else {
+                        Emit(Op::kConstSlot, slot);
+                        Emit(static_cast<uint32_t>(v.value), static_cast<uint32_t>(v.value >> 32));
+                    }
+                    lastEnd_ = kNone;
+                }
+                if (op == 0x22) {
+                    if (number) {
+                        Operand o;
+                        o.kind = Operand::Kind::Local;
+                        o.src = slot;
+                        PushOperand(t, o);
+                    } else {
+                        Push(t);
+                    }
+                }
             }
-            if (!Dead()) {
-                const int kind = t.IsRef() ? 2 : t.kind == ValType::Kind::V128 ? 1 : 0;
+            if (!number && !Dead()) {
+                const int kind = t.IsRef() ? 2 : 1;
                 const uint32_t base = op == 0x20 ? Op::kLocalGetN : op == 0x21 ? Op::kLocalSetN : Op::kLocalTeeN;
                 Emit(base + kind, slot);
             }
