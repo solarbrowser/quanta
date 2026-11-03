@@ -227,6 +227,9 @@ public:
     void sse_op(uint8_t prefix, uint8_t op, Xmm d, Xmm s) { if (prefix) byte(prefix); rex(false, d >> 3, 0, s >> 3); byte(0x0F); byte(op); modrm_rr(static_cast<Reg>(d), static_cast<Reg>(s)); }
     void sse_gpr(uint8_t prefix, uint8_t op, Xmm d, Reg r, bool w) { byte(prefix); rex(w, d >> 3, 0, r >> 3); byte(0x0F); byte(op); modrm_rr(static_cast<Reg>(d), r); }   // cvtsi2ss / cvtsi2sd
     void movd_from_xmm(Reg r, Xmm x) { byte(0x66); rex(false, x >> 3, 0, r >> 3); byte(0x0F); byte(0x7E); modrm_rr(static_cast<Reg>(x), r); }   // the low 32 bits, the rest of r zero
+    void sse_op_imm(uint8_t prefix, uint8_t op, Xmm d, Xmm s, uint8_t imm) { sse_op(prefix, op, d, s); byte(imm); }   // pshufd and the like
+    void movd_to_xmm(Xmm x, Reg r) { byte(0x66); rex(false, x >> 3, 0, r >> 3); byte(0x0F); byte(0x6E); modrm_rr(static_cast<Reg>(x), r); }   // the low 32 bits, the rest of x zero
+    void pmovmskb(Reg r, Xmm x) { byte(0x66); rex(false, r >> 3, 0, x >> 3); byte(0x0F); byte(0xD7); modrm_rr(r, static_cast<Reg>(x)); }
     void cqo() { byte(0x48); byte(0x99); }
     void movsx8_load64(Reg d, Mem m) { rex_rm(true, d, m); byte(0x0F); byte(0xBE); modrm_mem(d, m); }
     void movsx16_load64(Reg d, Mem m) { rex_rm(true, d, m); byte(0x0F); byte(0xBF); modrm_mem(d, m); }

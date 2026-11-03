@@ -32,3 +32,12 @@ time("js   sum(2e7)", () => jssum(20000000));
     const { fib: ifib } = new WebAssembly.Instance(new WebAssembly.Module(ibytes)).exports;
     time("wasm fib(30) through call_indirect", () => ifib(30));
 }
+
+// Vector code: the sum of 4096 vectors of f32x4, 5000 times (20 million vector loads and adds).
+{
+    const body = [0x01, 0x01, 0x7b, 0x02, 0x40, 0x03, 0x40, 0x20, 1, 0x45, 0x0d, 1, 0x20, 2, 0x20, 0, 0xfd, 0x00, 0x00, 0x00, 0xfd, 0xe4, 0x01, 0x21, 2, 0x20, 0, 0x41, 16, 0x6a, 0x21, 0, 0x20, 1, 0x41, 1, 0x6b, 0x21, 1, 0x0c, 0, 0x0b, 0x0b, 0x20, 2, 0xfd, 0x1f, 0, 0x0b];
+    const code = [1, body.length, ...body];
+    const vbytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 7, 1, 0x60, 2, 0x7f, 0x7f, 1, 0x7d, 3, 2, 1, 0, 5, 3, 1, 0, 1, 7, 8, 1, 4, 0x76, 0x73, 0x75, 0x6d, 0, 0, 0x0a, code.length, ...code]);
+    const { vsum } = new WebAssembly.Instance(new WebAssembly.Module(vbytes)).exports;
+    time("wasm vsum f32x4 (20M vectors)", () => { let r = 0; for (let i = 0; i < 5000; i++) r = vsum(0, 4096); return r; });
+}

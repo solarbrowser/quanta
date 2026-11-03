@@ -197,9 +197,12 @@ uint32_t SimdImmediateWords(uint32_t sub) {
     return 0;
 }
 
-uint64_t* SimdExec(uint32_t sub, uint64_t* sp, const uint32_t* imm) {
-    // The stack effect of the group the instruction is in.
-    enum Shape { Unary, Binary, Ternary, ShiftOp, Test, SplatOp, Extract, Replace, ShuffleOp };
+namespace {
+
+// The stack effect of the group a vector instruction is in.
+enum Shape { Unary, Binary, Ternary, ShiftOp, Test, SplatOp, Extract, Replace, ShuffleOp };
+
+Shape ShapeOf(uint32_t sub) {
     Shape shape = Binary;
     if (sub == 0x0D) shape = ShuffleOp;
     else if (sub >= 0x0F && sub <= 0x14) shape = SplatOp;
@@ -211,6 +214,27 @@ uint64_t* SimdExec(uint32_t sub, uint64_t* sp, const uint32_t* imm) {
     else if (sub == 0x52 || (sub >= 0x105 && sub <= 0x10C) || sub == 0x113) shape = Ternary;
     else if ((sub >= 0x6B && sub <= 0x6D) || (sub >= 0x8B && sub <= 0x8D) || (sub >= 0xAB && sub <= 0xAD) || (sub >= 0xCB && sub <= 0xCD)) shape = ShiftOp;
     else if (sub == 0x53 || sub == 0x63 || sub == 0x64 || sub == 0x83 || sub == 0x84 || sub == 0xA3 || sub == 0xA4 || sub == 0xC3 || sub == 0xC4) shape = Test;
+    return shape;
+}
+
+}  // namespace
+
+void SimdStackEffect(uint32_t sub, uint32_t& pops, uint32_t& pushes) {
+    switch (ShapeOf(sub)) {
+        case Unary: pops = 2; pushes = 2; break;
+        case Binary: pops = 4; pushes = 2; break;
+        case Ternary: pops = 6; pushes = 2; break;
+        case ShiftOp: pops = 3; pushes = 2; break;
+        case Test: pops = 2; pushes = 1; break;
+        case SplatOp: pops = 1; pushes = 2; break;
+        case Extract: pops = 2; pushes = 1; break;
+        case Replace: pops = 3; pushes = 2; break;
+        case ShuffleOp: pops = 4; pushes = 2; break;
+    }
+}
+
+uint64_t* SimdExec(uint32_t sub, uint64_t* sp, const uint32_t* imm) {
+    const Shape shape = ShapeOf(sub);
 
     V a, b, c, r;
     uint64_t* base = sp;

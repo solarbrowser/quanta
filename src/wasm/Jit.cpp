@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "quanta/wasm/Simd.h"
 #include "../core/vm/JitPlatform.h"
 #include "../core/vm/X64Asm.h"
 
@@ -133,6 +134,7 @@ public:
         if (f_.paramsR || f_.localsR || f_.maxR || f_.resultsR || !f_.tries.empty()) { why = "references or handlers"; return false; }
         if (!Scan(why)) return false;
         Prologue();
+        sp_ = static_cast<int32_t>(f_.paramsN + f_.localsN);   // (where the interpreter begins the operands of a function)
         const size_t n = words_.size();
         native_.assign(n + 1, -1);
         for (size_t i = 0; i < n;) {
@@ -176,8 +178,20 @@ private:
                 case Op::kSyncSp: return 2;
                 case Op::kEntry: case Op::kJitEnter: return 1;
                 case Op::kMemorySize: case Op::kMemoryGrow: return 2;
+                case Op::kDropN: case Op::kDropV: case Op::kSelectN: case Op::kSelectV: return 1;
+                case Op::kLocalGetN: case Op::kLocalGetV: case Op::kLocalSetN: case Op::kLocalSetV: case Op::kLocalTeeN: case Op::kLocalTeeV: return 2;
+                case Op::kGlobalGetN: case Op::kGlobalGetV: case Op::kGlobalSetN: case Op::kGlobalSetV: return 2;
+                case Op::kConstN: return 2;
+                case Op::kConstW: return 3;
+                case Op::kConstV: return 5;
                 default: return 0;
             }
+        }
+        if (op >= Op::kFdBase && op < Op::kFdBase + 0x120) {   // the vector instructions: the loads and stores of memory are the ones with a memory in them
+            const uint32_t sub = op - Op::kFdBase;
+            if (sub <= 0x0B || sub == 0x5C || sub == 0x5D) return 4;
+            if (sub >= 0x54 && sub <= 0x5B) return 5;   // (with the lane)
+            return 1 + SimdImmediateWords(sub);
         }
         if (op >= Op::kFcBase && op <= Op::kFcBase + 7) return 3;   // the saturating truncations
         if (op >= Op::kFcBase + 8 && op <= Op::kFcBase + 11) return op == Op::kFcBase + 9 || op == Op::kFcBase + 11 ? 2 : 3;   // memory.init data.drop memory.copy memory.fill
@@ -213,6 +227,7 @@ private:
             }
             // (What works on memory 0 only, and the places that are jumped to.)
             if (op == Op::kMemorySize || op == Op::kMemoryGrow || op == Op::kFcBase + 11) { if (words_[i + 1] != 0) { why = "memory other than 0"; return false; } usesMemory = true; }
+            if (op >= Op::kFdBase && op < Op::kFdBase + 0x120 && (op - Op::kFdBase <= 0x0B || (op - Op::kFdBase >= 0x54 && op - Op::kFdBase <= 0x5D))) { if (words_[i + 1] != 0) { why = "memory other than 0"; return false; } usesMemory = true; }
             if (op == Op::kFcBase + 8) { if (words_[i + 2] != 0) { why = "memory other than 0"; return false; } usesMemory = true; }
             if (op == Op::kFcBase + 10) { if (words_[i + 1] != 0 || words_[i + 2] != 0) { why = "memory other than 0"; return false; } usesMemory = true; }
             if (op == Op::kJmp) MarkTarget(words_[i + 1]);
@@ -310,6 +325,7 @@ private:
         const uint32_t op = words_[i];
         const uint32_t* p = &words_[i + 1];
         if (op >= 0x340 && op < 0x400) return EmitSpecial(op, p, len) ? len : 0;
+        if (op >= Op::kFdBase && op < Op::kFdBase + 0x120) return EmitSimd(op - Op::kFdBase, p) ? len : 0;
         if (op >= Op::kFcBase + 8 && op <= Op::kFcBase + 11) {
             const uint32_t kind = op == Op::kFcBase + 10 ? 0 : op == Op::kFcBase + 11 ? 1 : op == Op::kFcBase + 8 ? 2 : 3;
             const uint32_t a = op == Op::kFcBase + 8 || op == Op::kFcBase + 9 ? p[0] : 0;
@@ -447,6 +463,67 @@ private:
                 return true;
             case Op::kEntry: case Op::kJitEnter: return true;
             case Op::kSyncSp: sp_ = static_cast<int32_t>(f_.paramsN + f_.localsN + p[0]); return true;
+            case Op::kDropN: if (sp_ < 1) return false; --sp_; return true;
+            case Op::kDropV: if (sp_ < 2) return false; sp_ -= 2; return true;
+            case Op::kSelectN:   // (a b c: a becomes b if c is 0)
+                if (sp_ < 3) return false;
+                { Label keep; a_.cmp32_mem_imm(Slot(sp_ - 1), 0); a_.jcc(CC_NE, keep); Load(RAX, sp_ - 2, true); Store(sp_ - 3, RAX); a_.bind(keep); }
+                sp_ -= 2;
+                return true;
+            case Op::kSelectV:
+                if (sp_ < 5) return false;
+                { Label keep; a_.cmp32_mem_imm(Slot(sp_ - 1), 0); a_.jcc(CC_NE, keep); a_.movups_load(XMM0, Slot(sp_ - 3)); a_.movups_store(Slot(sp_ - 5), XMM0); a_.bind(keep); }
+                sp_ -= 3;
+                return true;
+            case Op::kLocalGetN: if (sp_ < 0) return false; Load(RAX, p[0], true); Store(sp_, RAX); ++sp_; return true;
+            case Op::kLocalGetV: if (sp_ < 0) return false; a_.movups_load(XMM0, Slot(p[0])); a_.movups_store(Slot(sp_), XMM0); sp_ += 2; return true;
+            case Op::kLocalSetN: if (sp_ < 1) return false; --sp_; Load(RAX, sp_, true); Store(p[0], RAX); return true;
+            case Op::kLocalSetV: if (sp_ < 2) return false; sp_ -= 2; a_.movups_load(XMM0, Slot(sp_)); a_.movups_store(Slot(p[0]), XMM0); return true;
+            case Op::kLocalTeeN: if (sp_ < 1) return false; Load(RAX, sp_ - 1, true); Store(p[0], RAX); return true;
+            case Op::kLocalTeeV: if (sp_ < 2) return false; a_.movups_load(XMM0, Slot(sp_ - 2)); a_.movups_store(Slot(p[0]), XMM0); return true;
+            case Op::kGlobalGetN:
+                if (sp_ < 0) return false;
+                a_.mov_load(RAX, mem(R14, 24));
+                a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(p[0] * 8)));
+                a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(kLoOffset)));
+                Store(sp_, RAX);
+                ++sp_;
+                return true;
+            case Op::kGlobalGetV:
+                if (sp_ < 0) return false;
+                a_.mov_load(RAX, mem(R14, 24));
+                a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(p[0] * 8)));
+                a_.movups_load(XMM0, mem(RAX, static_cast<int32_t>(kLoOffset)));   // (lo and hi are next to each other)
+                a_.movups_store(Slot(sp_), XMM0);
+                sp_ += 2;
+                return true;
+            case Op::kGlobalSetN:
+                if (sp_ < 1) return false;
+                --sp_;
+                Load(RCX, sp_, true);
+                a_.mov_load(RAX, mem(R14, 24));
+                a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(p[0] * 8)));
+                a_.mov_store(mem(RAX, static_cast<int32_t>(kLoOffset)), RCX);
+                return true;
+            case Op::kGlobalSetV:
+                if (sp_ < 2) return false;
+                sp_ -= 2;
+                a_.movups_load(XMM0, Slot(sp_));
+                a_.mov_load(RAX, mem(R14, 24));
+                a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(p[0] * 8)));
+                a_.movups_store(mem(RAX, static_cast<int32_t>(kLoOffset)), XMM0);
+                return true;
+            case Op::kConstN: if (sp_ < 0) return false; a_.mov_store64_imm32(Slot(sp_), 0); a_.mov_imm32(RAX, p[0]); Store(sp_, RAX); ++sp_; return true;
+            case Op::kConstW: case Op::kConstV: {
+                if (sp_ < 0) return false;
+                const uint32_t words = op == Op::kConstW ? 1 : 2;
+                for (uint32_t k = 0; k < words; ++k) {
+                    LoadImm64(RAX, static_cast<uint64_t>(p[2 * k]) | (static_cast<uint64_t>(p[2 * k + 1]) << 32));
+                    Store(sp_ + k, RAX);
+                }
+                sp_ += words;
+                return true;
+            }
             case Op::kMemorySize:
                 if (sp_ < 0) return false;
                 a_.mov(RAX, R13);
@@ -691,35 +768,260 @@ private:
         return true;
     }
 
-    bool EmitMemory(const Decoded& d, const uint32_t* p) {
-        const uint32_t b = d.base;
-        const uint32_t size = kSize[b - 0x28];
-        const bool isStore = b >= 0x36;
-        const bool absolute = d.form == kAbsolute || d.form == kImmediateAbsolute;
-        const bool immediateValue = d.form == kImmediate || d.form == kImmediateAbsolute;
-        const uint64_t off = static_cast<uint64_t>(p[3]) | (static_cast<uint64_t>(p[4]) << 32);
-        const bool is64 = inst_->memories.empty() ? false : inst_->memories[0]->type.limits.is64;
+    // ---- the vector instructions: a vector is two slots, 16 bytes in the frame, and the stack pointer is known (sp_) ----
+    void Vector(Xmm x, uint32_t slot) { a_.movups_load(x, Slot(slot)); }
+    void VectorTo(uint32_t slot, Xmm x) { a_.movups_store(Slot(slot), x); }
 
-        if (isStore) {
-            if (immediateValue) LoadImm64(RDX, static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(p[0]))));
-            else Load(RDX, p[0], true);
+    bool EmitSimd(uint32_t sub, const uint32_t* p) {
+        if (sub == 0x00) {   // v128.load: the address is on the stack, and the vector takes its place and the slot above
+            if (sp_ < 1) return false;
+            const Mem at = EmitAddress(sp_ - 1, static_cast<uint64_t>(p[1]) | (static_cast<uint64_t>(p[2]) << 32), 16, false);
+            a_.movups_load(XMM0, at);
+            VectorTo(sp_ - 1, XMM0);
+            ++sp_;
+            return true;
         }
+        if (sub >= 0x01 && sub <= 0x0A) {   // loads that widen (8 bytes become 16) and loads that splat
+            if (sp_ < 1) return false;
+            const uint64_t off = static_cast<uint64_t>(p[1]) | (static_cast<uint64_t>(p[2]) << 32);
+            if (sub <= 0x06) {
+                const Mem at = EmitAddress(sp_ - 1, off, 8, false);
+                a_.movsd_load(XMM0, at);   // (the low 8 bytes, the rest zero)
+                a_.sse_op(0x66, 0xEF, XMM1, XMM1);
+                switch (sub) {
+                    case 0x01: a_.sse_op(0x66, 0x60, XMM0, XMM0); a_.sse_op_imm(0x66, 0x71, XMM4, XMM0, 8); break;    // each byte twice, then an arithmetic shift of the 16 bit lanes (psraw is /4: the 'register' of the encoding is the 4)
+                    case 0x02: a_.sse_op(0x66, 0x60, XMM0, XMM1); break;
+                    case 0x03: a_.sse_op(0x66, 0x61, XMM0, XMM0); a_.sse_op_imm(0x66, 0x72, XMM4, XMM0, 16); break;   // (psrad, likewise)
+                    case 0x04: a_.sse_op(0x66, 0x61, XMM0, XMM1); break;
+                    case 0x05: a_.sse_op(0x66, 0x66, XMM1, XMM0); a_.sse_op(0x66, 0x62, XMM0, XMM1); break;   // the signs, then interleave
+                    default: a_.sse_op(0x66, 0x62, XMM0, XMM1); break;
+                }
+                VectorTo(sp_ - 1, XMM0);
+                ++sp_;
+                return true;
+            }
+            const uint32_t size = 1u << (sub - 0x07);
+            const Mem at = EmitAddress(sp_ - 1, off, size, false);
+            switch (size) {
+                case 1: a_.movzx8_load(RAX, at); a_.mov_imm32(RCX, 0x01010101u); a_.imul32(RAX, RCX); break;
+                case 2: a_.movzx16_load(RAX, at); a_.mov_imm32(RCX, 0x00010001u); a_.imul32(RAX, RCX); break;
+                case 4: a_.mov_load32(RAX, at); break;
+                default: a_.mov_load(RAX, at); break;
+            }
+            if (size == 8) { Store(sp_ - 1, RAX); Store(sp_, RAX); }
+            else { a_.mov(RDX, RAX); a_.shl_imm(RDX, 32); a_.or_(RAX, RDX); Store(sp_ - 1, RAX); Store(sp_, RAX); }   // (the 32 bit pattern, twice in each half)
+            ++sp_;
+            return true;
+        }
+        if (sub == 0x5C || sub == 0x5D) {   // load32_zero, load64_zero
+            if (sp_ < 1) return false;
+            const uint32_t size = sub == 0x5C ? 4 : 8;
+            const Mem at = EmitAddress(sp_ - 1, static_cast<uint64_t>(p[1]) | (static_cast<uint64_t>(p[2]) << 32), size, false);
+            if (size == 4) a_.mov_load32(RAX, at); else a_.mov_load(RAX, at);
+            Store(sp_ - 1, RAX);
+            a_.mov_store64_imm32(Slot(sp_), 0);
+            ++sp_;
+            return true;
+        }
+        if (sub >= 0x54 && sub <= 0x5B) {   // load lane, store lane: address, then the vector
+            if (sp_ < 3) return false;
+            const bool isStore = sub >= 0x58;
+            const uint32_t size = 1u << (sub - (isStore ? 0x58 : 0x54));
+            const uint32_t lane = p[3];
+            const uint64_t off = static_cast<uint64_t>(p[1]) | (static_cast<uint64_t>(p[2]) << 32);
+            const Mem lanePlace = mem(RBX, static_cast<int32_t>((isStore ? sp_ - 2 : sp_ - 3) * 8 + lane * size));
+            if (isStore) {
+                const Mem at = EmitAddress(sp_ - 3, off, size, false);
+                switch (size) {
+                    case 1: a_.movzx8_load(RDX, lanePlace); a_.mov_store8(at, RDX); break;
+                    case 2: a_.movzx16_load(RDX, lanePlace); a_.mov_store16(at, RDX); break;
+                    case 4: a_.mov_load32(RDX, lanePlace); a_.mov_store32(at, RDX); break;
+                    default: a_.mov_load(RDX, lanePlace); a_.mov_store(at, RDX); break;
+                }
+                sp_ -= 3;
+                return true;
+            }
+            Vector(XMM0, sp_ - 2);
+            const Mem at = EmitAddress(sp_ - 3, off, size, false);
+            switch (size) {
+                case 1: a_.movzx8_load(RDX, at); break;
+                case 2: a_.movzx16_load(RDX, at); break;
+                case 4: a_.mov_load32(RDX, at); break;
+                default: a_.mov_load(RDX, at); break;
+            }
+            VectorTo(sp_ - 3, XMM0);
+            switch (size) {
+                case 1: a_.mov_store8(lanePlace, RDX); break;
+                case 2: a_.mov_store16(lanePlace, RDX); break;
+                case 4: a_.mov_store32(lanePlace, RDX); break;
+                default: a_.mov_store(lanePlace, RDX); break;
+            }
+            --sp_;
+            return true;
+        }
+        if (sub == 0x0B) {   // v128.store: address, then the vector
+            if (sp_ < 3) return false;
+            Vector(XMM0, sp_ - 2);
+            const Mem at = EmitAddress(sp_ - 3, static_cast<uint64_t>(p[1]) | (static_cast<uint64_t>(p[2]) << 32), 16, false);
+            a_.movups_store(at, XMM0);
+            sp_ -= 3;
+            return true;
+        }
+        uint32_t pops = 0, pushes = 0;
+        SimdStackEffect(sub, pops, pushes);
+        if (sp_ < static_cast<int32_t>(pops)) return false;
+        const uint32_t base = static_cast<uint32_t>(sp_) - pops;
+        if (!EmitSimdInline(sub, base, p)) {
+            // (The rest through the interpreter's own code for it.)
+            a_.mov_imm32(RDI, sub);
+            a_.lea(RSI, Slot(static_cast<uint32_t>(sp_)));
+            a_.mov_imm64(RDX, reinterpret_cast<uint64_t>(p));
+            CallAbs(reinterpret_cast<const void*>(&SimdExec));
+        }
+        sp_ = static_cast<int32_t>(base + pushes);
+        return true;
+    }
+
+    // A mask of one 32 or 64 bit pattern in each lane, in xmm1.
+    void Mask32(uint32_t v) { a_.mov_imm32(RAX, v); a_.movd_to_xmm(XMM1, RAX); a_.sse_op_imm(0x66, 0x70, XMM1, XMM1, 0); }
+    void Mask64(uint64_t v) { a_.mov_imm64(RAX, v); a_.movq_to_xmm(XMM1, RAX); a_.sse_op(0x66, 0x6C, XMM1, XMM1); }
+
+    bool EmitSimdInline(uint32_t sub, uint32_t base, const uint32_t* p) {
+        struct Binary { uint32_t sub; uint8_t prefix, op; };
+        static const Binary kBinary[] = {
+            {0x4E, 0x66, 0xDB}, {0x50, 0x66, 0xEB}, {0x51, 0x66, 0xEF},                              // and or xor
+            {0x6E, 0x66, 0xFC}, {0x71, 0x66, 0xF8}, {0x8E, 0x66, 0xFD}, {0x91, 0x66, 0xF9}, {0x95, 0x66, 0xD5},   // i8x16 add sub, i16x8 add sub mul
+            {0xAE, 0x66, 0xFE}, {0xB1, 0x66, 0xFA}, {0xCE, 0x66, 0xD4}, {0xD1, 0x66, 0xFB},          // i32x4 add sub, i64x2 add sub
+            {0xE4, 0, 0x58}, {0xE5, 0, 0x5C}, {0xE6, 0, 0x59}, {0xE7, 0, 0x5E},                      // f32x4 add sub mul div
+            {0xF0, 0x66, 0x58}, {0xF1, 0x66, 0x5C}, {0xF2, 0x66, 0x59}, {0xF3, 0x66, 0x5E},          // f64x2 add sub mul div
+            {0x23, 0x66, 0x74}, {0x2D, 0x66, 0x75}, {0x37, 0x66, 0x76},                              // eq
+            {0x27, 0x66, 0x64}, {0x31, 0x66, 0x65}, {0x3B, 0x66, 0x66},                              // gt_s
+        };
+        for (const Binary& b : kBinary) {
+            if (b.sub != sub) continue;
+            Vector(XMM0, base);
+            Vector(XMM1, base + 2);
+            a_.sse_op(b.prefix, b.op, XMM0, XMM1);
+            VectorTo(base, XMM0);
+            return true;
+        }
+        switch (sub) {
+            case 0x4F:   // andnot: a and not b
+                Vector(XMM0, base + 2); Vector(XMM1, base);
+                a_.sse_op(0x66, 0xDF, XMM0, XMM1);
+                VectorTo(base, XMM0);
+                return true;
+            case 0x25: case 0x2F: case 0x39: {   // lt_s: gt_s with the operands the other way
+                static const uint8_t kGt[] = {0x64, 0x65, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x66};
+                Vector(XMM0, base + 2); Vector(XMM1, base);
+                a_.sse_op(0x66, sub == 0x25 ? 0x64 : sub == 0x2F ? 0x65 : 0x66, XMM0, XMM1);
+                (void)kGt;
+                VectorTo(base, XMM0);
+                return true;
+            }
+            case 0x4D:   // not
+                Vector(XMM0, base);
+                a_.sse_op(0x66, 0x76, XMM1, XMM1);   // pcmpeqd: all ones
+                a_.sse_op(0x66, 0xEF, XMM0, XMM1);
+                VectorTo(base, XMM0);
+                return true;
+            case 0x52:   // bitselect: (a and mask) or (b and not mask)
+                Vector(XMM0, base); Vector(XMM1, base + 2); Vector(XMM2, base + 4);
+                a_.sse_op(0x66, 0xDB, XMM0, XMM2);       // a & mask
+                a_.sse_op(0x66, 0xDF, XMM2, XMM1);       // ~mask & b
+                a_.sse_op(0x66, 0xEB, XMM0, XMM2);
+                VectorTo(base, XMM0);
+                return true;
+            case 0xE0: Vector(XMM0, base); Mask32(0x7FFFFFFFu); a_.sse_op(0x66, 0xDB, XMM0, XMM1); VectorTo(base, XMM0); return true;     // f32x4.abs
+            case 0xE1: Vector(XMM0, base); Mask32(0x80000000u); a_.sse_op(0x66, 0xEF, XMM0, XMM1); VectorTo(base, XMM0); return true;     // f32x4.neg
+            case 0xEC: Vector(XMM0, base); Mask64(0x7FFFFFFFFFFFFFFFull); a_.sse_op(0x66, 0xDB, XMM0, XMM1); VectorTo(base, XMM0); return true;
+            case 0xED: Vector(XMM0, base); Mask64(0x8000000000000000ull); a_.sse_op(0x66, 0xEF, XMM0, XMM1); VectorTo(base, XMM0); return true;
+            case 0xE3: Vector(XMM0, base); a_.sse_op(0, 0x51, XMM0, XMM0); VectorTo(base, XMM0); return true;      // f32x4.sqrt
+            case 0xEF: Vector(XMM0, base); a_.sse_op(0x66, 0x51, XMM0, XMM0); VectorTo(base, XMM0); return true;
+            case 0x6B: case 0x6C: case 0x6D: return false;   // (no instruction for the bytes)
+            case 0x8B: case 0x8C: case 0x8D: case 0xAB: case 0xAC: case 0xAD: case 0xCB: case 0xCD: {   // shifts of 16, 32 and 64 bit lanes by a count
+                static const struct { uint32_t sub; uint8_t op; uint8_t mask; } kShift[] = {
+                    {0x8B, 0xF1, 15}, {0x8C, 0xE1, 15}, {0x8D, 0xD1, 15}, {0xAB, 0xF2, 31}, {0xAC, 0xE2, 31}, {0xAD, 0xD2, 31}, {0xCB, 0xF3, 63}, {0xCD, 0xD3, 63}};
+                for (const auto& k : kShift) {
+                    if (k.sub != sub) continue;
+                    a_.mov_load32(RAX, Slot(base + 2));
+                    a_.and32_imm(RAX, k.mask);
+                    a_.movd_to_xmm(XMM1, RAX);
+                    Vector(XMM0, base);
+                    a_.sse_op(0x66, k.op, XMM0, XMM1);
+                    VectorTo(base, XMM0);
+                    return true;
+                }
+                return false;
+            }
+            case 0x11: case 0x13:   // i32x4.splat, f32x4.splat
+                a_.mov_load32(RAX, Slot(base));
+                a_.movd_to_xmm(XMM0, RAX);
+                a_.sse_op_imm(0x66, 0x70, XMM0, XMM0, 0);
+                VectorTo(base, XMM0);
+                return true;
+            case 0x12: case 0x14:   // i64x2.splat, f64x2.splat
+                a_.mov_load(RAX, Slot(base));
+                a_.mov_store(Slot(base + 1), RAX);
+                return true;
+            // The lanes of a vector are in the frame: reading and writing one is an access to memory.
+            case 0x15: a_.movsx8_load(RAX, mem(RBX, static_cast<int32_t>(base * 8 + p[0]))); Store(base, RAX); return true;
+            case 0x16: a_.movzx8_load(RAX, mem(RBX, static_cast<int32_t>(base * 8 + p[0]))); Store(base, RAX); return true;
+            case 0x18: a_.movsx16_load(RAX, mem(RBX, static_cast<int32_t>(base * 8 + p[0] * 2))); Store(base, RAX); return true;
+            case 0x19: a_.movzx16_load(RAX, mem(RBX, static_cast<int32_t>(base * 8 + p[0] * 2))); Store(base, RAX); return true;
+            case 0x1B: case 0x1F: a_.mov_load32(RAX, mem(RBX, static_cast<int32_t>(base * 8 + p[0] * 4))); Store(base, RAX); return true;
+            case 0x1D: case 0x21: a_.mov_load(RAX, mem(RBX, static_cast<int32_t>(base * 8 + p[0] * 8))); Store(base, RAX); return true;
+            case 0x17: Load(RAX, base + 2, true); a_.mov_store8(mem(RBX, static_cast<int32_t>(base * 8 + p[0])), RAX); return true;
+            case 0x1A: Load(RAX, base + 2, true); a_.mov_store16(mem(RBX, static_cast<int32_t>(base * 8 + p[0] * 2)), RAX); return true;
+            case 0x1C: case 0x20: Load(RAX, base + 2, true); a_.mov_store32(mem(RBX, static_cast<int32_t>(base * 8 + p[0] * 4)), RAX); return true;
+            case 0x1E: case 0x22: Load(RAX, base + 2, true); a_.mov_store(mem(RBX, static_cast<int32_t>(base * 8 + p[0] * 8)), RAX); return true;
+            case 0x53:   // v128.any_true
+                a_.mov_load(RAX, Slot(base));
+                a_.alu_rm(0x0B, RAX, Slot(base + 1), true);
+                a_.setcc(CC_NE, RAX);
+                a_.movzx8(RAX, RAX);
+                Store(base, RAX);
+                return true;
+            case 0x64:   // i8x16.bitmask
+                Vector(XMM0, base);
+                a_.pmovmskb(RAX, XMM0);
+                Store(base, RAX);
+                return true;
+            case 0x63: case 0xA3: {   // i8x16.all_true, i32x4.all_true
+                Vector(XMM0, base);
+                a_.sse_op(0x66, 0xEF, XMM1, XMM1);
+                a_.sse_op(0x66, sub == 0x63 ? 0x74 : 0x76, XMM1, XMM0);   // the lanes that are zero
+                a_.pmovmskb(RAX, XMM1);
+                a_.test32(RAX, RAX);
+                a_.setcc(CC_E, RAX);
+                a_.movzx8(RAX, RAX);
+                Store(base, RAX);
+                return true;
+            }
+            default: return false;
+        }
+    }
+
+    // The address of an access of `size` bytes whose address is in slot `addrSlot` (or is a constant, `absolute`) and offset `off`: checked against the size of memory 0,
+    // and given as something an instruction can use. Takes rax and rcx.
+    Mem EmitAddress(uint32_t addrSlot, uint64_t off, uint32_t size, bool absolute) {
+        const bool is64 = inst_->memories.empty() ? false : inst_->memories[0]->type.limits.is64;
         Mem at = mem(R12, 0);
         if (absolute) {
-            if (off + size < off) { a_.jmp(TrapLabel(TrapKind::MemoryOutOfBounds)); return true; }
+            if (off + size < off) { a_.jmp(TrapLabel(TrapKind::MemoryOutOfBounds)); return at; }
             LoadImm64(RCX, off + size);
             a_.cmp(RCX, R13);
             TrapIf(CC_A, TrapKind::MemoryOutOfBounds);
             if (off <= 0x7FFFFFF0ull) at = mem(R12, static_cast<int32_t>(off));
             else { LoadImm64(RAX, off); at = mem_idx(R12, RAX, 1, 0); }
         } else if (!is64 && off + size <= 0x7FFFFFFFull) {
-            a_.mov_load32(RAX, Slot(p[1]));
+            a_.mov_load32(RAX, Slot(addrSlot));
             a_.lea(RCX, mem(RAX, static_cast<int32_t>(off + size)));
             a_.cmp(RCX, R13);
             TrapIf(CC_A, TrapKind::MemoryOutOfBounds);
             at = mem_idx(R12, RAX, 1, static_cast<int32_t>(off));
         } else {
-            if (is64) a_.mov_load(RAX, Slot(p[1])); else a_.mov_load32(RAX, Slot(p[1]));
+            if (is64) a_.mov_load(RAX, Slot(addrSlot)); else a_.mov_load32(RAX, Slot(addrSlot));
             if (off) {
                 LoadImm64(RCX, off);
                 a_.add(RAX, RCX);
@@ -732,6 +1034,22 @@ private:
             TrapIf(CC_A, TrapKind::MemoryOutOfBounds);
             at = mem_idx(R12, RAX, 1, 0);
         }
+        return at;
+    }
+
+    bool EmitMemory(const Decoded& d, const uint32_t* p) {
+        const uint32_t b = d.base;
+        const uint32_t size = kSize[b - 0x28];
+        const bool isStore = b >= 0x36;
+        const bool absolute = d.form == kAbsolute || d.form == kImmediateAbsolute;
+        const bool immediateValue = d.form == kImmediate || d.form == kImmediateAbsolute;
+        const uint64_t off = static_cast<uint64_t>(p[3]) | (static_cast<uint64_t>(p[4]) << 32);
+
+        if (isStore) {
+            if (immediateValue) LoadImm64(RDX, static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(p[0]))));
+            else Load(RDX, p[0], true);
+        }
+        const Mem at = EmitAddress(p[1], off, size, absolute);
 
         if (isStore) {
             switch (size) {

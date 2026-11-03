@@ -17,6 +17,9 @@ uint32_t SimdImmediateWords(uint32_t sub);
 // Runs a vector instruction that works on the stack alone: the operands are taken off and the result put on, and the new top is returned.
 uint64_t* SimdExec(uint32_t sub, uint64_t* sp, const uint32_t* immediates);
 
+// What a vector instruction that SimdExec runs takes off the stack and puts on, in slots (a vector is two).
+void SimdStackEffect(uint32_t sub, uint32_t& pops, uint32_t& pushes);
+
 }  // namespace Quanta::Wasm
 
 #endif
