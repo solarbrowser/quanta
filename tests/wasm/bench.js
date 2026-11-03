@@ -23,3 +23,12 @@ time("js   sum(2e7)", () => jssum(20000000));
     time("wasm fsum(2e7)", () => fsum(20000000));
     time("js   fsum(2e7)", () => jsfsum(20000000));
 }
+
+// Calls through a table: fib again, each call a call_indirect.
+{
+    const body = [0, 0x20, 0, 0x41, 2, 0x48, 0x04, 0x7f, 0x20, 0, 0x05, 0x20, 0, 0x41, 1, 0x6b, 0x41, 0, 0x11, 0, 0, 0x20, 0, 0x41, 2, 0x6b, 0x41, 0, 0x11, 0, 0, 0x6a, 0x0b, 0x0b];
+    const code = [1, body.length, ...body];
+    const ibytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 6, 1, 0x60, 1, 0x7f, 1, 0x7f, 3, 2, 1, 0, 4, 4, 1, 0x70, 0, 1, 7, 7, 1, 3, 0x66, 0x69, 0x62, 0, 0, 9, 7, 1, 0, 0x41, 0, 0x0b, 1, 0, 0x0a, code.length, ...code]);
+    const { fib: ifib } = new WebAssembly.Instance(new WebAssembly.Module(ibytes)).exports;
+    time("wasm fib(30) through call_indirect", () => ifib(30));
+}

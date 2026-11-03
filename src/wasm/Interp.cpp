@@ -1572,6 +1572,13 @@ Machine::Status JitRun(Machine& machine, Context& context, const CompiledFunctio
 }
 
 static uint32_t JitCallFunction(JitCtx* jc, uint64_t* frame, FuncObject* callee) {
+    // A function of the same instance that has native code, and no references: the same context serves it, and what is returned is what generated code would have got.
+    if (const CompiledFunction* c = callee->code; c && c->jit && callee->instance == jc->instance && !c->paramsR && !c->localsR && !c->maxR &&
+        frame + c->paramsN + c->localsN + c->maxN + kStackSlack < jc->numbersEnd && reinterpret_cast<uintptr_t>(__builtin_frame_address(0)) > jc->stackLimit) {
+        const uint32_t r = c->jit->entry(frame, jc);
+        JitRefreshMemory(jc);
+        return r;
+    }
     MachineState& s = State();
     Machine& machine = *jc->machine;
     Context& ctx = *jc->context;
