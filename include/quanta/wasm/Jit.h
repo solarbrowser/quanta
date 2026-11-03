@@ -64,6 +64,13 @@ uint32_t JitCallHelper(JitCtx* ctx, uint64_t* frame, uint32_t index);
 // The same through a table: the type the call is made at, the table, the index (see the instruction call_indirect).
 uint32_t JitCallIndirectHelper(JitCtx* ctx, uint64_t* frame, uint32_t type, uint32_t table, uint64_t index);
 
+// memory.copy (0), memory.fill (1), memory.init (2, `a` the data segment) and data.drop (3, `a` the segment) of memory 0; the operands are the three slots at `args`
+// (the way they are on the stack). 0 if it went well, else the trap that it is (a TrapKind + 1).
+uint32_t JitBulkMemory(JitCtx* ctx, uint32_t kind, uint64_t* args, uint32_t a);
+
+// memory.grow of memory 0: what the instruction gives. The base and size in the ctx are made current.
+uint64_t JitMemoryGrow(JitCtx* ctx, uint64_t delta);
+
 }  // namespace Quanta::Wasm
 
 #endif

@@ -1608,6 +1608,52 @@ static uint32_t JitCallFunction(JitCtx* jc, uint64_t* frame, FuncObject* callee)
     return 1;
 }
 
+uint32_t JitBulkMemory(JitCtx* jc, uint32_t kind, uint64_t* args, uint32_t a) {
+    InstanceObject* inst = jc->instance;
+    if (kind == 3) { inst->dataDropped[a] = true; return 0; }  // (a module with no memory has data segments too)
+    MemoryObject* m = inst->memories[0];
+    const uint32_t outOfBounds = static_cast<uint32_t>(TrapKind::MemoryOutOfBounds) + 1;
+    const bool is64 = m->type.limits.is64;
+    switch (kind) {
+        case 0: {  // memory.copy
+            uint64_t dest = args[0], source = args[1], length = args[2];
+            if (!is64) { dest = static_cast<uint32_t>(dest); source = static_cast<uint32_t>(source); length = static_cast<uint32_t>(length); }
+            if (source > m->Bytes() || length > m->Bytes() - source || dest > m->Bytes() || length > m->Bytes() - dest) return outOfBounds;
+            if (length) std::memmove(m->data + dest, m->data + source, length);
+            return 0;
+        }
+        case 1: {  // memory.fill
+            uint64_t dest = args[0], length = args[2];
+            const uint8_t value = static_cast<uint8_t>(args[1]);
+            if (!is64) { dest = static_cast<uint32_t>(dest); length = static_cast<uint32_t>(length); }
+            if (dest > m->Bytes() || length > m->Bytes() - dest) return outOfBounds;
+            if (length) std::memset(m->data + dest, value, length);
+            return 0;
+        }
+        case 2: {  // memory.init
+            uint64_t dest = args[0], source = static_cast<uint32_t>(args[1]), length = static_cast<uint32_t>(args[2]);
+            if (!is64) dest = static_cast<uint32_t>(dest);
+            const DataSegment& d = inst->module->datas[a];
+            const uint64_t size = inst->dataDropped[a] ? 0 : d.bytes.size;
+            if (source > size || length > size - source || dest > m->Bytes() || length > m->Bytes() - dest) return outOfBounds;
+            if (length) std::memcpy(m->data + dest, inst->module->bytes.data() + d.bytes.offset + source, length);
+            return 0;
+        }
+        default:  // data.drop
+            inst->dataDropped[a] = true;
+            return 0;
+    }
+}
+
+uint64_t JitMemoryGrow(JitCtx* jc, uint64_t delta) {
+    MemoryObject* m = jc->instance->memories[0];
+    if (!m->type.limits.is64) delta = static_cast<uint32_t>(delta);
+    const int64_t before = m->Grow(delta);
+    if (before >= 0) NotifyMemoryGrown(*jc->context, m);
+    JitRefreshMemory(jc);
+    return before < 0 ? (m->type.limits.is64 ? ~uint64_t(0) : 0xFFFFFFFFull) : static_cast<uint64_t>(before);
+}
+
 uint32_t JitCallHelper(JitCtx* jc, uint64_t* frame, uint32_t index) { return JitCallFunction(jc, frame, jc->instance->funcs[index]); }
 
 uint32_t JitCallIndirectHelper(JitCtx* jc, uint64_t* frame, uint32_t type, uint32_t tableIndex, uint64_t index) {

@@ -137,6 +137,7 @@ public:
         native_.assign(n + 1, -1);
         for (size_t i = 0; i < n;) {
             native_[i] = static_cast<int32_t>(a_.size());
+            if (isTarget_[i]) sp_ = -1;
             const uint32_t len = Emit(i);
             if (!len) { why = "op " + Hex(words_[i]) + " at " + std::to_string(i); return false; }
             i += len;
@@ -174,10 +175,12 @@ private:
                 case Op::kCallIndirectR: return 5;
                 case Op::kSyncSp: return 2;
                 case Op::kEntry: case Op::kJitEnter: return 1;
+                case Op::kMemorySize: case Op::kMemoryGrow: return 2;
                 default: return 0;
             }
         }
         if (op >= Op::kFcBase && op <= Op::kFcBase + 7) return 3;   // the saturating truncations
+        if (op >= Op::kFcBase + 8 && op <= Op::kFcBase + 11) return op == Op::kFcBase + 9 || op == Op::kFcBase + 11 ? 2 : 3;   // memory.init data.drop memory.copy memory.fill
         Decoded d;
         if (!Decode(op, d)) return 0;
         const uint32_t b = d.base;
@@ -198,6 +201,7 @@ private:
     }
 
     bool Scan(std::string& why) {
+        isTarget_.assign(words_.size() + 1, false);
         for (size_t i = 0; i < words_.size();) {
             const uint32_t len = Length(i);
             if (!len || i + len > words_.size()) { why = "op " + Hex(words_[i]) + " at " + std::to_string(i); return false; }
@@ -207,6 +211,14 @@ private:
                 if (words_[i + 3] != 0) { why = "memory other than 0"; return false; }
                 usesMemory = true;
             }
+            // (What works on memory 0 only, and the places that are jumped to.)
+            if (op == Op::kMemorySize || op == Op::kMemoryGrow || op == Op::kFcBase + 11) { if (words_[i + 1] != 0) { why = "memory other than 0"; return false; } usesMemory = true; }
+            if (op == Op::kFcBase + 8) { if (words_[i + 2] != 0) { why = "memory other than 0"; return false; } usesMemory = true; }
+            if (op == Op::kFcBase + 10) { if (words_[i + 1] != 0 || words_[i + 2] != 0) { why = "memory other than 0"; return false; } usesMemory = true; }
+            if (op == Op::kJmp) MarkTarget(words_[i + 1]);
+            if (op == Op::kJzSlot || op == Op::kJnzSlot) MarkTarget(words_[i + 2]);
+            if (op >= Op::kJumpIf && op < Op::kJumpIfImm + 0x100) MarkTarget(words_[i + 3]);
+            if (op == Op::kBrTableS) for (uint32_t k = 0; k <= words_[i + 2]; ++k) MarkTarget(words_[i + 3 + k]);
             // (The targets of the jumps: the word of the target is before the instruction for a loop.)
             const uint32_t jumpWord = op == Op::kJmp ? 1 : (op == Op::kJzSlot || op == Op::kJnzSlot) ? 2 : 0;
             if (jumpWord && words_[i + jumpWord] <= i) hasLoop = true;
@@ -216,6 +228,8 @@ private:
         }
         return true;
     }
+
+    void MarkTarget(uint32_t word) { if (word < isTarget_.size()) isTarget_[word] = true; }
 
     // ---- small pieces ----
     Mem Slot(uint32_t slot) const { return mem(RBX, static_cast<int32_t>(slot * 8)); }
@@ -296,6 +310,25 @@ private:
         const uint32_t op = words_[i];
         const uint32_t* p = &words_[i + 1];
         if (op >= 0x340 && op < 0x400) return EmitSpecial(op, p, len) ? len : 0;
+        if (op >= Op::kFcBase + 8 && op <= Op::kFcBase + 11) {
+            const uint32_t kind = op == Op::kFcBase + 10 ? 0 : op == Op::kFcBase + 11 ? 1 : op == Op::kFcBase + 8 ? 2 : 3;
+            const uint32_t a = op == Op::kFcBase + 8 || op == Op::kFcBase + 9 ? p[0] : 0;
+            const bool usesStack = kind != 3;
+            if (usesStack && sp_ < 3) return 0;
+            a_.mov(RDI, R14);
+            a_.mov_imm32(RSI, kind);
+            if (usesStack) a_.lea(RDX, Slot(static_cast<uint32_t>(sp_ - 3))); else a_.xor32(RDX, RDX);
+            a_.mov_imm32(RCX, a);
+            CallAbs(reinterpret_cast<const void*>(&JitBulkMemory));
+            Label ok;
+            a_.test32(RAX, RAX);
+            a_.jcc(CC_E, ok);
+            a_.add32_imm(RAX, static_cast<int32_t>(kRetTrap - 1));
+            a_.jmp(epilogue_);
+            a_.bind(ok);
+            if (usesStack) sp_ -= 3;
+            return len;
+        }
         if (op >= Op::kFcBase && op <= Op::kFcBase + 7) {
             static const void* const kFns[] = {reinterpret_cast<const void*>(&SatI32F32S), reinterpret_cast<const void*>(&SatI32F32U), reinterpret_cast<const void*>(&SatI32F64S), reinterpret_cast<const void*>(&SatI32F64U),
                                                reinterpret_cast<const void*>(&SatI64F32S), reinterpret_cast<const void*>(&SatI64F32U), reinterpret_cast<const void*>(&SatI64F64S), reinterpret_cast<const void*>(&SatI64F64U)};
@@ -413,7 +446,23 @@ private:
                 }
                 return true;
             case Op::kEntry: case Op::kJitEnter: return true;
-            case Op::kSyncSp: return true;  // (only what works from the stack pointer needs it, and the JIT does none of that)
+            case Op::kSyncSp: sp_ = static_cast<int32_t>(f_.paramsN + f_.localsN + p[0]); return true;
+            case Op::kMemorySize:
+                if (sp_ < 0) return false;
+                a_.mov(RAX, R13);
+                a_.shr_imm(RAX, 16);
+                Store(static_cast<uint32_t>(sp_), RAX);
+                ++sp_;
+                return true;
+            case Op::kMemoryGrow:
+                if (sp_ < 1) return false;
+                a_.mov(RDI, R14);
+                Load(RSI, static_cast<uint32_t>(sp_ - 1), true);
+                CallAbs(reinterpret_cast<const void*>(&JitMemoryGrow));
+                Store(static_cast<uint32_t>(sp_ - 1), RAX);
+                a_.mov_load(R12, mem(R14, 0));
+                a_.mov_load(R13, mem(R14, 8));
+                return true;
             default: return false;
         }
     }
@@ -718,6 +767,8 @@ private:
     std::vector<LocalJump> jumps_;
     std::vector<BrTable> tables_;
     uint32_t pad_ = 0;
+    std::vector<bool> isTarget_;
+    int32_t sp_ = -1;   // the slot the stack pointer of the interpreter would be at (the instructions that work from it are told by kSyncSp), -1 if not known
 };
 
 }  // namespace

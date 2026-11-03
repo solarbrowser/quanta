@@ -8,6 +8,8 @@
 // two languages.
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -17,6 +19,7 @@
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/wasm/Decoder.h"
+#include "quanta/wasm/Jit.h"
 #include "quanta/wasm/Runtime.h"
 
 namespace Quanta::Wasm {
@@ -714,6 +717,14 @@ InstanceObject* Instantiate(Context& ctx, const std::shared_ptr<Module>& module,
         if (d.bytes.size) std::memcpy(mem->data + offset, m.bytes.data() + d.bytes.offset, d.bytes.size);
         inst->dataDropped[i] = true;
     }
+#if QUANTA_WASM_JIT
+    // (A way to see what the JIT can do with a module, and to run it all as native code: every function is compiled now.)
+    if (std::getenv("QUANTA_WASM_JIT_ALL")) {
+        size_t done = 0;
+        for (const CompiledFunction& f : m.compiled) if (JitCompile(f, inst)) ++done;
+        std::fprintf(stderr, "[wasm jit] %zu of %zu functions compiled\n", done, m.compiled.size());
+    }
+#endif
     if (m.hasStart) {
         uint64_t n[1] = {0};
         Value r[1] = {Value::null()};
