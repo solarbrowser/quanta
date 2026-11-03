@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
+#include <cstring>
 #include "quanta/core/runtime/StableSort.h"
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
 #include <span>
@@ -1388,6 +1389,18 @@ void register_typed_array_builtins(Context& ctx) {
             // (buffer may have shrunk during coercions, leaving the tail of count OOB).
             size_t cnt = static_cast<size_t>(count);
             size_t cur = static_cast<size_t>(cur_len);
+            // Both ranges inside the view: the bytes move as they are (the elements are not read and written one by one, which for a few
+            // hundred KB took the time of whatever called it: Emscripten's memcpy for a large block is `HEAPU8.copyWithin`).
+            if (static_cast<size_t>(from) + cnt <= cur && static_cast<size_t>(to) + cnt <= cur) {
+                ArrayBuffer* b = ta->buffer();
+                uint8_t* data = b ? b->data() : nullptr;
+                if (data) {
+                    const size_t size = ta->bytes_per_element();
+                    uint8_t* base = data + ta->byte_offset();
+                    std::memmove(base + static_cast<size_t>(to) * size, base + static_cast<size_t>(from) * size, cnt * size);
+                    return Value(receiver.as_object_or_null());
+                }
+            }
             std::vector<Value> tmp(cnt);
             std::vector<bool> valid(cnt, false);
             for (size_t i = 0; i < cnt; i++) {
