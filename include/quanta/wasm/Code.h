@@ -23,15 +23,22 @@ namespace Quanta::Wasm {
 // from the stack pointer, which the code brings to the height they expect (kSyncSp) first.
 //
 // The code is words. The first word of an instruction is its opcode: a single byte opcode of WebAssembly under its own number, the ones with
-// a prefix under a base and their number, and the instructions of this format from kJmp on. What follows is its immediates.
+// a prefix under a base and their number, and the instructions of this format from kJmp on. (The numbers are kept close together, so that the
+// interpreter's switch is one table: a few hundred of them spread over thousands make the compiler search for the right one.) What follows is its immediates.
 namespace Op {
+
+// What is added to the opcode of a binary instruction on numbers whose second operand is a constant (its word, after the two slots, is the number itself:
+// an i64 one is sign-extended from 32 bits); and to that of a comparison that jumps if it is true (slot, slot or number, target).
+constexpr uint32_t kImm = 0x400;
+constexpr uint32_t kJumpIf = 0x500;
+constexpr uint32_t kJumpIfImm = 0x600;
 
 constexpr uint32_t kFcBase = 0x100;   // 0xFC n
 constexpr uint32_t kFdBase = 0x200;   // 0xFD n (the vector instructions)
-constexpr uint32_t kFbBase = 0x400;   // 0xFB n (the GC instructions)
+constexpr uint32_t kFbBase = 0x320;   // 0xFB n (the GC instructions)
 
 enum : uint32_t {
-    kJmp = 0x1000,      // target
+    kJmp = 0x340,      // target
     kBr,                // target keepN keepR dropN dropR
     kBrIf,              // target keepN keepR dropN dropR (the i32 on top of the stack is the condition)
     kJz,                // target (an if: the i32 on top; jumps when it is 0)

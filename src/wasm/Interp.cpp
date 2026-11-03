@@ -640,10 +640,18 @@ run:
 #define U32(x) static_cast<uint32_t>(x)
 #define S32(x) static_cast<int32_t>(static_cast<uint32_t>(x))
 #define S64(x) static_cast<int64_t>(x)
-#define BIN32(opcode, expr) case opcode: { const uint32_t b = U32(fp[pc[2]]); const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = static_cast<uint64_t>(static_cast<uint32_t>(expr)); pc += 3; break; }
-#define BIN64(opcode, expr) case opcode: { const uint64_t b = fp[pc[2]]; const uint64_t a = fp[pc[1]]; fp[pc[0]] = static_cast<uint64_t>(expr); pc += 3; break; }
-#define CMP32(opcode, expr) case opcode: { const uint32_t b = U32(fp[pc[2]]); const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
-#define CMP64(opcode, expr) case opcode: { const uint64_t b = fp[pc[2]]; const uint64_t a = fp[pc[1]]; fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
+#define BIN32(opcode, expr) case opcode: { const uint32_t b = U32(fp[pc[2]]); const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = static_cast<uint64_t>(static_cast<uint32_t>(expr)); pc += 3; break; } \
+    case opcode + Op::kImm: { const uint32_t b = pc[2]; const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = static_cast<uint64_t>(static_cast<uint32_t>(expr)); pc += 3; break; }
+#define BIN64(opcode, expr) case opcode: { const uint64_t b = fp[pc[2]]; const uint64_t a = fp[pc[1]]; fp[pc[0]] = static_cast<uint64_t>(expr); pc += 3; break; } \
+    case opcode + Op::kImm: { const uint64_t b = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(pc[2]))); const uint64_t a = fp[pc[1]]; fp[pc[0]] = static_cast<uint64_t>(expr); pc += 3; break; }
+#define CMP32(opcode, expr) case opcode: { const uint32_t b = U32(fp[pc[2]]); const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; } \
+    case opcode + Op::kImm: { const uint32_t b = pc[2]; const uint32_t a = U32(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; } \
+    case opcode + Op::kJumpIf: { const uint32_t b = U32(fp[pc[1]]); const uint32_t a = U32(fp[pc[0]]); if (expr) pc = code->code.data() + pc[2]; else pc += 3; break; } \
+    case opcode + Op::kJumpIfImm: { const uint32_t b = pc[1]; const uint32_t a = U32(fp[pc[0]]); if (expr) pc = code->code.data() + pc[2]; else pc += 3; break; }
+#define CMP64(opcode, expr) case opcode: { const uint64_t b = fp[pc[2]]; const uint64_t a = fp[pc[1]]; fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; } \
+    case opcode + Op::kImm: { const uint64_t b = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(pc[2]))); const uint64_t a = fp[pc[1]]; fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; } \
+    case opcode + Op::kJumpIf: { const uint64_t b = fp[pc[1]]; const uint64_t a = fp[pc[0]]; if (expr) pc = code->code.data() + pc[2]; else pc += 3; break; } \
+    case opcode + Op::kJumpIfImm: { const uint64_t b = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(pc[1]))); const uint64_t a = fp[pc[0]]; if (expr) pc = code->code.data() + pc[2]; else pc += 3; break; }
 #define CMPF32(opcode, expr) case opcode: { const float b = AsF32(fp[pc[2]]); const float a = AsF32(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
 #define CMPF64(opcode, expr) case opcode: { const double b = AsF64(fp[pc[2]]); const double a = AsF64(fp[pc[1]]); fp[pc[0]] = (expr) ? 1 : 0; pc += 3; break; }
 #define BINF32(opcode, expr) case opcode: { const float b = AsF32(fp[pc[2]]); const float a = AsF32(fp[pc[1]]); fp[pc[0]] = FromF32(expr); pc += 3; break; }
@@ -1373,7 +1381,7 @@ run:
                 break;
             }
             default:
-                if (op >= Op::kFdBase && op < Op::kFdBase + 0x200) {
+                if (op >= Op::kFdBase && op < Op::kFdBase + 0x120) {
                     const uint32_t sub = op - Op::kFdBase;
                     sp = SimdExec(sub, sp, pc);
                     pc += SimdImmediateWords(sub);

@@ -127,6 +127,9 @@ private:
     bool touchedSp_ = false;
     size_t lastEnd_ = kNone, lastDstAt_ = kNone;  // the end of the last instruction on numbers and the word of its destination
     uint32_t lastDst_ = 0;
+    uint32_t lastOp_ = 0, lastA_ = 0, lastB_ = 0;  // what the last instruction on numbers was and its operands (a constant or a slot)
+    size_t lastStart_ = kNone;
+    bool lastImm_ = false;
     std::vector<Ctl> ctls_;
     uint32_t hN_ = 0, hR_ = 0;
     std::string err_;
@@ -305,18 +308,83 @@ private:
         }
     }
 
+    // Whether the second operand of the instruction can be a constant in the instruction itself.
+    static bool ImmediateCapable(uint32_t op) {
+        return (op >= 0x46 && op <= 0x4F) || (op >= 0x6A && op <= 0x6C) || (op >= 0x71 && op <= 0x78) || (op >= 0x51 && op <= 0x5A) || (op >= 0x7C && op <= 0x7E) || (op >= 0x83 && op <= 0x8A);
+    }
+    static bool Is64(uint32_t op) { return (op >= 0x51 && op <= 0x5A) || (op >= 0x7C && op <= 0x8A); }
+
     // An instruction on numbers: its operands (already taken off) are slots, and the result is in the slot of the height it has afterwards.
     void EmitRegister(uint32_t op, int arity, const Operand& a, const Operand& b) {
+        bool immediate = false;
+        uint32_t number = 0;
+        if (arity == 2 && b.kind == Operand::Kind::Const && ImmediateCapable(op)) {
+            if (!Is64(op)) {
+                immediate = true;
+                number = static_cast<uint32_t>(b.value);
+            } else if (static_cast<int64_t>(b.value) >= INT32_MIN && static_cast<int64_t>(b.value) <= INT32_MAX) {
+                immediate = true;
+                number = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int64_t>(b.value)));
+            }
+        }
         const uint32_t sa = SlotOf(a);
-        const uint32_t sb = arity == 2 ? SlotOf(b) : 0;
+        const uint32_t sb = arity == 2 && !immediate ? SlotOf(b) : 0;
         const uint32_t dst = nBase_ + hN_;
-        Emit(op);
+        lastStart_ = Here();
+        Emit(immediate ? op + Op::kImm : op);
         lastDstAt_ = Here();
         Emit(dst);
         Emit(sa);
-        if (arity == 2) Emit(sb);
+        if (arity == 2) Emit(immediate ? number : sb);
         lastDst_ = dst;
+        lastOp_ = op;
+        lastA_ = sa;
+        lastB_ = immediate ? number : sb;
+        lastImm_ = immediate;
         lastEnd_ = Here();
+    }
+
+    static uint32_t InvertCompare(uint32_t op) {
+        switch (op) {
+            case 0x46: return 0x47; case 0x47: return 0x46;
+            case 0x48: return 0x4E; case 0x4E: return 0x48;
+            case 0x49: return 0x4F; case 0x4F: return 0x49;
+            case 0x4A: return 0x4C; case 0x4C: return 0x4A;
+            case 0x4B: return 0x4D; case 0x4D: return 0x4B;
+            case 0x51: return 0x52; case 0x52: return 0x51;
+            case 0x53: return 0x59; case 0x59: return 0x53;
+            case 0x54: return 0x5A; case 0x5A: return 0x54;
+            case 0x55: return 0x57; case 0x57: return 0x55;
+            case 0x56: return 0x58; case 0x58: return 0x56;
+            default: return op;
+        }
+    }
+
+    // A jump on a condition that was just made by a comparison (or by i32.eqz) is the comparison and the jump in one instruction: the one that made the condition
+    // is taken away and what is emitted instead is everything of the jump but its target, which the caller emits.
+    bool FuseCondition(const Operand& condition, bool jumpIfTrue) {
+        if (condition.kind != Operand::Kind::Stack || lastEnd_ != Here() || lastDst_ != condition.home) return false;
+        const bool compare32 = lastOp_ >= 0x46 && lastOp_ <= 0x4F, compare64 = lastOp_ >= 0x51 && lastOp_ <= 0x5A;
+        if (compare32 || compare64) {
+            const uint32_t op = jumpIfTrue ? lastOp_ : InvertCompare(lastOp_);
+            const uint32_t a = lastA_, b = lastB_;
+            const bool immediate = lastImm_;
+            out_.code.resize(lastStart_);
+            Emit((immediate ? Op::kJumpIfImm : Op::kJumpIf) + op);
+            Emit(a);
+            Emit(b);
+            lastEnd_ = kNone;
+            return true;
+        }
+        if (lastOp_ == 0x45) {
+            const uint32_t a = lastA_;
+            out_.code.resize(lastStart_);
+            Emit(jumpIfTrue ? Op::kJzSlot : Op::kJnzSlot);
+            Emit(a);
+            lastEnd_ = kNone;
+            return true;
+        }
+        return false;
     }
 
     // The results are moved to the first slots of the frame, where the caller has them, and the function returns.
@@ -334,7 +402,7 @@ private:
     }
 
     // A branch to the label, with the values it takes moved to where the label has them. `condition` is a slot with a number, for the ones that are taken only if it is not 0.
-    void EmitBranch(Ctl& target, const SlotCount& keep, bool conditional, uint32_t condition) {
+    void EmitBranch(Ctl& target, const SlotCount& keep, bool conditional, const Operand& condition) {
         struct Move { uint32_t dst, src; };
         std::vector<Move> moves;
         for (uint32_t i = 0; i < keep.n; ++i) {
@@ -345,13 +413,17 @@ private:
         size_t skip = kNone;
         if (conditional) {
             if (moves.empty() && dropR == 0) {
-                Emit(Op::kJnzSlot);
-                Emit(condition);
+                if (!FuseCondition(condition, true)) {
+                    const uint32_t slot = SlotOf(condition);
+                    Emit(Op::kJnzSlot);
+                    Emit(slot);
+                }
                 EmitTarget(target);
                 return;
             }
+            const uint32_t slot = SlotOf(condition);
             Emit(Op::kJzSlot);
-            Emit(condition);
+            Emit(slot);
             skip = Here();
             Emit(0);
         }
@@ -479,9 +551,11 @@ private:
         if (!deadEntry) Spill();
         size_t jz = kNone;
         if (kind == Ctl::Kind::If && !deadEntry) {
-            const uint32_t slot = SlotOf(condition);
-            Emit(Op::kJzSlot);
-            Emit(slot);
+            if (!FuseCondition(condition, false)) {
+                const uint32_t slot = SlotOf(condition);
+                Emit(Op::kJzSlot);
+                Emit(slot);
+            }
             jz = Here();
             Emit(0);
         }
@@ -726,8 +800,7 @@ bool FuncCompiler::Br(bool conditional, bool onNull, bool onNonNull) {
         const Operand condition = lastPopped_;
         if (!Dead()) {
             Spill();
-            const uint32_t slot = SlotOf(condition);
-            EmitBranch(*target, keep, true, slot);
+            EmitBranch(*target, keep, true, condition);
         }
         if (!PopVals(types)) return false;
         PushVals(types);
@@ -735,7 +808,7 @@ bool FuncCompiler::Br(bool conditional, bool onNull, bool onNonNull) {
     }
     if (!Dead()) {
         Spill();
-        EmitBranch(*target, keep, false, 0);
+        EmitBranch(*target, keep, false, Operand{});
     }
     if (!PopVals(types)) return false;
     SetUnreachable();
