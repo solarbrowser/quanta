@@ -266,13 +266,21 @@ private:
         o.src = o.home;
     }
 
-    // Before an instruction that works from the stack pointer: what is not in its slot is put there, and the stack pointer is brought to the height.
-    void Materialize() {
-        touchedSp_ = true;
+    static constexpr uint32_t kUnknownSp = 0xFFFFFFFFu;
+
+    // What is not in its slot is put there.
+    void Spill() {
         if (Dead()) return;
         for (size_t i = ctls_.back().height; i < opnds_.size(); ++i) {
             if (opnds_[i].kind != Operand::Kind::Stack) MaterializeEntry(i);
         }
+    }
+
+    // Before an instruction that works from the stack pointer: what is not in its slot is put there, and the stack pointer is brought to the height.
+    void Materialize() {
+        touchedSp_ = true;
+        if (Dead()) return;
+        Spill();
         if (spHeight_ != hN_) {
             Emit(Op::kSyncSp, hN_);
             spHeight_ = hN_;
@@ -309,6 +317,60 @@ private:
         if (arity == 2) Emit(sb);
         lastDst_ = dst;
         lastEnd_ = Here();
+    }
+
+    // The results are moved to the first slots of the frame, where the caller has them, and the function returns.
+    void EmitReturn(uint32_t firstResultSlot, const std::vector<ValType>& results) {
+        const SlotCount keep = SlotsOf(results);
+        for (uint32_t i = 0; i < keep.n; ++i) {
+            if (firstResultSlot + i != i) {
+                Emit(Op::kCopyN, i);
+                Emit(firstResultSlot + i);
+            }
+        }
+        Emit(Op::kRet);
+        Emit(keep.n);
+        Emit(keep.r);
+    }
+
+    // A branch to the label, with the values it takes moved to where the label has them. `condition` is a slot with a number, for the ones that are taken only if it is not 0.
+    void EmitBranch(Ctl& target, const SlotCount& keep, bool conditional, uint32_t condition) {
+        struct Move { uint32_t dst, src; };
+        std::vector<Move> moves;
+        for (uint32_t i = 0; i < keep.n; ++i) {
+            const uint32_t src = nBase_ + hN_ - keep.n + i, dst = nBase_ + target.baseN + i;
+            if (src != dst) moves.push_back({dst, src});
+        }
+        const uint32_t dropR = hR_ - target.baseR - keep.r;
+        size_t skip = kNone;
+        if (conditional) {
+            if (moves.empty() && dropR == 0) {
+                Emit(Op::kJnzSlot);
+                Emit(condition);
+                EmitTarget(target);
+                return;
+            }
+            Emit(Op::kJzSlot);
+            Emit(condition);
+            skip = Here();
+            Emit(0);
+        }
+        for (const Move& m : moves) {
+            Emit(Op::kCopyN, m.dst);
+            Emit(m.src);
+        }
+        if (dropR != 0) {
+            Emit(Op::kBr);
+            EmitTarget(target);
+            Emit(0);
+            Emit(keep.r);
+            Emit(0);
+            Emit(dropR);
+        } else {
+            Emit(Op::kJmp);
+            EmitTarget(target);
+        }
+        if (skip != kNone) out_.code[skip] = static_cast<uint32_t>(Here());
     }
 
     // ---- Control ----
@@ -405,16 +467,21 @@ private:
                 rawCatches.push_back(c);
             }
         }
+        Operand condition;
         if (kind == Ctl::Kind::If) {
             if (!Pop(ValType::I32())) return false;
+            condition = lastPopped_;
             if (!Dead()) {
                 // (The jump that skips the then part.)
             }
         }
         const bool deadEntry = Dead();
+        if (!deadEntry) Spill();
         size_t jz = kNone;
         if (kind == Ctl::Kind::If && !deadEntry) {
-            Emit(Op::kJz);
+            const uint32_t slot = SlotOf(condition);
+            Emit(Op::kJzSlot);
+            Emit(slot);
             jz = Here();
             Emit(0);
         }
@@ -472,10 +539,12 @@ private:
         c.loopStart = Here();
         ctls_.push_back(std::move(c));
         PushVals(params);
+        if (kind == Ctl::Kind::Loop) spHeight_ = kUnknownSp;  // (a jump comes back to it)
         return true;
     }
 
     bool End(std::string& error) {
+        if (!Dead()) Spill();
         Ctl& c = ctls_.back();
         if (!PopVals(c.results)) return false;
         if (vals_.size() != c.height) return Error("type mismatch: values left on the stack at the end of a block");
@@ -489,11 +558,8 @@ private:
         if (done.tryIndex >= 0) out_.tries[static_cast<size_t>(done.tryIndex)].end = static_cast<uint32_t>(Here());
         if (done.kind == Ctl::Kind::Func) {
             if (!done.deadEntry) {
-                const SlotCount s = SlotsOf(done.results);
                 const size_t returnAt = Here();
-                Emit(Op::kReturn);
-                Emit(s.n);
-                Emit(s.r);
+                EmitReturn(nBase_, done.results);  // (the values of a branch to the function are where the first of them is: the base of the operands)
                 for (size_t f : done.fixups) out_.code[f] = static_cast<uint32_t>(returnAt);
                 for (const auto& cf : done.catchFixups) out_.tries[cf.first].catches[cf.second].target = static_cast<uint32_t>(returnAt);
             }
@@ -508,6 +574,7 @@ private:
             for (const auto& cf : done.catchFixups) out_.tries[cf.first].catches[cf.second].target = static_cast<uint32_t>(Here());
         }
         PushValsAfterBlock(done);
+        spHeight_ = kUnknownSp;  // (the ways in come from other places)
         return true;
     }
 
@@ -521,6 +588,7 @@ private:
     }
 
     bool Else() {
+        if (!Dead()) Spill();
         Ctl& c = ctls_.back();
         if (c.kind != Ctl::Kind::If) return Error("else does not belong to an if");
         if (!PopVals(c.results)) return false;
@@ -535,6 +603,7 @@ private:
             c.ifFixup = kNone;
         }
         ForgetInits(c.initMark);
+        spHeight_ = kUnknownSp;
         c.kind = Ctl::Kind::Else;
         c.unreachable = false;
         vals_.resize(c.height);
@@ -654,19 +723,19 @@ bool FuncCompiler::Br(bool conditional, bool onNull, bool onNonNull) {
     const SlotCount keep = SlotsOf(types);
     if (conditional) {
         if (!Pop(ValType::I32())) return false;
+        const Operand condition = lastPopped_;
         if (!Dead()) {
-            Emit(Op::kBrIf);
-            EmitTarget(*target);
-            BranchWords(*target, keep.n, keep.r);
+            Spill();
+            const uint32_t slot = SlotOf(condition);
+            EmitBranch(*target, keep, true, slot);
         }
         if (!PopVals(types)) return false;
         PushVals(types);
         return true;
     }
     if (!Dead()) {
-        Emit(Op::kBr);
-        EmitTarget(*target);
-        BranchWords(*target, keep.n, keep.r);
+        Spill();
+        EmitBranch(*target, keep, false, 0);
     }
     if (!PopVals(types)) return false;
     SetUnreachable();
@@ -723,16 +792,37 @@ bool FuncCompiler::MemoryAccess(uint8_t op) {
     if (!MemArg(align, memory, offset, is64)) return false;
     const ValType address = is64 ? ValType::I64() : ValType::I32();
     if (store) {
-        if (!Pop(t) || !Pop(address)) return false;
+        if (!Pop(t)) return false;
+        const Operand value = lastPopped_;
+        if (!Pop(address)) return false;
+        const Operand where = lastPopped_;
+        if (!Dead()) {
+            const uint32_t sv = SlotOf(value), sw = SlotOf(where);
+            Emit(op);
+            Emit(sv);
+            Emit(sw);
+            Emit(memory);
+            Emit(static_cast<uint32_t>(offset));
+            Emit(static_cast<uint32_t>(offset >> 32));
+            lastEnd_ = kNone;
+        }
     } else {
         if (!Pop(address)) return false;
+        const Operand where = lastPopped_;
+        if (!Dead()) {
+            const uint32_t sw = SlotOf(where);
+            const uint32_t dst = nBase_ + hN_;
+            Emit(op);
+            lastDstAt_ = Here();
+            Emit(dst);
+            Emit(sw);
+            Emit(memory);
+            Emit(static_cast<uint32_t>(offset));
+            Emit(static_cast<uint32_t>(offset >> 32));
+            lastDst_ = dst;
+            lastEnd_ = Here();
+        }
         Push(t);
-    }
-    if (!Dead()) {
-        Emit(op);
-        Emit(memory);
-        Emit(static_cast<uint32_t>(offset));
-        Emit(static_cast<uint32_t>(offset >> 32));
     }
     return true;
 }
@@ -804,10 +894,25 @@ bool FuncCompiler::Call(uint32_t index, bool tail) {
             if (!TypeRegistry::Matches(sig.results[i], mine[i])) return Error("type mismatch: return_call results do not match the function's");
         }
     }
+    if (!Dead()) Spill();
     if (!PopVals(sig.params)) return false;
     if (!Dead()) {
-        Emit(tail ? Op::kReturnCall : Op::kCall);
-        Emit(index);
+        const uint32_t firstArgument = nBase_ + hN_;
+        if (tail) {
+            // (The arguments go to the first slots of the frame, which is the one the callee has.)
+            const SlotCount params = SlotsOf(sig.params);
+            for (uint32_t i = 0; i < params.n; ++i) {
+                if (firstArgument + i != i) {
+                    Emit(Op::kCopyN, i);
+                    Emit(firstArgument + i);
+                }
+            }
+            Emit(Op::kReturnCallR, index);
+        } else {
+            Emit(Op::kCallR, index);
+            Emit(firstArgument);
+        }
+        spHeight_ = kUnknownSp;
     }
     if (tail) {
         SetUnreachable();
@@ -836,11 +941,23 @@ bool FuncCompiler::CallIndirect(bool tail) {
         }
     }
     if (!Pop(tt.limits.is64 ? ValType::I64() : ValType::I32())) return false;
+    const Operand index = lastPopped_;
+    if (!tail && !Dead()) Spill();
     if (!PopVals(t.func.params)) return false;
     if (!Dead()) {
-        Emit(tail ? Op::kReturnCallIndirect : Op::kCallIndirect);
-        Emit(canon);
-        Emit(table);
+        if (tail) {
+            Emit(Op::kReturnCallIndirect);
+            Emit(canon);
+            Emit(table);
+        } else {
+            const uint32_t slot = SlotOf(index);
+            Emit(Op::kCallIndirectR);
+            Emit(canon);
+            Emit(table);
+            Emit(nBase_ + hN_);
+            Emit(slot);
+            spHeight_ = kUnknownSp;
+        }
     }
     if (tail) SetUnreachable();
     else PushVals(t.func.results);
@@ -862,10 +979,18 @@ bool FuncCompiler::CallRef(bool tail) {
         }
     }
     if (!Pop(ValType::Ref(true, static_cast<HeapType>(canon)))) return false;
+    if (!tail && !Dead()) Spill();
     if (!PopVals(t.func.params)) return false;
     if (!Dead()) {
-        Emit(tail ? Op::kReturnCallRef : Op::kCallRef);
-        Emit(canon);
+        if (tail) {
+            Emit(Op::kReturnCallRef);
+            Emit(canon);
+        } else {
+            Emit(Op::kCallRefR);
+            Emit(canon);
+            Emit(nBase_ + hN_);
+            spHeight_ = kUnknownSp;
+        }
     }
     if (tail) SetUnreachable();
     else PushVals(t.func.results);
@@ -1438,8 +1563,12 @@ bool FuncCompiler::Instruction(std::string& error) {
     if (!r_.ok()) return Error(r_.error());
     // (The instructions on numbers, the constants and the locals do not work from the stack pointer: they are in register form. The locals and
     // the 0xFC group say for themselves which of them are not.)
-    const bool registerForm = (first >= 0x45 && first <= 0xC4) || (first >= 0x41 && first <= 0x44) || (first >= 0x20 && first <= 0x22) || first == 0xFC;
-    if (!registerForm) Materialize();
+    const bool registerForm = (first >= 0x45 && first <= 0xC4) || (first >= 0x41 && first <= 0x44) || (first >= 0x20 && first <= 0x24) || first == 0xFC || (first >= 0x28 && first <= 0x3E) ||
+                              first == 0x1A || first == 0x1B || first == 0x1C;
+    // (The control instructions and the calls say for themselves what they need: the stack pointer is not it.)
+    const bool control = first == 0x02 || first == 0x03 || first == 0x04 || first == 0x05 || first == 0x0B || first == 0x0C || first == 0x0D || first == 0x0F || first == 0x10 || first == 0x11 ||
+                         first == 0x12 || first == 0x14;
+    if (!registerForm && !control) Materialize();
     const bool ok = InstructionBody(error);
     if (ok && touchedSp_ && !Dead()) spHeight_ = hN_;
     return ok;
@@ -1518,9 +1647,8 @@ bool FuncCompiler::InstructionBody(std::string& error) {
             const std::vector<ValType>& results = ctls_.front().results;
             const SlotCount keep = SlotsOf(results);
             if (!Dead()) {
-                Emit(Op::kReturn);
-                Emit(keep.n);
-                Emit(keep.r);
+                Spill();
+                EmitReturn(nBase_ + hN_ - keep.n, results);
             }
             if (!PopVals(results)) return false;
             SetUnreachable();
@@ -1543,11 +1671,8 @@ bool FuncCompiler::InstructionBody(std::string& error) {
         case 0x1A: {
             ValType t;
             if (!PopAny(t)) return false;
-            if (!Dead()) {
-                if (t.IsRef()) Emit(Op::kDropR);
-                else if (t.kind == ValType::Kind::V128) Emit(Op::kDropV);
-                else Emit(Op::kDropN);
-            }
+            // (A number has no slot of its own that has to be given up; a reference is on the stack of references.)
+            if (!Dead() && t.IsRef()) Emit(Op::kDropR);
             return true;
         }
         case 0x1B: case 0x1C: {
@@ -1560,21 +1685,49 @@ bool FuncCompiler::InstructionBody(std::string& error) {
                 if (!r_.ok()) return Error(r_.error());
                 if (!ValidValType(declared)) return false;
                 t = cx_.Canon(declared);
-                if (!Pop(ValType::I32()) || !Pop(t) || !Pop(t)) return false;
+            } else if (vals_.size() >= ctls_.back().height + 3) {
+                t = vals_[vals_.size() - 2];
+            }
+            if (t.kind == ValType::Kind::V128) Materialize();
+            Operand c, v1, v2;
+            if (op == 0x1C) {
+                if (!Pop(ValType::I32())) return false;
+                c = lastPopped_;
+                if (!Pop(t)) return false;
+                v2 = lastPopped_;
+                if (!Pop(t)) return false;
+                v1 = lastPopped_;
             } else {
                 if (!Pop(ValType::I32())) return false;
+                c = lastPopped_;
                 ValType a, b;
-                if (!PopAny(a) || !PopAny(b)) return false;
+                if (!PopAny(a)) return false;
+                v2 = lastPopped_;
+                if (!PopAny(b)) return false;
+                v1 = lastPopped_;
                 if (a.IsRef() || b.IsRef()) return Error("type mismatch: select needs a type for references");
                 if (!a.IsBottom() && !b.IsBottom() && a != b) return Error("type mismatch: the operands of select");
                 t = a.IsBottom() ? b : a;
             }
-            Push(t);
             if (!Dead()) {
-                if (t.IsRef()) Emit(Op::kSelectR);
-                else if (t.kind == ValType::Kind::V128) Emit(Op::kSelectV);
-                else Emit(Op::kSelectN);
+                if (t.IsRef()) {
+                    const uint32_t slot = SlotOf(c);
+                    Emit(Op::kSelectRSlot);
+                    Emit(slot);
+                } else if (t.kind == ValType::Kind::V128) {
+                    Emit(Op::kSelectV);
+                } else {
+                    const uint32_t sc = SlotOf(c), s2 = SlotOf(v2), s1 = SlotOf(v1);
+                    const uint32_t dst = nBase_ + hN_;
+                    Emit(Op::kSelectSlot);
+                    Emit(dst);
+                    Emit(s1);
+                    Emit(s2);
+                    Emit(sc);
+                    lastEnd_ = kNone;
+                }
             }
+            Push(t);
             return true;
         }
         case 0x20: case 0x21: case 0x22: {
@@ -1584,7 +1737,7 @@ bool FuncCompiler::InstructionBody(std::string& error) {
             const ValType t = locals_[index];
             const uint32_t slot = localSlot_[index];
             const bool number = t.IsNum();
-            if (!number) Materialize();
+            if (t.kind == ValType::Kind::V128) Materialize();
             if (op == 0x20) {
                 if (!inited_[index]) return Error("uninitialized local");
                 if (number) {
@@ -1645,16 +1798,31 @@ bool FuncCompiler::InstructionBody(std::string& error) {
             if (!r_.ok()) return Error(r_.error());
             if (index >= cx_.globals.size()) return Error("unknown global");
             const GlobalType& g = cx_.globals[index];
+            if (g.type.kind == ValType::Kind::V128) Materialize();
             if (op == 0x23) {
                 if (constMode_ && (index >= globalLimit_ || g.mut)) return Error("constant expression required");
+                if (!Dead() && g.type.IsNum()) {
+                    const uint32_t dst = nBase_ + hN_;
+                    Emit(Op::kGlobalGetS);
+                    Emit(dst);
+                    Emit(index);
+                    lastEnd_ = kNone;
+                } else if (!Dead()) {
+                    Emit((g.type.IsRef() ? Op::kGlobalGetR : Op::kGlobalGetV), index);
+                }
                 Push(g.type);
             } else {
                 if (!g.mut) return Error("global is immutable");
                 if (!Pop(g.type)) return false;
-            }
-            if (!Dead()) {
-                const int kind = g.type.IsRef() ? 2 : g.type.kind == ValType::Kind::V128 ? 1 : 0;
-                Emit((op == 0x23 ? Op::kGlobalGetN : Op::kGlobalSetN) + kind, index);
+                const Operand v = lastPopped_;
+                if (!Dead() && g.type.IsNum()) {
+                    const uint32_t slot = SlotOf(v);
+                    Emit(Op::kGlobalSetS);
+                    Emit(index);
+                    Emit(slot);
+                } else if (!Dead()) {
+                    Emit((g.type.IsRef() ? Op::kGlobalSetR : Op::kGlobalSetV), index);
+                }
             }
             return true;
         }

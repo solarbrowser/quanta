@@ -241,9 +241,10 @@ static Machine::Status Execute(Machine& machine, Context& ctx, const CompiledFun
     const auto memoryAt = [&](uint32_t index) -> MemoryObject* { return inst->memories[index]; };
 
 // The address of an access of `size` bytes: the base from the stack, the offset of the instruction.
-#define EFFECTIVE(mem, base, size, out)                                                                  \
+#define EFFECTIVE(mem, base, size, out) EFFECTIVE_AT(mem, base, size, out, pc[1], pc[2])
+#define EFFECTIVE_AT(mem, base, size, out, offLo, offHi)                                                 \
     do {                                                                                                   \
-        const uint64_t off = (static_cast<uint64_t>(pc[1]) | (static_cast<uint64_t>(pc[2]) << 32));      \
+        const uint64_t off = (static_cast<uint64_t>(offLo) | (static_cast<uint64_t>(offHi) << 32));      \
         uint64_t a = (base);                                                                               \
         if (!(mem)->type.limits.is64) a = static_cast<uint32_t>(a);                                       \
         const uint64_t ea = a + off;                                                                       \
@@ -313,10 +314,35 @@ run:
                 fr = f.fr;
                 break;
             }
-            case Op::kCall: case Op::kCallIndirect: case Op::kCallRef: case Op::kReturnCall: case Op::kReturnCallIndirect: case Op::kReturnCallRef: {
+            case Op::kCall: case Op::kCallIndirect: case Op::kCallRef: case Op::kReturnCall: case Op::kReturnCallIndirect: case Op::kReturnCallRef:
+            case Op::kCallR: case Op::kCallIndirectR: case Op::kCallRefR: case Op::kReturnCallR: {
                 FuncObject* callee = nullptr;
                 const uint32_t* next = pc;
-                if (op == Op::kCall || op == Op::kReturnCall) {
+                uint64_t* argBase = nullptr;  // (the arguments of a call in register form: where in the frame they are)
+                if (op == Op::kCallR || op == Op::kReturnCallR) {
+                    callee = inst->funcs[pc[0]];
+                    argBase = op == Op::kCallR ? fp + pc[1] : fp;
+                    next = pc + 2;
+                } else if (op == Op::kCallIndirectR) {
+                    TableObject* table = inst->tables[pc[1]];
+                    uint64_t index = fp[pc[3]];
+                    if (!table->type.limits.is64) index = static_cast<uint32_t>(index);
+                    if (index >= table->Size()) TRAP(TrapKind::TableOutOfBounds);
+                    const Value& element = table->elems[static_cast<size_t>(index)];
+                    if (element.is_null()) TRAP(TrapKind::UninitializedElement);
+                    callee = DOMObject::Cast<FuncObject>(element);
+                    if (!callee) TRAP(TrapKind::UninitializedElement);
+                    if (callee->sig != pc[0] && !TypeRegistry::HeapSubtype(static_cast<HeapType>(callee->sig), static_cast<HeapType>(pc[0]))) TRAP(TrapKind::IndirectCallTypeMismatch);
+                    argBase = fp + pc[2];
+                    next = pc + 4;
+                } else if (op == Op::kCallRefR) {
+                    const Value element = *--rsp;
+                    if (element.is_null()) TRAP(TrapKind::NullFunction);
+                    callee = DOMObject::Cast<FuncObject>(element);
+                    if (!callee) TRAP(TrapKind::NullFunction);
+                    argBase = fp + pc[1];
+                    next = pc + 2;
+                } else if (op == Op::kCall || op == Op::kReturnCall) {
                     callee = inst->funcs[pc[0]];
                     next = pc + 1;
                 } else if (op == Op::kCallIndirect || op == Op::kReturnCallIndirect) {
@@ -337,7 +363,7 @@ run:
                     if (!callee) TRAP(TrapKind::NullFunction);
                     next = pc + 1;
                 }
-                const bool tail = op == Op::kReturnCall || op == Op::kReturnCallIndirect || op == Op::kReturnCallRef;
+                const bool tail = op == Op::kReturnCall || op == Op::kReturnCallIndirect || op == Op::kReturnCallRef || op == Op::kReturnCallR;
                 if (!callee->code) {
                     // A function of the host: its arguments are taken off, its results put on.
                     const CanonType& sig = TypeRegistry::Get(callee->sig);
@@ -352,7 +378,7 @@ run:
                     Value* refs = smallR;
                     if (std::max(pn, rn) > 16) { bigN.resize(std::max(pn, rn)); args = bigN.data(); }
                     if (std::max(pr, rr) > 16) { bigR.resize(std::max(pr, rr)); refs = bigR.data(); }
-                    for (uint32_t i = 0; i < pn; ++i) args[i] = sp[-static_cast<ptrdiff_t>(pn) + i];
+                    for (uint32_t i = 0; i < pn; ++i) args[i] = argBase ? argBase[i] : sp[-static_cast<ptrdiff_t>(pn) + i];
                     for (uint32_t i = 0; i < pr; ++i) refs[i] = rsp[-static_cast<ptrdiff_t>(pr) + i];
                     // (What the host does in turn starts above this.)
                     s.nsp = static_cast<size_t>(sp - s.numbers);
@@ -366,16 +392,20 @@ run:
                         goto raise;
                     }
                     if (result != Machine::Status::Ok) { status = result; goto stop; }
-                    sp -= pn;
+                    if (argBase) {
+                        for (uint32_t i = 0; i < rn; ++i) argBase[i] = args[i];
+                    } else {
+                        sp -= pn;
+                        for (uint32_t i = 0; i < rn; ++i) sp[i] = args[i];
+                        sp += rn;
+                    }
                     rsp -= pr;
-                    for (uint32_t i = 0; i < rn; ++i) sp[i] = args[i];
                     for (uint32_t i = 0; i < rr; ++i) rsp[i] = refs[i];
-                    sp += rn;
                     rsp += rr;
                     if (tail) {
                         // (A tail call to the host is a call, and then a return.)
                         const uint32_t resN = code->resultsN, resR = code->resultsR;
-                        if (sp - resN != fp) std::memmove(fp, sp - resN, resN * sizeof(uint64_t));
+                        if (!argBase && sp - resN != fp) std::memmove(fp, sp - resN, resN * sizeof(uint64_t));
                         if (rsp - resR != fr) std::memmove(fr, rsp - resR, resR * sizeof(Value));
                         if (s.frames.size() == entryDepth) goto stop;
                         const Frame f = s.frames.back();
@@ -389,7 +419,7 @@ run:
                     break;
                 }
                 const CompiledFunction* c = callee->code;
-                uint64_t* newFp = sp - c->paramsN;
+                uint64_t* newFp = argBase ? argBase : sp - c->paramsN;
                 Value* newFr = rsp - c->paramsR;
                 if (newFp + c->paramsN + c->localsN + c->maxN + kStackSlack >= nEnd || static_cast<size_t>(newFr - s.refs.data()) + c->paramsR + c->localsR + c->maxR + kStackSlack >= kRefSlots ||
                     s.frames.size() >= kMaxFrames) TRAP(TrapKind::StackOverflow);
@@ -419,6 +449,38 @@ run:
                 rsp += c->localsR;
                 break;
             }
+            case Op::kRet: {
+                const uint32_t resR = pc[1];
+                if (rsp - resR != fr) std::memmove(fr, rsp - resR, resR * sizeof(Value));
+                if (s.frames.size() == entryDepth) goto stop;
+                const Frame f = s.frames.back();
+                s.frames.pop_back();
+                rsp = fr + resR;
+                code = f.code;
+                inst = f.instance;
+                pc = f.pc;
+                fp = f.fp;
+                fr = f.fr;
+                break;
+            }
+            case Op::kJzSlot:
+                if (static_cast<uint32_t>(fp[pc[0]]) == 0) pc = code->code.data() + pc[1];
+                else pc += 2;
+                break;
+            case Op::kJnzSlot:
+                if (static_cast<uint32_t>(fp[pc[0]]) != 0) pc = code->code.data() + pc[1];
+                else pc += 2;
+                break;
+            case Op::kSelectSlot: fp[pc[0]] = static_cast<uint32_t>(fp[pc[3]]) ? fp[pc[1]] : fp[pc[2]]; pc += 4; break;
+            case Op::kSelectRSlot: {
+                const uint32_t c = static_cast<uint32_t>(fp[pc[0]]);
+                --rsp;
+                if (!c) rsp[-1] = rsp[0];
+                pc += 1;
+                break;
+            }
+            case Op::kGlobalGetS: fp[pc[0]] = inst->globals[pc[1]]->lo; pc += 2; break;
+            case Op::kGlobalSetS: inst->globals[pc[0]]->lo = fp[pc[1]]; pc += 2; break;
             case Op::kThrow: {
                 TagObject* tag = inst->tags[pc[0]];
                 const CanonType& sig = TypeRegistry::Get(tag->sig);
@@ -526,13 +588,13 @@ run:
             // ---- Loads and stores ----
 #define LOAD(opcode, ctype, conv)                                                    \
     case opcode: {                                                                    \
-        MemoryObject* m = memoryAt(pc[0]);                                            \
+        MemoryObject* m = memoryAt(pc[2]);                                            \
         uint8_t* p;                                                                   \
-        EFFECTIVE(m, sp[-1], sizeof(ctype), p);                                       \
+        EFFECTIVE_AT(m, fp[pc[1]], sizeof(ctype), p, pc[3], pc[4]);                   \
         ctype v;                                                                      \
         std::memcpy(&v, p, sizeof(ctype));                                            \
-        sp[-1] = conv;                                                                \
-        pc += 3;                                                                      \
+        fp[pc[0]] = conv;                                                             \
+        pc += 5;                                                                      \
         break;                                                                        \
     }
             LOAD(0x28, uint32_t, static_cast<uint64_t>(v))
@@ -551,14 +613,12 @@ run:
             LOAD(0x35, uint32_t, static_cast<uint64_t>(v))
 #define STORE(opcode, ctype)                                                          \
     case opcode: {                                                                    \
-        MemoryObject* m = memoryAt(pc[0]);                                            \
-        const uint64_t value = *--sp;                                                 \
+        MemoryObject* m = memoryAt(pc[2]);                                            \
         uint8_t* p;                                                                   \
-        EFFECTIVE(m, sp[-1], sizeof(ctype), p);                                       \
-        const ctype v = static_cast<ctype>(value);                                    \
+        EFFECTIVE_AT(m, fp[pc[1]], sizeof(ctype), p, pc[3], pc[4]);                   \
+        const ctype v = static_cast<ctype>(fp[pc[0]]);                                \
         std::memcpy(p, &v, sizeof(ctype));                                            \
-        --sp;                                                                         \
-        pc += 3;                                                                      \
+        pc += 5;                                                                      \
         break;                                                                        \
     }
             STORE(0x36, uint32_t)

@@ -66,6 +66,16 @@ enum : uint32_t {
     kMemorySize, kMemoryGrow,   // memory
     kUnreachable,
     kCopyN,             // dst src: a slot of the frame to another
+    kJzSlot, kJnzSlot,  // slot target: jumps if the number in the slot is zero, or is not
+    kRet,               // resultsN resultsR: the numbers are in the first slots of the frame already
+    kCallR,             // function firstArgumentSlot
+    kCallIndirectR,     // type(canonical) table firstArgumentSlot indexSlot
+    kCallRefR,          // type(canonical) firstArgumentSlot (the reference is on the reference stack)
+    kReturnCallR,       // function (the arguments are in the first slots of the frame already)
+    kSelectSlot,        // dst a b condition
+    kSelectRSlot,       // condition (the references are on the reference stack)
+    kGlobalGetS,        // dst global
+    kGlobalSetS,        // global src
     kConstSlot,         // dst lo hi
     kSyncSp,            // height: the stack pointer is brought to the height the code that follows works from
     kThrow,             // tag
