@@ -5588,6 +5588,19 @@ QUANTA_HANDLER Value h_gen_AdvanceLoopEnv(HANDLER_PARAMS) {
                 pc += 2;
                 const auto& vars = chunk.env->loop_envs[idx];
                 const auto& keys = loop_env_keys_for(chunk, idx);
+                // A fresh environment per iteration is there for the closures that hold on to one (spec CreatePerIterationEnvironment). The loop's own
+                // environment that nothing stored a pointer to -- no closure was made in this iteration, no eval, no inner scope that kept it -- cannot be told
+                // from a copy of itself, so a loop that makes closures only now and then does not pay for one on the iterations where it makes none. Only
+                // when every binding is carried forward: one that starts again uninitialized (a loop's own const or its per-iteration `of` variable) is
+                // not the same binding the next iteration.
+                {
+                    Environment* current = frame_lexical_env(f);
+                    if (current && current->provably_unreachable()) {
+                        bool all_carried = true;
+                        for (const auto& v : vars) all_carried &= v.copy_forward;
+                        if (all_carried) break;
+                    }
+                }
                 // On the stack for the usual few variables: a heap vector per iteration was
                 // the dearest part of advancing a `for (let ...)` loop that makes closures.
                 Value carried_small[8];
