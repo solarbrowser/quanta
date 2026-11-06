@@ -2184,7 +2184,7 @@ public:
         // when it has escaped.
         if (!executable_ || !executable_->fast_env_gate ||
             !(executable_->fast_no_closures || executable_->fast_shared_ctx) || is_native_ ||
-            is_class_constructor_ || is_arrow_ || is_param_default_ || get_function_kind() != FunctionKind::Plain) {
+            is_class_constructor_ || is_param_default_ || get_function_kind() != FunctionKind::Plain) {   // (an arrow is let in: inline_call_enter_env says what it does with one)
             return false;
         }
         const ClassSlots& slots = class_slots();

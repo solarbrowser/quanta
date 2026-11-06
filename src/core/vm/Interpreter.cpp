@@ -2643,6 +2643,16 @@ constexpr uint8_t kInlineHasOpt = 64;
 constexpr uint8_t kInlineRecordCalls = 128;
 constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
 
+static const std::string kArrowNewTarget = "__arrow_new_target__";
+
+// An arrow that makes a call environment of its own is let into the stackless entry, with its own `this` (see inline_call_enter_env). What the general path does
+// for an arrow that this one does not is: a direct eval inside it (the Context of an arrow is told so, for what eval may name), and an arrow born in a class
+// field initializer (its calls re-arm the ban on `arguments`). Both are told by properties the closure's site gives it, the same for every closure of the site,
+// so the verdict made once for the chunk holds.
+static bool arrow_env_ok(Function* fn) {
+    return !fn->has_own_property("__contains_eval__") && !fn->has_own_property("__in_cfi__");
+}
+
 [[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn) {
     // Decided by the body alone, so it does not wait for the JIT: a leaf is answered without ever
     // running, which means nothing ever moves its jit_state off "not seen yet".
@@ -2665,7 +2675,7 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
         !exe.fast_uses_super && !exe.fast_leaf) {
         v = kInlineOk | (strict ? kInlineStrict : 0) | (exe.fast_uses_this ? kInlineWantsThis : 0);
     } else if (declined && chunk.env_mode && chunk.env && chunk.register_count <= kInlineMaxRegs &&
-               exe.fast_env_gate && (exe.fast_no_closures || exe.fast_shared_ctx) && !fn->is_arrow() &&
+               exe.fast_env_gate && (exe.fast_no_closures || exe.fast_shared_ctx) && (!fn->is_arrow() || arrow_env_ok(fn)) &&
                !exe.fast_uses_super) {
         // An environment-mode function whose bindings can be laid down by index. The keys are
         // interned by the first call through the ordinary path, so until then: not decided.
@@ -2719,7 +2729,13 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     if (!exe.fast_no_closures && (!ctx.get_new_target().is_undefined() || ctx.is_in_class_field_init())) return false;
     const bool strict = (verdict & kInlineStrict) != 0;
     Value actual_this = this_value;
-    if (!strict) {
+    if (UNLIKELY(fn->is_arrow())) {
+        // An arrow runs with the `this` it was made with, whatever it is called on (a closure made in it takes that one off the context); it has a new.target
+        // only if it captured one, and one inside a constructor that is still waiting for super() is the general path's.
+        if (UNLIKELY(fn->has_internal_slot(kArrowNewTarget) || ctx.this_needs_super() ||
+                     (fn->get_closure_context() && fn->get_closure_context()->this_needs_super()))) return false;
+        if (fn->has_arrow_this()) actual_this = fn->arrow_this();
+    } else if (!strict) {
         if (this_value.is_undefined() || this_value.is_null()) {
             Object* global = ctx.get_global_this();
             if (!global) return false;
@@ -2829,8 +2845,6 @@ constexpr uint8_t kInlineKeepBits = kInlineHasOpt | kInlineRecordCalls;
     out = callee;
     return true;
 }
-
-static const std::string kArrowNewTarget = "__arrow_new_target__";
 
 // Starts a stackless call of `fn` from `f` if everything allows it; true with the callee's
 // frame in `out` (the caller has only to dispatch it), false with nothing touched.
