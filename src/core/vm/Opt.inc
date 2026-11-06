@@ -1830,7 +1830,7 @@ inline bool Builder::native_call(const Insn& in) {
         d->argc = static_cast<uint8_t>(argc);
         d->recv = rule.recv;
         d->any_arg = rule.any_arg;
-        d->special = name == "charCodeAt" ? 1 : 0;
+        d->special = name == "charCodeAt" ? 1 : name == "push" ? 2 : 0;
         JitCode::OptUnit::NativeDesc* dp = d.get();
         g_.natives.push_back(std::move(d));
         guarded(K::CheckFn, Rep::None, tagged(value(callee_r)), -1, 1, reinterpret_cast<uint64_t>(fn));
@@ -3206,6 +3206,20 @@ inline QUANTA_JIT_ABI uint64_t helper_call_native(VM::Frame* f, const JitCode::O
             const Value& v = args[i];
             if (!(v.is_number() || v.is_string() || v.is_boolean() || v.is_undefined() || v.is_null())) return kNo;
         }
+    if (d->special == 2 && d->argc == 1) {
+        // a.push(x) on a dense array: what the native does in that case and nothing else (the same questions Array.prototype.push asks before it
+        // appends to the elements), without the call through the function object, the span and the generic length. Anything else goes the long way.
+        Object* arr = th.as_object();
+        if (arr->has_only_dense_elements() && arr->is_extensible() && arr->proto_chain_has_no_indices()) {
+            const uint32_t len = static_cast<uint32_t>(arr->element_count());
+            if (static_cast<double>(arr->get_length()) == static_cast<double>(len) && arr->store_dense_element(len, args[0])) {
+                const Value r(static_cast<double>(len) + 1.0);
+                uint64_t bits;
+                std::memcpy(&bits, &r, 8);
+                return bits;
+            }
+        }
+    }
     Context& ctx = *f->ctx;
     const Value r = d->fn->call_register_args(ctx, std::span<const Value>(args, d->argc), th);
     if (ctx.has_exception()) { ctx.clear_exception(); return kNo; }
