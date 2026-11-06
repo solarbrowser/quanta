@@ -10113,6 +10113,19 @@ QUANTA_HANDLER Value h_CreateObjectT(HANDLER_PARAMS) {
     DISPATCH();
 }
 
+QUANTA_HANDLER Value h_CreateArrayConst(HANDLER_PARAMS) {
+    const uint32_t start = read_u16(code, pc + 1);
+    const uint32_t count = read_u16(code, pc + 3);
+    Object* arr = ObjectFactory::create_array_with_room(count).release();
+    arr->set_length(count);
+    arr->reserve_elements(count);
+    arr->fill_new_array(f.chunk->constants.data() + start, count);
+    Engine::fixup_new_array_realm(arr, f.ctx);
+    acc = Value(arr);
+    pc += 5;
+    DISPATCH();
+}
+
 QUANTA_HANDLER Value h_gen_CreateArray(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
@@ -10439,6 +10452,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CreateObject)] = &h_gen_CreateObject;
     t[static_cast<uint8_t>(Op::CreateObjectT)] = &h_CreateObjectT;
     t[static_cast<uint8_t>(Op::CreateArray)] = &h_gen_CreateArray;
+    t[static_cast<uint8_t>(Op::CreateArrayConst)] = &h_CreateArrayConst;
     t[static_cast<uint8_t>(Op::CreateRestArray)] = &h_gen_CreateRestArray;
     t[static_cast<uint8_t>(Op::Throw)] = &h_gen_Throw;
     t[static_cast<uint8_t>(Op::ReraiseGeneratorReturn)] = &h_gen_ReraiseGeneratorReturn;

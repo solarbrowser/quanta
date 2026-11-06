@@ -13217,6 +13217,35 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 return !failed_;
             }
 
+            // A literal of nothing but constants is one instruction over constants stored after one another in the pool (CreateArrayConst); the elements'
+            // own instructions (a load of the index, a store of it, a load of the value, a define) are four for each of them.
+            {
+                const auto& elems = lit->get_elements();
+                bool all_constants = !elems.empty() && elems.size() <= 255 && constants_.size() <= 0xFFFFu;
+                for (const auto& el : elems) {
+                    if (!all_constants) break;
+                    const auto t = el->get_type();
+                    all_constants = t == ASTNode::Type::NUMBER_LITERAL || t == ASTNode::Type::STRING_LITERAL ||
+                                    t == ASTNode::Type::BOOLEAN_LITERAL || t == ASTNode::Type::NULL_LITERAL;
+                }
+                if (all_constants) {
+                    const size_t first = constants_.size();
+                    for (const auto& el : elems) {
+                        switch (el->get_type()) {
+                            case ASTNode::Type::NUMBER_LITERAL: add_constant(Value(static_cast<const NumberLiteral*>(el.get())->get_value())); break;
+                            case ASTNode::Type::STRING_LITERAL: add_constant(Value(static_cast<const StringLiteral*>(el.get())->get_value())); break;
+                            case ASTNode::Type::BOOLEAN_LITERAL: add_constant(Value(static_cast<const BooleanLiteral*>(el.get())->get_value())); break;
+                            default: add_constant(Value::null()); break;
+                        }
+                    }
+                    if (failed_) return false;
+                    emit(Op::CreateArrayConst);
+                    emit_u16(static_cast<uint16_t>(first));
+                    emit_u16(static_cast<uint16_t>(elems.size()));
+                    return !failed_;
+                }
+            }
+
             // CreateArray's count is a u16. A longer literal starts empty and
             // takes its length from a store after its elements instead; an
             // element's temp is freed within its own iteration, so length is
@@ -13806,6 +13835,30 @@ size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool dis
             // with neither holes nor spread: each element is an own data
             // property at its index (DefineElement).
             const uint32_t count = e.name_id;
+            // Nothing but numbers, strings, booleans and null: one CreateArrayConst over constants kept one after another in the pool.
+            if (count > 0 && count <= 255 && constants_.size() <= 0xFFFFu) {
+                bool all_constants = true;
+                for (uint32_t i = 0; i < count && all_constants; i++) {
+                    const TapeEntry& el = tape[index + 1 + i];
+                    all_constants = el.span == 1 && (el.tag == TapeTag::Number || el.tag == TapeTag::String ||
+                                                     (el.tag == TapeTag::Constant && el.binary_op <= 2));
+                }
+                if (all_constants) {
+                    const size_t first = constants_.size();
+                    for (uint32_t i = 0; i < count; i++) {
+                        const TapeEntry& el = tape[index + 1 + i];
+                        if (el.tag == TapeTag::Number) add_constant(Value(el.number_value));
+                        else if (el.tag == TapeTag::String) add_constant(Value(tape_source_->substr(el.name_id, el.str_len)));
+                        else if (el.binary_op == 2) add_constant(Value::null());
+                        else add_constant(Value(el.binary_op == 0));
+                    }
+                    if (failed_) return 0;
+                    emit(Op::CreateArrayConst);
+                    emit_u16(static_cast<uint16_t>(first));
+                    emit_u16(static_cast<uint16_t>(count));
+                    return index + e.span;
+                }
+            }
             emit(Op::CreateArray);
             emit_u16(static_cast<uint16_t>(count));
             int obj_reg = alloc_temp();

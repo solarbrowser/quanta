@@ -784,6 +784,9 @@ public:
     // literal is the one caller whose length is already ahead of its elements;
     // the append leaves that length alone.
     bool store_dense_element(uint32_t index, const Value& value);
+    // The elements of an array that has just been made with room for them (ObjectFactory::create_array_with_room, then set_length and reserve_elements of the
+    // same count): all `count` of them at once, with the length and the element count moved a single time, where store_dense_element does both for each.
+    void fill_new_array(const Value* values, uint32_t count);
     // Room for `count` elements without giving any of them a value, for a
     // caller about to append that many one at a time.
     void reserve_elements(uint32_t count) { ensure_elements_capacity(count); }

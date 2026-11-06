@@ -2295,6 +2295,19 @@ bool Object::store_dense_element(uint32_t index, const Value& value) {
     return true;
 }
 
+void Object::fill_new_array(const Value* values, uint32_t count) {
+    // (Nothing is checked a second time: a new array has no index descriptors, no holes, no accessor on its length, and the room is there.)
+    const bool was_dense = dense_verified();
+    for (uint32_t i = 0; i < count; i++) {
+        if (!values[i].is_finite_double()) Collector::write_barrier_value(this, values[i]);
+        *element_ptr(i) = values[i];
+    }
+    ButterflyExtras& header = *butterfly_extras();
+    header.elements_length = count;
+    if (header.array_length < count) header.array_length = count;
+    if (was_dense && header.array_length == count) mark_dense_verified();
+}
+
 bool Object::delete_element(uint32_t index) {
     if (get_type() == ObjectType::Custom &&
         static_cast<const CustomObjectBase*>(this)->get_custom_kind() == CustomObjectBase::CustomKind::Host) {

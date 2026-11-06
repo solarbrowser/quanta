@@ -506,6 +506,11 @@ enum class Op : uint8_t {
     // conditional jump over it, only in a function whose code is too long for 16-bit offsets to reach across.
     JumpLong,
 
+    // An array literal whose elements are all constants (numbers, strings, booleans, null; no holes, no spread): the elements sit one after another in the
+    // constant pool from `start`, and this makes the array from `count` of them at once, where the general form is a CreateArray and four instructions for each
+    // element. Operands: start (u16), count (u16).
+    CreateArrayConst,
+
     kCount
 };
 

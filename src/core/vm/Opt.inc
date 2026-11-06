@@ -628,7 +628,7 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::StaEnvSlotAt: case Op::StaEnvSlot: case Op::StaEnvSlotInit: case Op::StaEnv: case Op::StaEnvInit: case Op::StaLookup:
     case Op::CheckObjectCoercible:
         e.rd(acc); break;
-    case Op::LdaEnv: case Op::CreateClosure: case Op::CreateObject: case Op::CreateArray: case Op::LdaTdz:
+    case Op::LdaEnv: case Op::CreateClosure: case Op::CreateObject: case Op::CreateArray: case Op::CreateArrayConst: case Op::LdaTdz:
         e.wr(acc); break;
     case Op::LdaEnvStar: e.wr(acc); W(pc + 3); break;
     case Op::LdaTdzStar: e.wr(acc); W(pc + 1); break;
