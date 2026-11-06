@@ -544,7 +544,8 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
     // Decl-site-constant like bytecode_chunk itself, and every instantiation
     // from this template hands over the identical chain -- so an unconditional
     // overwrite is idempotent, the same reasoning closure_props_state etc. rely on.
-    exe->outer_scope_chain = tpl.outer_scope_chain;
+    // (Assigning a shared_ptr is an atomic increment and decrement even when it holds the very same chain, which every closure of a site after the first does.)
+    if (exe->outer_scope_chain != tpl.outer_scope_chain) exe->outer_scope_chain = tpl.outer_scope_chain;
     // Same idempotent overwrite, for the same reason: fe->is_named() &&
     // !fe->is_decl_form() (or its async-function-expression equivalent) is a
     // property of the literal this executable was built from, identical on
@@ -578,7 +579,8 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
     bool plain = !tpl.is_async && !tpl.is_generator;
     if (plain && (tpl.form == Form::Declaration || tpl.form == Form::Arrow)) {
         if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-            function->initialize_prototype(func_proto);
+            // (The constructor has put it there already: a second write is the write barrier's cell lookup, once per closure, for the value that is in place.)
+            if (function->get_prototype_raw() != func_proto) function->initialize_prototype(func_proto);
         }
     }
 
@@ -595,9 +597,8 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
 
     if (tpl.is_arrow) {
         function->set_is_arrow(true);
-        if (ctx.has_binding("this")) {
-            function->set_arrow_this(ctx.get_binding("this"));
-        }
+        // (`this` is the frame's own: has_binding("this") is always true and get_binding("this") is this_value_, so asking by name only built two strings.)
+        function->set_arrow_this(ctx.get_this_value());
     }
     // A private name is the class's lexically, wherever the closure is called from: one made in a method of a class that has private names
     // carries what that method does (the call stack alone names the class of whoever is calling, which is not it).
