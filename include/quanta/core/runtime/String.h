@@ -118,6 +118,7 @@ class String {
         // Moving would take a pointer into the other cell's own allocation.
         if (is_cons_) copy_link(o); else if (o.inline_flat_) new (&data_) std::string(o.data_); else new (&data_) std::string(std::move(o.data_));
     }
+    static String* make_flat_parts(const char* a, size_t alen, const char* b, size_t blen);
     void calculate_hash() const noexcept;
     // Charges the bytes this cell holds outside the cell heap to the
     // collector's pacing -- see the definition.
@@ -275,6 +276,10 @@ public:
     // need it, too long for a size class, the two halves could join into a surrogate pair, another standard library):
     // the caller builds the string the ordinary way.
     static String* make_flat_concat(const std::string& a, const std::string& b);
+    // The same for one piece of text (a copy of the bytes), or for a string the caller has built and does not need again
+    // (kept as it is when it cannot go inline).
+    static String* make_flat(const char* bytes, size_t len);
+    static String* make_flat_string(std::string&& s);
     // A view of `parent`'s bytes [byte_offset, byte_offset + byte_len), or a
     // plain flat copy when the range is too short to be worth pinning the
     // parent. `parent` is flattened first, so the view always names real

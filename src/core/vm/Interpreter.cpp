@@ -4080,7 +4080,7 @@ QUANTA_HANDLER Value h_gen_BuildTemplateString(HANDLER_PARAMS) {
                 for (uint8_t i = 0; i < count; i++) {
                     buf += regs[start + i].as_string()->str();
                 }
-                acc = Value(new String(std::move(buf)));
+                acc = Value(String::make_flat_string(std::move(buf)));
                 break;
             }
     } while (0);

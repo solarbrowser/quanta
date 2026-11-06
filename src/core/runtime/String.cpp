@@ -312,36 +312,51 @@ String* String::make_slice(String* parent, size_t byte_offset, size_t byte_len) 
     // large enough share of what it pins.
     if (byte_len < kMinSliceBytes || byte_len * kMinSliceShare < src.size() ||
         byte_offset > UINT32_MAX || byte_len > UINT32_MAX) {
+        if (String* flat = make_flat(src.data() + byte_offset, byte_len)) return flat;
         return new String(src.substr(byte_offset, byte_len));
     }
     return new (link) String(parent, static_cast<uint32_t>(byte_offset),
                              static_cast<uint32_t>(byte_len));
 }
 
-String* String::make_flat_concat(const std::string& a, const std::string& b) {
+String* String::make_flat_parts(const char* a, size_t alen, const char* b, size_t blen) {
 #if defined(__GLIBCXX__) && defined(__x86_64__) && defined(__linux__)
-    const size_t n = a.size() + b.size();
+    const size_t n = alen + blen;
     // 15 bytes live in the std::string itself already.
     if (n <= 15 || sizeof(String) + n + 1 > Heap::kMaxTier1Size) return nullptr;
-    // canonicalize_pairs joins a high surrogate ending a to a low one starting b into one 4-byte sequence; leave that to it.
-    if (!a.empty() && !b.empty() && static_cast<unsigned char>(b[0]) == 0xED && a.size() >= 3 && static_cast<unsigned char>(a[a.size() - 3]) == 0xED) return nullptr;
+    // canonicalize_pairs joins a high surrogate to a low one into one 4-byte sequence, and a cut can fall inside either:
+    // any text that could hold a surrogate (an 0xED lead byte) takes the ordinary constructor, which does that.
+    if ((alen && std::memchr(a, 0xED, alen)) || (blen && std::memchr(b, 0xED, blen))) return nullptr;
     // The layout of libstdc++'s std::string: pointer, length, then a union of the local buffer and the capacity.
     struct Rep { char* p; size_t len; size_t cap; size_t pad; };
     static_assert(sizeof(std::string) == sizeof(Rep));
     void* mem = String::operator new(sizeof(String) + n + 1);
     String* s = ::new (mem) String(InlineTag{});
     char* bytes = reinterpret_cast<char*>(mem) + sizeof(String);
-    std::memcpy(bytes, a.data(), a.size());
-    std::memcpy(bytes + a.size(), b.data(), b.size());
+    if (alen) std::memcpy(bytes, a, alen);
+    if (blen) std::memcpy(bytes + alen, b, blen);
     bytes[n] = '\0';
     Rep rep{bytes, n, n, 0};
     std::memcpy(static_cast<void*>(&s->data_), &rep, sizeof(Rep));
     s->inline_flat_ = true;
     return s;
 #else
-    (void)a; (void)b;
+    (void)a; (void)alen; (void)b; (void)blen;
     return nullptr;
 #endif
+}
+
+String* String::make_flat_concat(const std::string& a, const std::string& b) {
+    return make_flat_parts(a.data(), a.size(), b.data(), b.size());
+}
+
+String* String::make_flat(const char* bytes, size_t len) {
+    return make_flat_parts(bytes, len, nullptr, 0);
+}
+
+String* String::make_flat_string(std::string&& s) {
+    if (String* flat = make_flat_parts(s.data(), s.size(), nullptr, 0)) return flat;
+    return new String(std::move(s));
 }
 
 String* String::make_concat(String* a, String* b) {

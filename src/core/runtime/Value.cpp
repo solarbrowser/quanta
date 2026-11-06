@@ -43,8 +43,11 @@ Value::Value(const std::string& str) {
     String* raw_ptr = str.size() == 1 ? String::single_char(static_cast<unsigned char>(str[0]))
                                       : nullptr;
     if (!raw_ptr) {
-        auto string_obj = std::make_unique<String>(str);
-        raw_ptr = string_obj.release();
+        raw_ptr = String::make_flat(str.data(), str.size());
+        if (!raw_ptr) {
+            auto string_obj = std::make_unique<String>(str);
+            raw_ptr = string_obj.release();
+        }
     }
     
     #if PLATFORM_POINTER_COMPRESSION
@@ -648,7 +651,7 @@ Value Value::add(const Value& other) const {
     }
     // BigInt + string = string concatenation (spec-compliant)
     if ((is_bigint() || other.is_bigint()) && (is_string() || other.is_string())) {
-        return Value(new String(to_string() + other.to_string()));
+        return Value(String::make_flat_string(to_string() + other.to_string()));
     }
     if (is_bigint() || other.is_bigint()) {
         throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
