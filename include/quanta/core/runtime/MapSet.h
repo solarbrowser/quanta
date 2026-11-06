@@ -12,6 +12,7 @@
 #include "quanta/core/engine/Realm.h"
 #include <unordered_map>
 #include <unordered_set>
+#include <cstdint>
 #include <vector>
 #include <memory>
 
@@ -24,6 +25,84 @@ class Context;
 // collections' key indexes.
 struct SameValueZeroHash { size_t operator()(const Value& v) const; };
 struct SameValueZeroEqual { bool operator()(const Value& a, const Value& b) const; };
+
+// Where the entries of a Map or a Set are, by key: an open-addressed table of positions in the entry vector, which is what holds the keys. A slot is the
+// position and the hash it was inserted with (so growing the table never asks a key for its hash again, and a probe that finds another hash goes past
+// without touching the entry). The standard unordered_map this replaces took a node from the allocator for every key added, and a Map filled with a few
+// million keys spent most of its time there.
+class KeyIndex {
+public:
+    static constexpr uint32_t kNone = 0xFFFFFFFFu;
+
+    // The hash the table works with, from SameValueZeroHash's: a number's is its bits, which are all in the high half for an integer, so they are mixed first.
+    static uint32_t Mix(size_t raw) {
+        uint64_t z = raw;
+        z ^= z >> 30; z *= 0xbf58476d1ce4e5b9ull;
+        z ^= z >> 27; z *= 0x94d049bb133111ebull;
+        z ^= z >> 31;
+        return static_cast<uint32_t>(z);
+    }
+
+    void clear() { slots_.clear(); slots_.shrink_to_fit(); mask_ = 0; used_ = 0; live_ = 0; }
+    void reserve(size_t entries) {
+        size_t capacity = slots_.size() ? slots_.size() : 16;
+        while (entries * 2 > capacity) capacity *= 2;
+        if (capacity != slots_.size()) Rehash(capacity);
+    }
+    // The position of the entry for which `same(position)` holds, or kNone.
+    template <class Same>
+    uint32_t find(uint32_t hash, Same&& same) const {
+        if (slots_.empty()) return kNone;
+        for (size_t at = hash & mask_;; at = (at + 1) & mask_) {
+            const Slot& slot = slots_[at];
+            if (slot.position == kEmpty) return kNone;
+            if (slot.position != kDeleted && slot.hash == hash && same(slot.position)) return slot.position;
+        }
+    }
+    // Records that the entry at `position` has this hash; there is none for the key already.
+    void insert(uint32_t hash, uint32_t position) {
+        if ((used_ + 1) * 10 > slots_.size() * 7) Rehash(slots_.empty() ? 16 : (live_ + 1) * 4 > slots_.size() ? slots_.size() * 2 : slots_.size());
+        size_t at = hash & mask_;
+        while (slots_[at].position != kEmpty && slots_[at].position != kDeleted) at = (at + 1) & mask_;
+        if (slots_[at].position == kEmpty) used_++;
+        slots_[at] = Slot{position, hash};
+        live_++;
+    }
+    // Forgets the entry at `position`, which was inserted with this hash.
+    void erase(uint32_t hash, uint32_t position) {
+        if (slots_.empty()) return;
+        for (size_t at = hash & mask_;; at = (at + 1) & mask_) {
+            Slot& slot = slots_[at];
+            if (slot.position == kEmpty) return;
+            if (slot.position == position) { slot.position = kDeleted; live_--; return; }
+        }
+    }
+
+private:
+    static constexpr uint32_t kEmpty = 0xFFFFFFFFu, kDeleted = 0xFFFFFFFEu;
+    struct Slot { uint32_t position = kEmpty; uint32_t hash = 0; };
+    std::vector<Slot> slots_;
+    size_t mask_ = 0;
+    size_t used_ = 0;   // slots that are not empty: entries and the places entries were
+    size_t live_ = 0;
+
+    void Rehash(size_t capacity) {
+        std::vector<Slot> old;
+        old.swap(slots_);
+        slots_.assign(capacity, Slot{});
+        mask_ = capacity - 1;
+        used_ = 0;
+        live_ = 0;
+        for (const Slot& slot : old) {
+            if (slot.position == kEmpty || slot.position == kDeleted) continue;
+            size_t at = slot.hash & mask_;
+            while (slots_[at].position != kEmpty) at = (at + 1) & mask_;
+            slots_[at] = slot;
+            used_++;
+            live_++;
+        }
+    }
+};
 
 // Where a walker over a Map or a Set has got to, in terms that outlive every
 // change to the storage. Entries are numbered in insertion order and the
@@ -76,7 +155,7 @@ private:
     // lookup used to be a scan of it, so building a map was quadratic.
     // Small maps stay on the scan: below the threshold a contiguous compare
     // beats hashing the key.
-    std::unordered_map<Value, uint32_t, SameValueZeroHash, SameValueZeroEqual> index_;
+    KeyIndex index_;
     bool indexed_ = false;
     static constexpr size_t kLinearLimit = 8;
     void build_index();
@@ -150,7 +229,7 @@ private:
 
     // Same arrangement as Map: the vector keeps insertion order and stable
     // positions, the index makes lookup constant-time past a small size.
-    std::unordered_map<Value, uint32_t, SameValueZeroHash, SameValueZeroEqual> index_;
+    KeyIndex index_;
     bool indexed_ = false;
     static constexpr size_t kLinearLimit = 8;
     void build_index();

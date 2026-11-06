@@ -135,14 +135,18 @@ bool SameValueZeroEqual::operator()(const Value& a, const Value& b) const {
     return a.strict_equals(b);
 }
 
+namespace {
+inline uint32_t KeyHash(const Value& key) { return KeyIndex::Mix(SameValueZeroHash{}(key)); }
+}
+
 Map::Map() : Object(ObjectType::Map), size_(0) {
 }
 
 void Map::build_index() {
     index_.clear();
-    index_.reserve(entries_.size() * 2);
+    index_.reserve(entries_.size());
     for (uint32_t i = 0; i < entries_.size(); i++) {
-        if (!entries_[i].tag.deleted()) index_.emplace(entries_[i].key, i);
+        if (!entries_[i].tag.deleted()) index_.insert(KeyHash(entries_[i].key), i);
     }
     indexed_ = true;
 }
@@ -164,14 +168,21 @@ void Map::set(const Value& raw_key, const Value& value) {
     // A -0 key is stored as +0 (spec Map.prototype.set step 6): the two are the
     // same key, and this is the one the iterators hand back.
     const Value key = (raw_key.is_number() && raw_key.as_number() == 0.0) ? Value(0.0) : raw_key;
-    auto it = find_entry(key);
-    if (it != entries_.end()) {
-        it->value = value;
-        return;
+    uint32_t hash = 0;
+    if (indexed_) {
+        hash = KeyHash(key);
+        const uint32_t at = index_.find(hash, [&](uint32_t p) { return SameValueZeroEqual{}(entries_[p].key, key); });
+        if (at != KeyIndex::kNone) { entries_[at].value = value; return; }
+    } else {
+        auto it = find_entry(key);
+        if (it != entries_.end()) {
+            it->value = value;
+            return;
+        }
     }
     entries_.emplace_back(key, value, next_seq_++);
     size_++;
-    if (indexed_) index_.emplace(key, static_cast<uint32_t>(entries_.size() - 1));
+    if (indexed_) index_.insert(hash, static_cast<uint32_t>(entries_.size() - 1));
     else if (entries_.size() > kLinearLimit) build_index();
 }
 
@@ -181,7 +192,7 @@ bool Map::delete_key(const Value& key) {
     // Soft-delete, so a walker's remembered position stays where it was; the
     // storage is squeezed once the dead outnumber the living.
     it->tag.mark_deleted();
-    if (indexed_) index_.erase(key);
+    if (indexed_) index_.erase(KeyHash(it->key), static_cast<uint32_t>(it - entries_.begin()));
     size_--;
     if (++tombstones_ > kCompactMin && tombstones_ > size_) compact();
     return true;
@@ -296,8 +307,8 @@ It scan_for(It begin, It end, const Value& key, Get get) {
 
 std::vector<Map::MapEntry>::iterator Map::find_entry(const Value& key) {
     if (indexed_) {
-        auto it = index_.find(key);
-        return it == index_.end() ? entries_.end() : entries_.begin() + it->second;
+        const uint32_t at = index_.find(KeyHash(key), [&](uint32_t p) { return SameValueZeroEqual{}(entries_[p].key, key); });
+        return at == KeyIndex::kNone ? entries_.end() : entries_.begin() + at;
     }
     return scan_for(entries_.begin(), entries_.end(), key,
                     [](const MapEntry& e) -> const Value& { return e.key; });
@@ -305,8 +316,8 @@ std::vector<Map::MapEntry>::iterator Map::find_entry(const Value& key) {
 
 std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) const {
     if (indexed_) {
-        auto it = index_.find(key);
-        return it == index_.end() ? entries_.end() : entries_.begin() + it->second;
+        const uint32_t at = index_.find(KeyHash(key), [&](uint32_t p) { return SameValueZeroEqual{}(entries_[p].key, key); });
+        return at == KeyIndex::kNone ? entries_.end() : entries_.begin() + at;
     }
     return scan_for(entries_.begin(), entries_.end(), key,
                     [](const MapEntry& e) -> const Value& { return e.key; });
@@ -803,9 +814,9 @@ bool Set::has(const Value& value) const {
 
 void Set::build_index() {
     index_.clear();
-    index_.reserve(values_.size() * 2);
+    index_.reserve(values_.size());
     for (uint32_t i = 0; i < values_.size(); i++) {
-        if (!values_[i].tag.deleted()) index_.emplace(values_[i].value, i);
+        if (!values_[i].tag.deleted()) index_.insert(KeyHash(values_[i].value), i);
     }
     indexed_ = true;
 }
@@ -814,10 +825,16 @@ void Set::add(const Value& raw_value) {
     Collector::write_barrier(this);
     // Same -0 normalisation as Map::set (spec Set.prototype.add step 4).
     const Value value = (raw_value.is_number() && raw_value.as_number() == 0.0) ? Value(0.0) : raw_value;
-    if (find_value(value) != values_.end()) return;
+    uint32_t hash = 0;
+    if (indexed_) {
+        hash = KeyHash(value);
+        if (index_.find(hash, [&](uint32_t p) { return SameValueZeroEqual{}(values_[p].value, value); }) != KeyIndex::kNone) return;
+    } else if (find_value(value) != values_.end()) {
+        return;
+    }
     values_.emplace_back(value, next_seq_++);
     size_++;
-    if (indexed_) index_.emplace(value, static_cast<uint32_t>(values_.size() - 1));
+    if (indexed_) index_.insert(hash, static_cast<uint32_t>(values_.size() - 1));
     else if (values_.size() > kLinearLimit) build_index();
 }
 
@@ -826,7 +843,7 @@ bool Set::delete_value(const Value& value) {
     if (it == values_.end()) return false;
     // Soft-delete, as in Map::delete_key.
     it->tag.mark_deleted();
-    if (indexed_) index_.erase(value);
+    if (indexed_) index_.erase(KeyHash(it->value), static_cast<uint32_t>(it - values_.begin()));
     size_--;
     if (++tombstones_ > kCompactMin && tombstones_ > size_) compact();
     return true;
@@ -877,8 +894,8 @@ std::vector<std::pair<Value, Value>> Set::entries() const {
 
 std::vector<Set::SetEntry>::iterator Set::find_value(const Value& value) {
     if (indexed_) {
-        auto it = index_.find(value);
-        return it == index_.end() ? values_.end() : values_.begin() + it->second;
+        const uint32_t at = index_.find(KeyHash(value), [&](uint32_t p) { return SameValueZeroEqual{}(values_[p].value, value); });
+        return at == KeyIndex::kNone ? values_.end() : values_.begin() + at;
     }
     return scan_for(values_.begin(), values_.end(), value,
                     [](const SetEntry& e) -> const Value& { return e.value; });
@@ -886,8 +903,8 @@ std::vector<Set::SetEntry>::iterator Set::find_value(const Value& value) {
 
 std::vector<Set::SetEntry>::const_iterator Set::find_value(const Value& value) const {
     if (indexed_) {
-        auto it = index_.find(value);
-        return it == index_.end() ? values_.end() : values_.begin() + it->second;
+        const uint32_t at = index_.find(KeyHash(value), [&](uint32_t p) { return SameValueZeroEqual{}(values_[p].value, value); });
+        return at == KeyIndex::kNone ? values_.end() : values_.begin() + at;
     }
     return scan_for(values_.begin(), values_.end(), value,
                     [](const SetEntry& e) -> const Value& { return e.value; });
