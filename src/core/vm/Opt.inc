@@ -1623,9 +1623,15 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
         if (cs.mega || cs.n == 0 || cs.n > config().poly_max || (construct && cs.n != 1)) return no(4);
         for (uint8_t t = 0; t < cs.n; t++) {
             Function* fn = cs.fns[t];
-            if (!fn || fn->get_function_kind() != Function::FunctionKind::Plain || fn->is_arrow()) return no(4);
+            if (!fn || fn->get_function_kind() != Function::FunctionKind::Plain) return no(4);
             const FunctionExecutable* exe = fn->get_executable().get();
             if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm) return no(5);
+            // An arrow has no `this`, `arguments`, `new.target` or `super` of its own, and a call does not give it any: one whose body reads none of them is
+            // a plain function as far as the call goes, and inlines as one. (What it closes over is read the way a function's is.)
+            if (fn->is_arrow()) {
+                const BytecodeChunk& ac = *exe->bytecode_chunk;
+                if (ac.uses_this || ac.uses_super || ac.needs_arguments || fn->has_internal_slot("__arrow_new_target__")) return no(4);
+            }
             const BytecodeChunk& c = *exe->bytecode_chunk;
             if (construct) {
                 Graph::CtorPlan plan;
