@@ -120,6 +120,8 @@ public:
     // when alloc & ~mark is zero (nothing dead there, the common case for a
     // block that survived a cycle mostly or entirely intact), so a fully-live
     // block costs one word-check each rather than one bit-check per slot.
+    uint32_t accounted_live() const { return h_.accounted_live; }
+    void set_accounted_live(uint32_t n) { h_.accounted_live = n; }
     bool in_dirty_list() const { return h_.in_dirty_list; }
     void set_in_dirty_list(bool v) { h_.in_dirty_list = v; }
 
@@ -154,7 +156,9 @@ private:
         HeapBlock* next;
         // First bitmap word that may hold a free slot below bump_cursor.
         uint32_t   scan_word;
-        uint32_t   pad_;
+        // How many of its cells were live the last time the heap counted them (see Heap::update_allocation_candidates_after_minor): a minor
+        // adds the change since, for the blocks it has touched, to the heap's running total instead of counting every block again.
+        uint32_t   accounted_live;
         uint32_t   cell_size;
         uint32_t   bump_cursor;
         uint32_t   free_count;

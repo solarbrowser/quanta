@@ -1141,8 +1141,10 @@ void run_minor_collection() {
         // scanning roots is paid in full every time regardless. They are
         // handed over separately. The live figure comes back from the rebuild,
         // which has to touch every block anyway.
+        // The blocks the minor touched, not every block of the heap: what this cost grew with the live set (1.8 ms a minor for a million and a half objects,
+        // for a minor that marked and swept the same few as with a small heap).
+        const size_t live_after = Heap::update_allocation_candidates_after_minor();
         Heap::reset_dirty_blocks();
-        const size_t live_after = Heap::rebuild_allocation_candidates();
         Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
     }
     auto t6 = std::chrono::steady_clock::now();

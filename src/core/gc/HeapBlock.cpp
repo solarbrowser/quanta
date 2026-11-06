@@ -21,6 +21,7 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
     h.heap        = heap;
     h.next        = nullptr;
     h.scan_word   = 0;
+    h.accounted_live = 0;
     h.cell_size   = cell_size;
     h.capacity    = static_cast<uint32_t>(kPayloadSize / cell_size);
     h.bump_cursor = 0;

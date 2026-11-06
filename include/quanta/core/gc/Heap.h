@@ -205,6 +205,13 @@ public:
     // find it -- asking stats() for it walked the whole heap a second time.
     static size_t rebuild_allocation_candidates();
 
+    // The same after a minor, for the blocks the minor could have changed (the dirty list, which this has to run before reset_dirty_blocks for): a block
+    // that has free slots and is not the one allocation is pointed at goes back on its list, and the live bytes are the heap's running total moved by what each
+    // of those blocks gained or lost since it was last counted. A minor frees only cells allocated since the last collection, and those are in dirty blocks, so
+    // nothing else has anything to add; the walk over every block is left to a major, which is also what returns empty blocks (unlinking one from the chain
+    // needs the walk). Costs what the minor touched, not the size of the heap.
+    static size_t update_allocation_candidates_after_minor();
+
     // Full idle-chunk scan (see BlockAllocator::decommit_idle_chunks) --
     // major-collection-only housekeeping, not part of the minor pause budget.
     static void decommit_idle_memory();
@@ -301,6 +308,9 @@ private:
     std::vector<HeapBlock*> partial_blocks_[kNumCellKinds][kNumSizeClasses];
     LargeCell* large_cells_ = nullptr;
     size_t block_count_ = 0;
+    // The bytes of live cells in the blocks, as of the last time they were counted (rebuild_allocation_candidates counts them all; a minor moves it by the
+    // change in the blocks it touched).
+    size_t block_live_bytes_ = 0;
 };
 
 // RAII: makes a heap the thread's active heap for its lifetime.

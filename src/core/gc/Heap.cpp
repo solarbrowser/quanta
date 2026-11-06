@@ -462,6 +462,7 @@ size_t Heap::rebuild_allocation_candidates() {
     Heap* counted = &Heap::active();
     size_t live_bytes = 0;
     for (Heap* heap : thread_heaps()) {
+        size_t heap_block_live = 0;
         for (size_t k = 0; k < kNumCellKinds; k++) {
             for (size_t c = 0; c < kNumSizeClasses; c++) {
                 auto& partial = heap->partial_blocks_[k][c];
@@ -484,16 +485,37 @@ size_t Heap::rebuild_allocation_candidates() {
                         if (b != heap->active_block_[k][c] && !b->is_full()) {
                             partial.push_back(b);
                         }
-                        if (heap == counted) {
-                            live_bytes += static_cast<size_t>(b->live_count()) * b->cell_size();
-                        }
+                        heap_block_live += static_cast<size_t>(b->live_count()) * b->cell_size();
+                        b->set_accounted_live(b->live_count());
                         prev = b;
                     }
                     b = next;
                 }
             }
         }
+        heap->block_live_bytes_ = heap_block_live;
         if (heap == counted) {
+            live_bytes += heap_block_live;
+            for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) live_bytes += lc->size;
+        }
+    }
+    return live_bytes;
+}
+
+size_t Heap::update_allocation_candidates_after_minor() {
+    Heap* counted = &Heap::active();
+    size_t live_bytes = 0;
+    for (Heap* heap : thread_heaps()) {
+        for (HeapBlock* b : heap->dirty_blocks_) {
+            const size_t k = static_cast<size_t>(b->cell_kind());
+            const size_t cls = size_class_index(b->cell_size());
+            const std::ptrdiff_t change = static_cast<std::ptrdiff_t>(b->live_count()) - static_cast<std::ptrdiff_t>(b->accounted_live());
+            heap->block_live_bytes_ = static_cast<size_t>(static_cast<std::ptrdiff_t>(heap->block_live_bytes_) + change * static_cast<std::ptrdiff_t>(b->cell_size()));
+            b->set_accounted_live(b->live_count());
+            if (cls < kNumSizeClasses && b != heap->active_block_[k][cls] && !b->is_full()) heap->partial_blocks_[k][cls].push_back(b);
+        }
+        if (heap == counted) {
+            live_bytes += heap->block_live_bytes_;
             for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) live_bytes += lc->size;
         }
     }
