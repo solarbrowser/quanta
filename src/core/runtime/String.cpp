@@ -318,12 +318,39 @@ String* String::make_slice(String* parent, size_t byte_offset, size_t byte_len) 
                              static_cast<uint32_t>(byte_len));
 }
 
+String* String::make_flat_concat(const std::string& a, const std::string& b) {
+#if defined(__GLIBCXX__) && defined(__x86_64__) && defined(__linux__)
+    const size_t n = a.size() + b.size();
+    // 15 bytes live in the std::string itself already.
+    if (n <= 15 || sizeof(String) + n + 1 > Heap::kMaxTier1Size) return nullptr;
+    // canonicalize_pairs joins a high surrogate ending a to a low one starting b into one 4-byte sequence; leave that to it.
+    if (!a.empty() && !b.empty() && static_cast<unsigned char>(b[0]) == 0xED && a.size() >= 3 && static_cast<unsigned char>(a[a.size() - 3]) == 0xED) return nullptr;
+    // The layout of libstdc++'s std::string: pointer, length, then a union of the local buffer and the capacity.
+    struct Rep { char* p; size_t len; size_t cap; size_t pad; };
+    static_assert(sizeof(std::string) == sizeof(Rep));
+    void* mem = String::operator new(sizeof(String) + n + 1);
+    String* s = ::new (mem) String(InlineTag{});
+    char* bytes = reinterpret_cast<char*>(mem) + sizeof(String);
+    std::memcpy(bytes, a.data(), a.size());
+    std::memcpy(bytes + a.size(), b.data(), b.size());
+    bytes[n] = '\0';
+    Rep rep{bytes, n, n, 0};
+    std::memcpy(static_cast<void*>(&s->data_), &rep, sizeof(Rep));
+    s->inline_flat_ = true;
+    return s;
+#else
+    (void)a; (void)b;
+    return nullptr;
+#endif
+}
+
 String* String::make_concat(String* a, String* b) {
     if (!a || a->empty()) return b;
     if (!b || b->empty()) return a;
     // Flatten immediately only when BOTH sides are already flat and combined size is small.
     // Don't call str() on a cons node here — that would defeat the whole purpose.
     if (!a->is_cons_ && !b->is_cons_ && a->data_.size() + b->data_.size() <= CONS_THRESHOLD) {
+        if (String* flat = make_flat_concat(a->data_, b->data_)) return flat;
         return new String(a->data_ + b->data_);
     }
     // Put a small append in the last link rather than growing the rope by one.

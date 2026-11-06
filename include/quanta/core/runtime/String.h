@@ -69,6 +69,10 @@ class String {
     // no cache. Lets the destructor skip the cache scan for the strings that
     // were never in one, which is nearly all of them.
     mutable bool in_side_cache_ : 1 = false;
+    // The bytes of this flat cell sit in the same allocation, right after the 64 bytes of the cell, and data_ is a
+    // std::string laid over them by hand (libstdc++ only; see make_flat_concat). There is no buffer of its own to free,
+    // so nothing may destroy, move from or write through data_: the destructor and the moves look at this bit.
+    bool inline_flat_ : 1 = false;
     // UTF-16 length, computed once. `.length` is a scan of the whole UTF-8
     // buffer, so reading it in a loop over a growing string is quadratic;
     // strings are immutable, so the answer never changes once known. Fits the
@@ -82,7 +86,7 @@ class String {
     // 1 single-byte, 2 has multi-byte sequences.
 
     void ensure_flat() const;
-    void destroy_payload() noexcept { forget_cursor(); if (!is_cons_) data_.~basic_string(); }
+    void destroy_payload() noexcept { forget_cursor(); if (!is_cons_ && !inline_flat_) data_.~basic_string(); inline_flat_ = false; }
     // Where the last indexed read of THIS string stopped. See String.cpp: a
     // scan that walks a non-ASCII string in order would otherwise decode from
     // byte 0 on every read, and one such character anywhere in a file is
@@ -111,7 +115,8 @@ class String {
     }
     void move_from(String&& o) noexcept {
         copy_bits(o);
-        if (is_cons_) copy_link(o); else new (&data_) std::string(std::move(o.data_));
+        // Moving would take a pointer into the other cell's own allocation.
+        if (is_cons_) copy_link(o); else if (o.inline_flat_) new (&data_) std::string(o.data_); else new (&data_) std::string(std::move(o.data_));
     }
     void calculate_hash() const noexcept;
     // Charges the bytes this cell holds outside the cell heap to the
@@ -142,6 +147,8 @@ public:
     static void  operator delete[](void*) = delete;
 
     String() { new (&data_) std::string(); }
+    struct InlineTag {};
+    explicit String(InlineTag) noexcept {}   // data_ is laid over the cell's own bytes by make_flat_concat
     explicit String(const std::string& str);
     void gc_trace(class Visitor& v) const;
     explicit String(std::string&& str) noexcept;
@@ -166,7 +173,7 @@ public:
         is_tail_ = true;
     }
 
-    ~String() { forget_cursor(); if (!is_cons_) data_.~basic_string(); }
+    ~String() { forget_cursor(); if (!is_cons_ && !inline_flat_) data_.~basic_string(); }
 
     String(const String& o) { copy_from(o); }
     String(String&& o) noexcept { move_from(std::move(o)); }
@@ -262,6 +269,12 @@ public:
 
     // O(1) when both sides are large; flattens lazily on first read
     static String* make_concat(String* a, String* b);
+    // A flat cell holding the bytes of a then b, with the bytes in the cell's own allocation. A std::string that does
+    // not fit its 15 bytes of local storage costs a second allocation, a second cache line to visit when the string is
+    // read, marked-through or swept, and a free; this costs none of them. Null when it does not apply (too short to
+    // need it, too long for a size class, the two halves could join into a surrogate pair, another standard library):
+    // the caller builds the string the ordinary way.
+    static String* make_flat_concat(const std::string& a, const std::string& b);
     // A view of `parent`'s bytes [byte_offset, byte_offset + byte_len), or a
     // plain flat copy when the range is too short to be worth pinning the
     // parent. `parent` is flattened first, so the view always names real
