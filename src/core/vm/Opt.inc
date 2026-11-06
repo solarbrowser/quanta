@@ -3317,8 +3317,8 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
     // What the interpreter's read handler answers from the site's cache before it asks the general path.
     const Value rv = std::bit_cast<Value>(recv);
     if (d->is_length && rv.is_string()) return std::bit_cast<uint64_t>(Value(static_cast<double>(rv.as_string()->utf16_length())));
-    if (rv.is_object()) {
-        Object* obj = rv.as_object();
+    if (rv.is_object_like()) {
+        Object* obj = rv.is_function() ? static_cast<Object*>(rv.as_function()) : rv.as_object();
         if (const FeedbackBody* fb = d->slot->peek()) {
             const uint64_t word = obj->raw_shape_word();
             if (!obj->has_any_descriptor_override()) {
@@ -3345,11 +3345,13 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
         Value shared;
         if (d->slot->peek() && d->slot->peek()->mega && VM::mega_probe(obj, d->name, shared)) return std::bit_cast<uint64_t>(shared);
     }
-    return rt_run(f, d->pc, [&](Context& ctx) { return VM::get_named(ctx, rv, *d->name, d->slot, d->owner, false); });
+    const bool rooted = f->feedback_rooted;  // A site the optimized code reaches before the interpreter ever did still learns here.
+    return rt_run(f, d->pc, [&](Context& ctx) { return VM::get_named(ctx, rv, *d->name, d->slot, d->owner, rooted); });
 }
 inline QUANTA_JIT_ABI uint64_t helper_rt_setnamed(VM::Frame* f, uint64_t recv, uint64_t val, uint64_t desc) noexcept {
     const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
-    return rt_run(f, d->pc, [&](Context& ctx) { VM::set_named(ctx, std::bit_cast<Value>(recv), *d->name, std::bit_cast<Value>(val), d->slot, d->owner, false); return Value(); });
+    const bool rooted = f->feedback_rooted;
+    return rt_run(f, d->pc, [&](Context& ctx) { VM::set_named(ctx, std::bit_cast<Value>(recv), *d->name, std::bit_cast<Value>(val), d->slot, d->owner, rooted); return Value(); });
 }
 inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_rt_binary), reinterpret_cast<const void*>(&helper_rt_typeof),
                                          reinterpret_cast<const void*>(&helper_rt_getnamed), reinterpret_cast<const void*>(&helper_rt_setnamed)};
