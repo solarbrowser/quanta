@@ -3345,12 +3345,12 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
         Value shared;
         if (d->slot->peek() && d->slot->peek()->mega && VM::mega_probe(obj, d->name, shared)) return std::bit_cast<uint64_t>(shared);
     }
-    const bool rooted = f->feedback_rooted;  // A site the optimized code reaches before the interpreter ever did still learns here.
+    const bool rooted = d->owner && d->owner == f->owner && f->feedback_rooted;  // A site the optimized code reaches before the interpreter ever did still learns here, where the owner is the running frame's own (an inlined callee's owner is a bare pointer the unit does not keep alive).
     return rt_run(f, d->pc, [&](Context& ctx) { return VM::get_named(ctx, rv, *d->name, d->slot, d->owner, rooted); });
 }
 inline QUANTA_JIT_ABI uint64_t helper_rt_setnamed(VM::Frame* f, uint64_t recv, uint64_t val, uint64_t desc) noexcept {
     const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
-    const bool rooted = f->feedback_rooted;
+    const bool rooted = d->owner && d->owner == f->owner && f->feedback_rooted;
     return rt_run(f, d->pc, [&](Context& ctx) { VM::set_named(ctx, std::bit_cast<Value>(recv), *d->name, std::bit_cast<Value>(val), d->slot, d->owner, rooted); return Value(); });
 }
 inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_rt_binary), reinterpret_cast<const void*>(&helper_rt_typeof),
