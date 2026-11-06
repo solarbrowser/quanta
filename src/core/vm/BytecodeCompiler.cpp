@@ -1588,6 +1588,18 @@ bool contains_delegated_expr(const ASTNode* node) {
 // (they get their own).
 // The oracle the parser-computed bit is checked against, and the answer
 // for any tree the parser did not fill in.
+// Whether a function literal whose body was let go after its parse (see release_body_after_parse) names `arguments`, or has a direct eval that could read
+// it. The parse recorded what the body names, under the position the body starts at; only a literal with no record at all is one this cannot say anything
+// about, and the answer is then yes. (A concise arrow whose body is another arrow was asked this by every enclosing arrow and always answered yes,
+// which put each of them in environment mode with an arguments object, off the fast calls.)
+template <typename Lit>
+static bool arguments_named_by_released_body(const Lit* n) {
+    ScriptUnit* unit = n->owning_unit();
+    const BodyScopeInfo* info = unit ? unit->scope_info_at(n->body_source_first()) : nullptr;
+    if (!info) return true;
+    return info->eval_anywhere || info->all_names.count(NamePool::intern("arguments")) > 0;
+}
+
 bool uses_arguments_by_walk(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
@@ -1623,12 +1635,15 @@ bool uses_arguments_by_walk(const ASTNode* node) {
             // this function's -- and a body stepped over is one this cannot be
             // asked about, which is not the same as one that does not.
             const auto* n = static_cast<const ArrowFunctionExpression*>(node);
-            return !n->get_body() || uses_arguments_by_walk(n->get_body());
+            if (n->get_body()) return uses_arguments_by_walk(n->get_body());
+            return arguments_named_by_released_body(n);
         }
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             // Async arrows share the enclosing arguments; async functions own theirs.
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
-            return n->is_arrow() && (!n->get_body() || uses_arguments_by_walk(n->get_body()));
+            if (!n->is_arrow()) return false;
+            if (n->get_body()) return uses_arguments_by_walk(n->get_body());
+            return arguments_named_by_released_body(n);
         }
         case ASTNode::Type::CLASS_DECLARATION: {
             // Superclass expressions and computed keys evaluate in the
