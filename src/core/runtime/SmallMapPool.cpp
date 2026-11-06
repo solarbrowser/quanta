@@ -13,16 +13,22 @@
 namespace Quanta {
 
 namespace {
+// A class's free blocks, chained through their own first word: pushing one is a load and a store, and giving a block back never allocates (deallocate() is
+// noexcept, and a sweep gives back thousands at once). The list used to be a vector of pointers that grew only when a take found it full, one doubling per
+// burst: a collection frees a whole generation of closures' caches in a row, the list that was there held a few dozen of them, the rest went back to the
+// allocator, and the program took them again one at a time -- nine takes in ten missed. How much a class keeps is bounded in bytes instead.
+struct FreeList {
+    void* head = nullptr;
+    size_t count = 0;
+    size_t cap = 0;
+    size_t taken = 0;   // what was asked of the class since trim() last looked: the demand it has to keep up with
+};
+
 struct SizeClassPool {
     static constexpr size_t kPerClassCap = 16384;
-    // What a class's free list starts out able to hold. It used to start at
-    // the cap, so every distinct size ever asked for cost a 128 KB vector of
-    // pointers at once whether or not that many blocks were ever in flight --
-    // and a real program produces a hundred and more distinct sizes, because
-    // an object's storage grows in two independent dimensions. The list now
-    // grows towards the cap only as churn actually fills it.
-    static constexpr size_t kInitialClassCap = 32;
-    std::vector<std::pair<size_t, std::vector<void*>>> classes;
+    // The most one class holds on to, whatever its block size is.
+    static constexpr size_t kClassBytesCap = 512 * 1024;
+    std::vector<std::pair<size_t, FreeList>> classes;
 
     // Which free list a byte size belongs to. This used to be found by
     // walking `classes`, which was enough while only a handful of distinct
@@ -65,50 +71,39 @@ struct SizeClassPool {
     }
 
     void* take(size_t bytes) {
-        if (bytes == 0) return nullptr;
+        if (bytes < sizeof(void*)) return nullptr;   // (a block has to be able to hold the link)
         uint32_t* slot = slot_for(bytes, true);
         if (!slot) return nullptr;
         if (*slot == kNoClass) {
             *slot = static_cast<uint32_t>(classes.size());
-            // Reserve now, and reserve again only from take(): the push_back
-            // in give() must NEVER reallocate or throw -- deallocate() is
-            // noexcept, and a bad_alloc during that realloc would call
-            // std::terminate() (not far-fetched during a GC sweep, when many
-            // maps get torn down in a batch). That is what give()'s test
-            // against capacity keeps true.
-            classes.push_back({bytes, {}});
-            classes.back().second.reserve(kInitialClassCap);
+            FreeList list;
+            list.cap = std::min(kPerClassCap, std::max<size_t>(4, kClassBytesCap / bytes));
+            classes.push_back({bytes, list});
             return nullptr;
         }
-        std::vector<void*>& free_list = classes[*slot].second;
-        // Growth happens here and only here. give() is noexcept, so it may
-        // never be the one to reallocate; it pushes while there is room and
-        // hands the block back to the allocator when there is not. A list
-        // found full is one that has been turning blocks away, so this is
-        // where the class earns a larger one.
-        if (free_list.size() == free_list.capacity() &&
-            free_list.capacity() < kPerClassCap) {
-            size_t next = free_list.capacity() ? free_list.capacity() * 2
-                                               : kInitialClassCap;
-            if (next > kPerClassCap) next = kPerClassCap;
-            free_list.reserve(next);
-        }
-        if (free_list.empty()) return nullptr;
-        void* p = free_list.back();
-        free_list.pop_back();
+        FreeList& list = classes[*slot].second;
+        list.taken++;
+        void* p = list.head;
+        if (!p) return nullptr;
+        list.head = *static_cast<void**>(p);
+        list.count--;
         return p;
     }
 
     void give(size_t bytes, void* p) {
-        uint32_t* slot = bytes ? slot_for(bytes, false) : nullptr;
+        uint32_t* slot = bytes >= sizeof(void*) ? slot_for(bytes, false) : nullptr;
         if (!slot || *slot == kNoClass) {
             ::operator delete(p);  // take() registers the class first, so this is the unpooled tail
             return;
         }
-        std::vector<void*>& free_list = classes[*slot].second;
-        // Against capacity, not against the cap: this must not reallocate.
-        if (free_list.size() < free_list.capacity()) free_list.push_back(p);
-        else ::operator delete(p);
+        FreeList& list = classes[*slot].second;
+        if (list.count < list.cap) {
+            *static_cast<void**>(p) = list.head;
+            list.head = p;
+            list.count++;
+        } else {
+            ::operator delete(p);
+        }
     }
 };
 // Deliberately never destructed: some pool clients (Shape::slots_/
@@ -140,20 +135,22 @@ void SmallMapPool::give(size_t bytes, void* p) {
 
 void SmallMapPool::trim() {
     if (!g_pool) return;
-    // A flat block-count floor would keep 64 slots of whatever a 166 KB
-    // class's elements happen to be just as readily as 64 slots of a
-    // 16-byte one -- scale the reserve by size instead, so every class
-    // keeps roughly the same standing capacity rather than the same count.
+    // What a class keeps is what was asked of it since the last time: a collection gives back a generation of blocks in one go and the program takes them again
+    // one at a time until the next, so a pool cut to a few dozen at every major (as this once did) lost nearly all of them before they could be taken. A
+    // class nothing asked for since falls to a small reserve of a few kilobytes, which is what gives the memory back.
     constexpr size_t kKeepBytesPerClass = 8192;
     for (auto& entry : g_pool->classes) {
-        size_t bytes = entry.first;
-        std::vector<void*>& free_list = entry.second;
-        size_t keep = bytes ? std::max<size_t>(4, kKeepBytesPerClass / bytes) : 4;
-        while (free_list.size() > keep) {
-            ::operator delete(free_list.back());
-            free_list.pop_back();
+        const size_t bytes = entry.first;
+        FreeList& list = entry.second;
+        const size_t floor = bytes ? std::max<size_t>(4, kKeepBytesPerClass / bytes) : 4;
+        const size_t keep = std::max(floor, std::min(list.cap, list.taken));
+        list.taken = 0;
+        while (list.count > keep) {
+            void* p = list.head;
+            list.head = *static_cast<void**>(p);
+            list.count--;
+            ::operator delete(p);
         }
-        free_list.shrink_to_fit();
     }
 }
 
