@@ -17,6 +17,9 @@ size_t wtf8_decode_into(const std::string& s, std::u16string& buffer);
 #include <cstdlib>
 #include <vector>
 #include <cstring>
+#include <bit>
+#include <cstdio>
+#include <new>
 
 namespace Quanta {
 
@@ -319,31 +322,102 @@ String* String::make_slice(String* parent, size_t byte_offset, size_t byte_len) 
                              static_cast<uint32_t>(byte_len));
 }
 
+namespace {
+
+// How this standard library lays out a std::string whose bytes are in a buffer of its own (the "long" form). The inline
+// cell lays one over the bytes after the cell by hand, so the layout has to be known; it is not guessed. Every
+// candidate below is built and then read back through the library's own member functions at start-up, and only one that
+// answers exactly (size, data pointer, capacity, contents, a copy of it) is used. If none does, strings are made the
+// ordinary way: a library or a build mode this does not know costs speed, never correctness.
+enum class StrLayout : uint8_t { Gnu, Msvc, LibcxxNew, LibcxxOld, LibcxxAlt, kCount, None = 255 };
+
+void fill_std_string(StrLayout layout, void* dst, char* bytes, size_t n) {
+    uint64_t w[4] = {0, 0, 0, 0};
+    const uint64_t p = reinterpret_cast<uint64_t>(bytes);
+    switch (layout) {
+        case StrLayout::Gnu:       w[0] = p; w[1] = n; w[2] = n; break;                       // _M_p, _M_string_length, _M_allocated_capacity
+        case StrLayout::Msvc:      w[0] = p; w[2] = n; w[3] = n; break;                       // _Bx (pointer), _Mysize, _Myres
+        case StrLayout::LibcxxNew: w[0] = ((n + 1) << 1) | 1; w[1] = n; w[2] = p; break;     // is_long in bit 0, capacity + 1 above it
+        case StrLayout::LibcxxOld: w[0] = ((n + 2) & ~uint64_t(1)) | 1; w[1] = n; w[2] = p; break;
+        case StrLayout::LibcxxAlt: w[0] = p; w[1] = n; w[2] = (n + 1) | (uint64_t(1) << 63); break;   // the alternate (Apple) layout: is_long in the top bit
+        default: break;
+    }
+    std::memcpy(dst, w, sizeof(w));
+}
+
+// Out of line, and taking the string by reference: the compiler is not shown that the bytes it reads were written as raw words.
+[[gnu::noinline]] bool probe_std_string(const std::string& s, const char* bytes, size_t n) noexcept {
+    try {
+        if (s.size() != n) return false;
+        if (s.data() != bytes) return false;
+        if (s.capacity() < n || s.capacity() > n + 1) return false;   // the capacity stated is the allocation made, no more
+        if (s.c_str() != bytes || std::memcmp(s.data(), bytes, n + 1) != 0) return false;
+        const std::string copy(s);
+        return copy.size() == n && std::memcmp(copy.data(), bytes, n) == 0 && s == copy && s.substr(n - 3) == copy.substr(n - 3);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool std_string_layout_works(StrLayout layout, size_t n) {
+    alignas(16) char bytes[160];
+    for (size_t i = 0; i < n; i++) bytes[i] = static_cast<char>('a' + (i * 7) % 23);
+    bytes[n] = '\0';
+    alignas(std::string) unsigned char raw[sizeof(std::string)];
+    fill_std_string(layout, raw, bytes, n);
+    return probe_std_string(*std::launder(reinterpret_cast<const std::string*>(raw)), bytes, n);
+}
+
+StrLayout detect_std_string_layout() {
+    static const StrLayout found = [] {
+        if constexpr (sizeof(std::string) != 32 || sizeof(void*) != 8 || std::endian::native != std::endian::little) {
+            return StrLayout::None;
+        } else {
+            const bool trace = std::getenv("QUANTA_STR_LAYOUT_TRACE") != nullptr;
+            StrLayout winner = StrLayout::None;
+            for (uint8_t i = 0; i < static_cast<uint8_t>(StrLayout::kCount); i++) {
+                const StrLayout layout = static_cast<StrLayout>(i);
+                // Only the layouts the library in use can have: a layout of another library is read through code that
+                // was never meant to see it, which is not worth the risk of finding out.
+#if defined(_LIBCPP_VERSION)
+                if (layout != StrLayout::LibcxxNew && layout != StrLayout::LibcxxOld && layout != StrLayout::LibcxxAlt) continue;
+#elif defined(_MSVC_STL_VERSION)
+                if (layout != StrLayout::Msvc) continue;
+#elif defined(__GLIBCXX__)
+                if (layout != StrLayout::Gnu) continue;
+#else
+                continue;
+#endif
+                const bool ok = std_string_layout_works(layout, 16) && std_string_layout_works(layout, 40) && std_string_layout_works(layout, 150);
+                if (trace) std::fprintf(stderr, "[string] layout %u: %s\n", static_cast<unsigned>(i), ok ? "works" : "no");
+                if (ok && winner == StrLayout::None) winner = layout;
+            }
+            return winner;
+        }
+    }();
+    return found;
+}
+
+}  // namespace
+
 String* String::make_flat_parts(const char* a, size_t alen, const char* b, size_t blen) {
-#if defined(__GLIBCXX__) && defined(__x86_64__) && defined(__linux__)
     const size_t n = alen + blen;
     // 15 bytes live in the std::string itself already.
     if (n <= 15 || sizeof(String) + n + 1 > Heap::kMaxTier1Size) return nullptr;
     // canonicalize_pairs joins a high surrogate to a low one into one 4-byte sequence, and a cut can fall inside either:
     // any text that could hold a surrogate (an 0xED lead byte) takes the ordinary constructor, which does that.
     if ((alen && std::memchr(a, 0xED, alen)) || (blen && std::memchr(b, 0xED, blen))) return nullptr;
-    // The layout of libstdc++'s std::string: pointer, length, then a union of the local buffer and the capacity.
-    struct Rep { char* p; size_t len; size_t cap; size_t pad; };
-    static_assert(sizeof(std::string) == sizeof(Rep));
+    const StrLayout layout = detect_std_string_layout();
+    if (layout == StrLayout::None) return nullptr;
     void* mem = String::operator new(sizeof(String) + n + 1);
     String* s = ::new (mem) String(InlineTag{});
     char* bytes = reinterpret_cast<char*>(mem) + sizeof(String);
     if (alen) std::memcpy(bytes, a, alen);
     if (blen) std::memcpy(bytes + alen, b, blen);
     bytes[n] = '\0';
-    Rep rep{bytes, n, n, 0};
-    std::memcpy(static_cast<void*>(&s->data_), &rep, sizeof(Rep));
+    fill_std_string(layout, static_cast<void*>(&s->data_), bytes, n);
     s->inline_flat_ = true;
     return s;
-#else
-    (void)a; (void)alen; (void)b; (void)blen;
-    return nullptr;
-#endif
 }
 
 String* String::make_flat_concat(const std::string& a, const std::string& b) {
