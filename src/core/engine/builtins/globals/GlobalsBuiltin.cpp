@@ -2264,6 +2264,10 @@ void register_global_builtins(Context& ctx) {
             Engine* engine = ctx.get_engine();
             Context* queue_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : call_ctx;
 
+            // The job runs on the Context of the call that queued it, which holds nothing (the callback may have been made anywhere) that
+            // the collector can reach it by: the survivor pool prunes a Context nothing reaches, and a minor collection between the
+            // queueing and the job freed it. Held for as long as the job is queued, as timers and promises hold theirs.
+            EventLoop::instance().retain_context(call_ctx);
             queue_ctx->queue_microtask([call_ctx, cb]() {
                 cb->call(*call_ctx, {});
                 if (call_ctx->has_exception()) {
@@ -2271,6 +2275,7 @@ void register_global_builtins(Context& ctx) {
                     call_ctx->clear_exception();
                     HostHooks::report_uncaught(*call_ctx, exc, "queueMicrotask");
                 }
+                EventLoop::instance().release_context(call_ctx);
             }, {Value(cb)});
             return Value();
         }, 1);
