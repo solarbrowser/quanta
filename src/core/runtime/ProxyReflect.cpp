@@ -1601,6 +1601,11 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
     ctx.set_new_target(new_target_value);
     ctx.set_pending_construct_call(true);
     Value result = target->call(ctx, construct_args, Value(new_object.get()));
+    // From here the object belongs to the collector, not to this scope. `this` was in the target's hands: it may be what the
+    // target returned (an ES5-style constructor ends in `return _this`, and then `return result` below handed back an object that
+    // the unique_ptr deleted on the way out), or it may have been stored somewhere before the constructor threw. Function::construct
+    // releases its pre-allocated object for the same reason.
+    Object* const made = new_object.release();
     ctx.set_in_constructor_call(was_in_constructor);
     ctx.set_new_target(old_new_target);
 
@@ -1609,7 +1614,7 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
         // TypedArray) return a fresh object instead of mutating `this` -- apply the
         // newTarget prototype here (fetched only now, after the constructor ran).
         Object* result_obj = result.is_function() ? static_cast<Object*>(result.as_function()) : result.as_object();
-        if (result_obj != new_object.get() && !result_obj->get_prototype_raw()) {
+        if (result_obj != made && !result_obj->get_prototype_raw()) {
             if (target->is_native()) {
                 nt_proto = new_target_obj->get_property("prototype");
                 if (ctx.has_exception()) return Value();
@@ -1626,7 +1631,7 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
         }
         return result;
     }
-    return Value(new_object.release());
+    return Value(made);
 }
 
 Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const Value> args, Value receiver) {
