@@ -296,6 +296,24 @@ public:
         while (step()) {}
     }
 
+    // A cycle is over and the worklists are empty: what capacity a big cycle grew them to is given back. The visitor lives as long as the thread (one per
+    // thread, see mark_visitor()), and clear() keeps capacity, so the gray list that held the two million elements of one array while it was marked stayed at
+    // 32 MB for good -- the footprint of a program that had freed everything stood tens of megabytes above where it began. A list that stayed small is kept
+    // (growing it again every cycle would cost more than it holds).
+    void release_excess_capacity() {
+        constexpr size_t kKeepEntries = 64 * 1024;
+        const auto shed = [](auto& list, size_t keep) {
+            if (list.capacity() > keep) std::remove_reference_t<decltype(list)>().swap(list);
+        };
+        shed(gray_, kKeepEntries);
+        shed(context_work_, kKeepEntries);
+        shed(environment_work_, kKeepEntries);
+        shed(pending_weak_maps_, kKeepEntries);
+        shed(pending_weak_sets_, kKeepEntries);
+        shed(pending_weak_refs_, kKeepEntries);
+        shed(pending_fin_registries_, kKeepEntries);
+    }
+
     // Cycle boundary: called at the start of every collection (minor or
     // major) -- every worklist must start empty.
     void reset_for_new_cycle() {
@@ -1146,6 +1164,7 @@ void run_minor_collection() {
         const size_t live_after = Heap::update_allocation_candidates_after_minor();
         Heap::reset_dirty_blocks();
         Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
+        v.release_excess_capacity();
     }
     auto t6 = std::chrono::steady_clock::now();
 
@@ -1329,6 +1348,7 @@ void finish_major_cycle(MarkVisitor& v) {
         Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
         Heap::note_major_done(live_after);
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
+        v.release_excess_capacity();
         Heap::decommit_idle_memory();
     }
 

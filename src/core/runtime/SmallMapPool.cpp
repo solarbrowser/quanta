@@ -28,6 +28,10 @@ struct SizeClassPool {
     static constexpr size_t kPerClassCap = 16384;
     // The most one class holds on to, whatever its block size is.
     static constexpr size_t kClassBytesCap = 512 * 1024;
+    // A block bigger than this is not pooled at all. The pool is for the small blocks a program takes and gives by the thousand (closure caches, shape slots, the
+    // butterflies of ordinary objects); a class always kept at least four blocks, which for the 16 MB element storage of a two-million-element array was 64 MB
+    // that nothing ever took again and trim() never gave back (the footprint after such an array died stayed 36 MB above where the program started).
+    static constexpr size_t kMaxPooledBytes = 64 * 1024;
     std::vector<std::pair<size_t, FreeList>> classes;
 
     // Which free list a byte size belongs to. This used to be found by
@@ -71,7 +75,7 @@ struct SizeClassPool {
     }
 
     void* take(size_t bytes) {
-        if (bytes < sizeof(void*)) return nullptr;   // (a block has to be able to hold the link)
+        if (bytes < sizeof(void*) || bytes > kMaxPooledBytes) return nullptr;   // (a block has to be able to hold the link; a big one is the allocator's)
         uint32_t* slot = slot_for(bytes, true);
         if (!slot) return nullptr;
         if (*slot == kNoClass) {
@@ -91,7 +95,7 @@ struct SizeClassPool {
     }
 
     void give(size_t bytes, void* p) {
-        uint32_t* slot = bytes >= sizeof(void*) ? slot_for(bytes, false) : nullptr;
+        uint32_t* slot = bytes >= sizeof(void*) && bytes <= kMaxPooledBytes ? slot_for(bytes, false) : nullptr;
         if (!slot || *slot == kNoClass) {
             ::operator delete(p);  // take() registers the class first, so this is the unpooled tail
             return;
