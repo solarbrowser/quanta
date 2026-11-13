@@ -808,7 +808,22 @@ std::unique_ptr<ASTNode> Parser::parse_expression() {
     return left;
 }
 
+// An AssignmentExpression starts a new context for `yield`: it is not an operand of the binary or unary operator that may be round it. `a && f(yield x)`,
+// `[yield x]`, `{ k: yield x }`, `a[yield x]` and `${yield x}` are all valid in a generator, though the right of `&&` and the operand of `!` are not places for a bare
+// `yield`. A parenthesis did this already; the places that take an AssignmentExpression without one (the arguments of a call, the elements of an array, the value of
+// a property) left the flags of what was round them on, and so rejected a valid `yield`.
+namespace {
+struct FreshYieldContext {
+    bool& binary;
+    bool& unary;
+    const bool saved_binary, saved_unary;
+    FreshYieldContext(bool& b, bool& u) : binary(b), unary(u), saved_binary(b), saved_unary(u) { binary = false; unary = false; }
+    ~FreshYieldContext() { binary = saved_binary; unary = saved_unary; }
+};
+}  // namespace
+
 std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
+    FreshYieldContext fresh_yield_context(options_.in_binary_expr, options_.in_unary_operand);
     last_expr_was_parenthesized_ = false;
 
     // `x => x`, for any x that names a binding here. A contextual keyword is
@@ -6492,6 +6507,7 @@ std::unique_ptr<ASTNode> Parser::take_cached_node(CacheKind kind) {
 // parse. `sequence`: a full Expression (commas allowed) rather than one
 // AssignmentExpression.
 std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence, bool for_init) {
+    FreshYieldContext fresh_yield_context(options_.in_binary_expr, options_.in_unary_operand);  // (an AssignmentExpression, or a list of them: see parse_assignment_expression)
     // TapedExpression's compile-time reparse-on-failure fallback (see its
     // own comment) needs source_ -- without it there is no way to recover
     // when compile_tape_expr's restricted coverage turns out not to apply
