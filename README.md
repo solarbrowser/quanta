@@ -1,6 +1,6 @@
 # Quanta
 
-Quanta is an experimental ECMAScript (or JS) engine focused on both **memory efficiency** and **execution speed**.  
+Quanta is an experimental ECMAScript (or JS) and WASM engine focused on both **memory efficiency** and **execution speed**.  
 
 
 ## Specification Support
