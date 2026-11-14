@@ -4233,10 +4233,12 @@ QUANTA_HANDLER Value h_gen_LdaLookup(HANDLER_PARAMS) {
                                 env->get_binding_object()->get_shape(),
                                 Object::descriptor_epoch(), obj_slot, obj_writable,
                                 Environment::binding_shadow_epoch()};
+                            if (chunk.uses_lookup_cache) chunk.lookup_cache.data()[name_idx] = lookup_cache_data[name_idx];
                         } else if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable)) {
                             env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, nullptr, nullptr,
                                 Object::descriptor_epoch(), 0, dict_writable, Environment::binding_shadow_epoch(), dd};
+                            if (chunk.uses_lookup_cache) chunk.lookup_cache.data()[name_idx] = lookup_cache_data[name_idx];
                         }
                     }
                 } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
@@ -4457,12 +4459,14 @@ inline void cache_store_binding(Frame& f, Environment* env, const std::string& n
         f.lookup_cache_data[name_idx] = {env, nullptr, env->get_binding_object()->get_shape(),
                                          Object::descriptor_epoch(), obj_slot, true,
                                          Environment::binding_shadow_epoch()};
+        if (f.chunk->uses_lookup_cache) f.chunk->lookup_cache.data()[name_idx] = f.lookup_cache_data[name_idx];
     } else if (bool dict_writable = false; beyond_frame && !env->is_per_call_scope()) {
         if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable);
             dd && dict_writable) {
             env->mark_referenced();
             f.lookup_cache_data[name_idx] = {env, nullptr, nullptr, Object::descriptor_epoch(), 0, true,
                                              Environment::binding_shadow_epoch(), dd};
+            if (f.chunk->uses_lookup_cache) f.chunk->lookup_cache.data()[name_idx] = f.lookup_cache_data[name_idx];
         }
     }
 }
@@ -4792,6 +4796,32 @@ QUANTA_HANDLER Value h_gen_CheckLookupResolvable(HANDLER_PARAMS) {
 // is most of the cost once the cache is warm. A script's top-level let/const
 // is reached this way on every access, so the warm path gets a handler of its
 // own and everything else tail-calls the generated one unchanged.
+// A global's lookup entry whose descriptor epoch has moved (some descriptor was defined somewhere since it was learned): checked again the way a lookup
+// would find the name -- the binding is still a plain data property in the same place -- and given the current epoch, instead of being resolved from the
+// scope chain again. True when the entry is good again.
+bool revalidate_global_entry(Frame& f, uint32_t idx) {
+    const BytecodeChunk& chunk = *f.chunk;
+    if (idx >= chunk.names.size()) return false;
+    auto& e = f.lookup_cache_data[idx];
+    if (e.shadow_epoch != Environment::binding_shadow_epoch() || !e.env) return false;
+    const std::string& name = *chunk.names[idx];
+    if (e.obj_shape) {
+        uint32_t slot = 0;
+        bool writable = false;
+        Object* bo = e.env->get_binding_object();
+        if (!bo || bo->get_shape() != e.obj_shape || !e.env->cacheable_object_binding(name, slot, &writable) || slot != e.obj_slot_index) return false;
+    } else if (e.dict_desc) {
+        bool writable = false;
+        const PropertyDescriptor* dd = e.env->cacheable_object_dictionary_binding(name, &writable);
+        if (!dd || !dd->is_data_descriptor()) return false;
+        e.dict_desc = dd;
+    } else {
+        return false;
+    }
+    e.descriptor_epoch = Object::descriptor_epoch();
+    return true;
+}
+
 template <bool Fused>
 QUANTA_HANDLER Value h_LdaLookupFast(HANDLER_PARAMS) {
     const auto& entry = f.lookup_cache_data[read_u16(code, pc + 1)];
@@ -4820,6 +4850,19 @@ QUANTA_HANDLER Value h_LdaLookupFast(HANDLER_PARAMS) {
         acc = *entry.slot;
         FUSED_TAIL(3);
     }
+    if (entry.shadow_epoch == Environment::binding_shadow_epoch() && (entry.obj_shape || entry.dict_desc) &&
+        entry.descriptor_epoch != Object::descriptor_epoch() && revalidate_global_entry(f, read_u16(code, pc + 1))) {
+        [[clang::musttail]] return h_LdaLookupFast<Fused>(f, pc, acc, regs, code);
+    }
+    // A closure of a chunk that keeps a cache per closure starts with an empty one: a name that resolved to the global object for another closure of the chunk
+    // (the scope chain's shape is the same for all of them) is taken from the chunk's shared entry instead of being looked for again.
+    if (UNLIKELY(f.chunk->uses_lookup_cache) && entry.shadow_epoch != Environment::binding_shadow_epoch()) {
+        const auto& shared = f.chunk->lookup_cache.data()[read_u16(code, pc + 1)];
+        if (shared.shadow_epoch == Environment::binding_shadow_epoch() && (shared.dict_desc || shared.obj_shape)) {
+            const_cast<BytecodeChunk::LookupCacheEntry&>(entry) = shared;
+            [[clang::musttail]] return h_LdaLookupFast<Fused>(f, pc, acc, regs, code);
+        }
+    }
     [[clang::musttail]] return h_gen_LdaLookup(f, pc, acc, regs, code);
 }
 
@@ -4840,6 +4883,14 @@ QUANTA_HANDLER Value h_StaLookupFast(HANDLER_PARAMS) {
         store_via_object_entry(entry, acc)) {
         pc += 3;
         DISPATCH();
+    }
+    // (As LdaLookup's: a closure's empty cache takes the chunk's shared entry for a global.)
+    if (UNLIKELY(f.chunk->uses_lookup_cache) && entry.shadow_epoch != Environment::binding_shadow_epoch()) {
+        const auto& shared = f.chunk->lookup_cache.data()[read_u16(code, pc + 1)];
+        if (shared.shadow_epoch == Environment::binding_shadow_epoch() && (shared.dict_desc || shared.obj_shape) && shared.writable) {
+            const_cast<BytecodeChunk::LookupCacheEntry&>(entry) = shared;
+            [[clang::musttail]] return h_StaLookupFast(f, pc, acc, regs, code);
+        }
     }
     [[clang::musttail]] return h_gen_StaLookup(f, pc, acc, regs, code);
 }

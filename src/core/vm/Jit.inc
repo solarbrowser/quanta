@@ -1303,13 +1303,13 @@ bool build_stubs() {
     {
         using LCE = BytecodeChunk::LookupCacheEntry;
         offs[kStubLookup] = a.size();
-        Label miss, global_object;
+        Label miss, global_object, global_dict;
         a.mov_imm64(RCX, reinterpret_cast<uint64_t>(JitEnvLayout::shadow_epoch_addr()));
         a.mov_load32(RCX, mem(RCX));
         a.cmp32_load(RCX, mem(RAX, offsetof(LCE, shadow_epoch)));
         a.jcc(CC_NE, miss);
         a.cmp_mem_imm(mem(RAX, offsetof(LCE, dict_desc)), 0);
-        a.jcc(CC_NE, miss);
+        a.jcc(CC_NE, global_dict);
         a.mov_load(RDX, mem(RAX, offsetof(LCE, obj_shape)));
         a.test(RDX, RDX);
         a.jcc(CC_NE, global_object);
@@ -1338,6 +1338,26 @@ bool build_stubs() {
         a.cmp32(RDI, RCX);
         a.jcc(CC_AE, miss);
         a.mov_load(R13, mem_idx(RSI, RDI, 8));
+        a.clc(); a.ret();
+        a.bind(global_dict);            // a global in dictionary mode (a script with many `var`s and functions): its value sits in a descriptor of the binding object
+        a.mov_load(RDX, mem(RAX, offsetof(LCE, dict_desc)));
+        a.mov_load(RCX, mem(RAX, offsetof(LCE, env)));
+        a.test(RCX, RCX);
+        a.jcc(CC_E, miss);
+        a.mov_load(RCX, mem(RCX, static_cast<int32_t>(JitEnvLayout::binding_object())));
+        a.test(RCX, RCX);
+        a.jcc(CC_E, miss);
+        a.mov_load(RSI, mem(RCX, static_cast<int32_t>(JitObjectLayout::shape())));
+        a.and_imm(RSI, -static_cast<int32_t>(JitObjectLayout::kShapeTypeMask + 1));
+        a.test(RSI, RSI);
+        a.jcc(CC_NE, miss);             // it must still have no shape
+        a.mov_imm64(RSI, reinterpret_cast<uint64_t>(JitObjectLayout::descriptor_epoch_addr()));
+        a.mov_load(RSI, mem(RSI));
+        a.cmp_load(RSI, mem(RAX, offsetof(LCE, descriptor_epoch)));
+        a.jcc(CC_NE, miss);
+        a.cmp32_mem_imm(mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_type())), 0);
+        a.jcc(CC_NE, miss);
+        a.mov_load(R13, mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_value())));
         a.clc(); a.ret();
         a.bind(miss); a.stc(); a.ret();
     }

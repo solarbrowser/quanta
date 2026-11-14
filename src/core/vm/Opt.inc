@@ -1237,15 +1237,27 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     case Op::LdaLookup: case Op::LdaLookupStar: {
         const bool fused = op == Op::LdaLookupStar;
         const uint32_t nidx = u16(pc + 1), dst = fused ? reg(pc + 3) : 0;
-        if ((fused && !ok_reg(dst)) || nidx >= F().chunk->names.size() || nidx >= F().chunk->lookup_cache.size()) return false;
+        if ((fused && !ok_reg(dst)) || nidx >= F().chunk->names.size() || nidx >= F().chunk->lookup_cache.size()) { if (config().log) std::fprintf(stderr, "[opt] LdaLookup '%s': bad operands (fused %d ok_dst %d nidx %u names %zu cache %zu)\n", nidx < F().chunk->names.size() ? F().chunk->names[nidx]->c_str() : "?", int(fused), int(!fused || ok_reg(dst)), nidx, F().chunk->names.size(), size_t(F().chunk->lookup_cache.size())); return false; }
         const BytecodeChunk::LookupCacheEntry* base = cf_ == 0 ? (g_.frame ? g_.frame->lookup_cache_data : nullptr) : F().lookup;
-        if (!base) return false;
-        const BytecodeChunk::LookupCacheEntry& e = base[nidx];
-        if (e.shadow_epoch != Environment::binding_shadow_epoch()) return false;
-        uint32_t form;
-        if (e.dict_desc) form = 2; else if (e.obj_shape) form = 1; else if (e.slot) form = 0; else return false;
+        if (!base) { if (config().log) std::fprintf(stderr, "[opt] LdaLookup '%s': no cache base (cf %d frame %d)\n", F().chunk->names[nidx]->c_str(), cf_, int(g_.frame != nullptr)); return false; }
+        const BytecodeChunk::LookupCacheEntry* ep = &base[nidx];
+        const uint64_t cur_epoch = Environment::binding_shadow_epoch();
         const bool root = cf_ == 0;
-        const int32_t v = guarded(K::LoadLookup, Rep::Tagged, -1, -1, form | (root ? 0x100u : 0u),
+        // The frame's own entry says which way the name was found; a closure that has not run the instruction yet has none, and the chunk's shared entry (a
+        // name found on the global object, the same for every closure of the chunk) tells instead: the unit fills the closure's entry from it as it runs.
+        // A site nobody has run yet (or one whose entry is from before the last change of the bindings) gets the form that reads the entry as it is when
+        // the unit runs: it leaves once, the interpreter fills the entry, and from then on the unit has it.
+        bool refresh = root && F().chunk->uses_lookup_cache;
+        uint32_t form = 3;
+        if (ep->shadow_epoch == cur_epoch && (ep->dict_desc || ep->obj_shape || ep->slot)) {
+            form = ep->dict_desc ? 2 : ep->obj_shape ? 1 : 0;
+            refresh = refresh && form != 0;
+        } else if (const BytecodeChunk::LookupCacheEntry* sh = F().chunk->uses_lookup_cache ? &F().chunk->lookup_cache.data()[nidx] : nullptr;
+                   root && sh && sh->shadow_epoch == cur_epoch && (sh->dict_desc || sh->obj_shape)) {
+            form = sh->dict_desc ? 2 : 1;
+        }
+        const BytecodeChunk::LookupCacheEntry& e = *ep;
+        const int32_t v = guarded(K::LoadLookup, Rep::Tagged, -1, -1, form | (root ? 0x100u : 0u) | (refresh ? 0x200u : 0u),
                                   root ? static_cast<uint64_t>(nidx) * JitLookupLayout::kSize : reinterpret_cast<uint64_t>(&e));
         set(acc(), v);
         if (fused) set(dst, v);
@@ -3773,6 +3785,22 @@ inline QUANTA_JIT_ABI uint64_t helper_new_array(uint64_t n, Context* ctx) noexce
     std::memcpy(&bits, &r, 8);
     return bits;
 }
+// The closure's own lookup entry, empty because the closure has not run the instruction yet, filled from the chunk's shared one (what the interpreter does,
+// h_LdaLookupFast): 1 when it is usable now.
+inline QUANTA_JIT_ABI uint64_t helper_lookup_refresh(VM::Frame* f, uint64_t byte_off) noexcept {
+    const size_t idx = static_cast<size_t>(byte_off / JitLookupLayout::kSize);
+    const BytecodeChunk& chunk = *f->chunk;
+    if (!chunk.uses_lookup_cache || idx >= chunk.lookup_cache.size()) return 0;
+    const auto& shared = chunk.lookup_cache.data()[idx];
+    if (shared.shadow_epoch != Environment::binding_shadow_epoch() || !(shared.dict_desc || shared.obj_shape)) return 0;
+    f->lookup_cache_data[idx] = shared;
+    return 1;
+}
+// A global's lookup entry whose descriptor epoch has moved (some descriptor was defined somewhere since it was learned): checked again the way the interpreter
+// would look the name up -- the binding is still a plain data property in the same place -- and given the current epoch. 1 when the entry is good again.
+inline QUANTA_JIT_ABI uint64_t helper_lookup_revalidate(VM::Frame* f, uint64_t byte_off) noexcept {
+    return revalidate_global_entry(*f, static_cast<uint32_t>(byte_off / JitLookupLayout::kSize)) ? 1 : 0;
+}
 // An array literal of constants, as Op::CreateArrayConst makes it.
 inline QUANTA_JIT_ABI uint64_t helper_new_array_const(const Value* values, uint64_t count, Context* ctx) noexcept {
     Object* arr = ObjectFactory::create_array_with_room(static_cast<uint32_t>(count)).release();
@@ -5321,6 +5349,9 @@ inline void Emitter::emit_node(int32_t id) {
     case K::LoadLookup: {
         const Reg d = def_g(id, RAX);
         Label& dl = deopt_label(n.state);
+        Label& again = new_label();
+        Label& done = new_label();
+        a_.bind(again);
         if (n.aux & 0x100) {
             a_.mov_load(RCX, mem(RBX, static_cast<int32_t>(kOffLookup)));
             if (n.imm) a_.add_imm(RCX, static_cast<int32_t>(n.imm));
@@ -5330,16 +5361,65 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov_imm64(RDX, reinterpret_cast<uint64_t>(JitEnvLayout::shadow_epoch_addr()));
         a_.mov_load32(RDX, mem(RDX));
         a_.cmp32_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::shadow_epoch())));
-        a_.jcc(CC_NE, dl);
-        if ((n.aux & 3) == 0) {
+        if (n.aux & 0x200) {
+            // The closure's entry is stale (or empty): fill it from the chunk's shared one, then look again.
+            Label& stale = new_label();
+            a_.jcc(CC_NE, stale);
+            cold_.push_back([this, &stale, &again, dl = &dl, off = n.imm]() {
+                a_.bind(stale);
+                int32_t bytes;
+                save_live(bytes);
+                a_.mov(abi::A0, RBX);
+                a_.mov_imm64(abi::A1, off);
+                call_c(reinterpret_cast<const void*>(&helper_lookup_refresh));
+                restore_live(bytes);
+                a_.test(RAX, RAX);
+                a_.jcc(CC_E, *dl);
+                a_.jmp(again);
+            });
+        } else {
+            a_.jcc(CC_NE, dl);
+        }
+        const uint32_t form = n.aux & 3;
+        Label& form_dict = new_label();
+        Label& form_obj = new_label();
+        Label& reval = new_label();
+        if (n.aux & 0x100) {
+            // A descriptor was defined somewhere since the entry was learned: the entry is checked again (not the whole lookup made again) and the unit goes on.
+            cold_.push_back([this, &reval, &again, dl = &dl, off = n.imm]() {
+                a_.bind(reval);
+                int32_t bytes;
+                save_live(bytes);
+                a_.mov(abi::A0, RBX);
+                a_.mov_imm64(abi::A1, off);
+                call_c(reinterpret_cast<const void*>(&helper_lookup_revalidate));
+                restore_live(bytes);
+                a_.test(RAX, RAX);
+                a_.jcc(CC_E, *dl);
+                a_.jmp(again);
+            });
+        }
+        if (form == 3) {
+            // The form the entry has when the unit runs.
+            a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::dict_desc())), 0);
+            a_.jcc(CC_NE, form_dict);
+            a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())), 0);
+            a_.jcc(CC_NE, form_obj);
+        }
+        if (form == 0 || form == 3) {
             a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::slot())));
             a_.test(RDX, RDX);
             a_.jcc(CC_E, dl);
-            a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())), 0);
-            a_.jcc(CC_NE, dl);
+            if (form == 0) {
+                a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())), 0);
+                a_.jcc(CC_NE, dl);
+            }
             a_.mov_load(d, mem(RDX));
-        } else if ((n.aux & 3) == 2) {
+            if (form == 3) a_.jmp(done);
+        }
+        if (form == 2 || form == 3) {
             // A global in dictionary mode: its value sits in a descriptor of the binding object.
+            if (form == 3) a_.bind(form_dict);
             a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::dict_desc())));
             a_.test(RDX, RDX);
             a_.jcc(CC_E, dl);
@@ -5355,11 +5435,14 @@ inline void Emitter::emit_node(int32_t id) {
             a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(JitObjectLayout::descriptor_epoch_addr()));
             a_.mov_load(RAX, mem(RAX));
             a_.cmp_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::descriptor_epoch())));
-            a_.jcc(CC_NE, dl);
+            a_.jcc(CC_NE, (n.aux & 0x100) ? reval : dl);
             a_.cmp32_mem_imm(mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_type())), 0);
             a_.jcc(CC_NE, dl);
             a_.mov_load(d, mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_value())));
-        } else {
+            if (form == 3) a_.jmp(done);
+        }
+        if (form == 1 || form == 3) {
+            if (form == 3) a_.bind(form_obj);
             a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())));
             a_.test(RDX, RDX);
             a_.jcc(CC_E, dl);
@@ -5375,11 +5458,12 @@ inline void Emitter::emit_node(int32_t id) {
             a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(JitObjectLayout::descriptor_epoch_addr()));
             a_.mov_load(RAX, mem(RAX));
             a_.cmp_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::descriptor_epoch())));
-            a_.jcc(CC_NE, dl);
+            a_.jcc(CC_NE, (n.aux & 0x100) ? reval : dl);
             a_.mov_load32(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_slot_index())));
             a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitObjectLayout::butterfly())));
             a_.mov_load(d, mem_idx(R11, RDX, 8, 0));
         }
+        a_.bind(done);
         commit_g(id, d);
         return;
     }
