@@ -7204,6 +7204,15 @@ QUANTA_HANDLER Value h_ConstructPlain(HANDLER_PARAMS) {
 // get_named (which, on the way, is what actually populates the cache the
 // next call at this site checks) and invokes whatever that yields exactly
 // like CallResolved would.
+QUANTA_HANDLER Value h_gen_CallViaFunctionCall(HANDLER_PARAMS);
+
+// `fn.call(this, ...)` as a call site the profile phase listens to: the function that is called is the receiver of `call`.
+QUANTA_HANDLER Value h_CallViaFunctionCallRec(HANDLER_PARAMS) {
+    if (UNLIKELY(f.chunk->inline_state & kInlineRecordCalls) && f.feedback_rooted && regs[code[pc + 1]].is_function())
+        note_call(*f.chunk, pc, regs[code[pc + 1]].as_function(), f.owner);
+    [[clang::musttail]] return h_gen_CallViaFunctionCall(f, pc, acc, regs, code);
+}
+
 QUANTA_HANDLER Value h_gen_CallViaFunctionCall(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     Context& ctx = *f.ctx;
@@ -10539,6 +10548,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
         t[static_cast<uint8_t>(Op::CallResolved)] = &h_CallResolvedLeanRec;
     }
     t[static_cast<uint8_t>(Op::CallViaFunctionCall)] = &h_gen_CallViaFunctionCall;
+    if (g_stackless_osr_budget != INT32_MAX) t[static_cast<uint8_t>(Op::CallViaFunctionCall)] = &h_CallViaFunctionCallRec;
     t[static_cast<uint8_t>(Op::CallViaFunctionApply)] = &h_gen_CallViaFunctionApply;
     t[static_cast<uint8_t>(Op::Construct)] = &h_ConstructLean;
     if (g_stackless_osr_budget != INT32_MAX) t[static_cast<uint8_t>(Op::Construct)] = &h_ConstructLeanRec;

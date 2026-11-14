@@ -1627,8 +1627,31 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         ended = true;
         return true;
     }
-    case Op::CallViaFunctionCall: case Op::CallViaFunctionCallWide:
+    case Op::CallViaFunctionCallWide:
         return call_via(in);
+    case Op::CallViaFunctionCall: {
+        const int32_t callee = site_of(cf_, pc);
+        if (callee < 0) {
+            const int32_t poly = poly_of(cf_, pc);
+            if (poly >= 0) {
+                if (!poly_dispatch(poly, 0, ended)) {
+                    if (!g_.failed_site.first) g_.failed_site = {F().chunk, pc};
+                    fail("a polymorphic call could not be entered");
+                    g_.b[cb_].term.kind = T::Bail;
+                    ended = true;
+                }
+                return true;
+            }
+            return call_via(in);
+        }
+        if (!inline_enter(in, callee, ended)) {
+            if (!g_.failed_site.first) g_.failed_site = {F().chunk, pc};
+            fail("an inlined call could not be entered");
+            g_.b[cb_].term.kind = T::Bail;
+            ended = true;
+        }
+        return true;
+    }
     case Op::Call: case Op::CallResolved: case Op::Construct: {
         const int32_t callee = site_of(cf_, pc);
         if (callee < 0) {
@@ -1766,6 +1789,8 @@ inline std::vector<int32_t> Builder::compute_rpo() {
 // one of those bodies in: plain bytecode (no try regions, no loops), small, in this realm, that the interpreter could run
 // stackless (so a deoptimization can rebuild its frame) or that is a leaf (so a deoptimization can leave through the call).
 // One target is inlined behind an identity check; several are told apart by a chain of checks.
+inline bool via_call_pristine_in(const BytecodeChunk& chunk, uint32_t pc, const Value& target);
+
 inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Function*>& out) {
     auto no = [&](int why) {
         if (config().log) std::fprintf(stderr, "[opt] call at pc %u of chunk %p not inlinable: %d (entry state %u, verdict %u, calls %u)\n", in.pc, static_cast<const void*>(g_.funcs[fi].chunk), why, g_.funcs[fi].chunk->opt_entry, g_.funcs[fi].chunk->inline_state, g_.funcs[fi].chunk->opt_calls);
@@ -1823,7 +1848,9 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
             const bool strict = (v & kInlineLeaf) ? (fn->is_strict() || exe->fast_strict) : (v & kInlineStrict) != 0;
             if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return no(9);
             // A sloppy body that reads `this` boxes a primitive receiver: only a method call can promise an object.
-            if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved) return no(10);
+            if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved && static_cast<Op>(in.op) != Op::CallViaFunctionCall) return no(10);
+            // `fn.call(...)` is the call of fn only while `call` is still Function.prototype.call (the unit checks that again: the epochs and fn's shape).
+            if (static_cast<Op>(in.op) == Op::CallViaFunctionCall && !via_call_pristine_in(*P.chunk, in.pc, Value(fn))) return no(14);
             uint32_t n = 0;
             if (!inline_scan(fn, c, n) || n > config().inline_insns) return no(11);
             poly_total += n;
@@ -2440,12 +2467,15 @@ inline bool Builder::poly_dispatch(int32_t site, int32_t t, bool& ended) {
 inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bool guard) {
     const uint8_t* code = F().chunk->code.data();
     const Op op = static_cast<Op>(in.op);
-    const bool resolved = op == Op::CallResolved;
+    const bool via = op == Op::CallViaFunctionCall;
+    const bool resolved = op == Op::CallResolved || via;
     const bool construct = op == Op::Construct;
     const uint32_t callee_r = F().var_base + code[in.pc + 1];
-    const uint32_t this_r = resolved ? F().var_base + code[in.pc + 2] : 0;
-    const uint32_t start = F().var_base + code[in.pc + (resolved ? 3 : 2)];
-    const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
+    // `fn.call(thisArg, a, b)`: the receiver is the first of the registers from `start`, the arguments the ones after it.
+    if (via && code[in.pc + 3] == 0) return false;
+    const uint32_t this_r = via ? F().var_base + code[in.pc + 2] : resolved ? F().var_base + code[in.pc + 2] : 0;
+    const uint32_t start = via ? this_r + 1 : F().var_base + code[in.pc + (resolved ? 3 : 2)];
+    const uint32_t argc = via ? code[in.pc + 3] - 1u : code[in.pc + (resolved ? 4 : 3)];
     if (callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
     const Func C = g_.funcs[ci];
     const int32_t fv = fv_in >= 0 ? fv_in : tagged(value(callee_r));
@@ -2455,6 +2485,14 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
         entry_state = g_.n[chk].state;
     } else {
         entry_state = snapshot();
+    }
+    if (via) {
+        // `call` is still the real Function.prototype.call for this function: nothing about it changed (the epochs), and the function's own shape is the one the
+        // check was made for (an own property called `call` would be found first).
+        epoch_guard(0, Object::proto_epoch());
+        epoch_guard(1, Object::descriptor_epoch());
+        const int32_t fobj = guarded(K::CheckObj, Rep::Ptr, fv, -1, 3);
+        guarded(K::CheckShape, Rep::None, fobj, -1, 0, static_cast<Object*>(C.fnp)->raw_shape_word());
     }
     int32_t thisv;
     if (construct) {
@@ -2523,7 +2561,7 @@ inline bool Builder::setup_func(int32_t fi, size_t max_insns) {
     if (config().inl && g_.frame) {
         for (const Insn& in : F().insns) {
             const Op op = static_cast<Op>(in.op);
-            if (op != Op::Call && op != Op::CallResolved && op != Op::Construct) continue;
+            if (op != Op::Call && op != Op::CallResolved && op != Op::Construct && op != Op::CallViaFunctionCall) continue;
             if (F().ctor) continue;        // a constructor that is inlined stays free of calls
             std::vector<Function*> ts;
             if (inline_targets(fi, in, ts)) for (Function* t : ts) F().cand.push_back({in.pc, t});
@@ -3928,6 +3966,26 @@ inline QUANTA_JIT_ABI uint64_t helper_call_native(VM::Frame* f, const JitCode::O
 inline bool via_call_pristine(const VM::Frame& f, uint32_t pc, const Value& target) {
     if (!target.is_function() || !f.feedback_rooted) return false;
     const BytecodeChunk& chunk = *f.chunk;
+    const uint8_t* code = chunk.code.data();
+    const uint32_t fb_idx = static_cast<Op>(code[pc]) == Op::CallViaFunctionCallWide ? read_u32(code, pc + 4) : read_u16(code, pc + 4);
+    const FeedbackBody& fb = chunk.feedback[fb_idx].read();
+    Object* obj = target.as_object();
+    if (fb.proto_mega || obj->has_any_descriptor_override()) return false;
+    Shape* rs = obj->get_shape();
+    Object* p0 = obj->get_prototype();
+    const uint64_t pep = Object::proto_epoch();
+    for (uint8_t k = 0; k < fb.proto_count; k++) {
+        const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+        if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep)
+            return pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() && pe.cached_value.is_function() &&
+                   pe.cached_value.as_function() == ObjectFactory::get_pristine_function_call();
+    }
+    return false;
+}
+
+// The same answer for a call site of `chunk` that no frame is running (the compile reads the caches the interpreter filled).
+inline bool via_call_pristine_in(const BytecodeChunk& chunk, uint32_t pc, const Value& target) {
+    if (!target.is_function()) return false;
     const uint8_t* code = chunk.code.data();
     const uint32_t fb_idx = static_cast<Op>(code[pc]) == Op::CallViaFunctionCallWide ? read_u32(code, pc + 4) : read_u16(code, pc + 4);
     const FeedbackBody& fb = chunk.feedback[fb_idx].read();
@@ -6262,7 +6320,7 @@ inline bool has_calls(const BytecodeChunk& chunk) {
     for (uint32_t pc = 0; pc < chunk.code.size();) {
         if (chunk.code[pc] >= static_cast<uint8_t>(Op::kCount)) return false;
         const Op op = static_cast<Op>(chunk.code[pc]);
-        if (op == Op::Call || op == Op::CallResolved || op == Op::Construct) return true;
+        if (op == Op::Call || op == Op::CallResolved || op == Op::Construct || op == Op::CallViaFunctionCall) return true;
         pc += 1 + static_cast<uint32_t>(op_operand_bytes(op));
     }
     return false;
