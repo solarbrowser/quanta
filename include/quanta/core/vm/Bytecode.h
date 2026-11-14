@@ -1030,7 +1030,24 @@ struct BytecodeChunk {
     // end (BytecodeCompiler.cpp), individual entries written in place at
     // runtime via a cached .data() pointer (see Interpreter.cpp's
     // lookup_cache_data). No `mutable` needed, same reasoning as feedback.
+    // What a call from a unit needs to enter this chunk's unit that starts at pc 0 without looking for it (Jit.inc: unit_call_direct), or
+    // null while there is none, or when the unit was given up on. Owned by the unit (JitCode::OptUnit::direct).
+    struct DirectCall {
+        void* entry = nullptr;          // the unit's entry stub
+        void* rt = nullptr;             // its JitRt
+        const void* target = nullptr;   // the native address of pc 0
+        const void* owner = nullptr;    // the thread that owns the code
+        uint32_t ix = 0;                // its number in the JitCode's units
+        uint32_t off = 0;               // the native offset of pc 0 in it
+        bool plain = true;              // no inlined callees to rebuild frames for
+        // The unit only reads: it stores nothing but to its own registers, calls nothing, allocates nothing, and cannot throw. Such a call needs no
+        // frame of its own (unit_leaf_call): a guard that fails leaves it, with nothing done, to the ordinary call.
+        bool leaf = false;
+        uint8_t leaf_regs = 0;          // registers the leaf's frame needs
+        uint8_t leaf_fails = 0;
+    };
     FixedArray<LookupCacheEntry> lookup_cache; // indexed by name id
+    mutable const DirectCall* direct = nullptr;
     uint16_t register_count = 0;
     uint8_t parameter_count = 0;    // params occupy regs[0..parameter_count)
 
@@ -1054,10 +1071,6 @@ struct BytecodeChunk {
     mutable bool entry_too_small = false;
     mutable uint8_t opt_loops = 0;     // 1: the tier has declined this chunk's loops, so a call no longer offers them at its first back edge
     mutable uint16_t opt_calls = 0;
-    // The unit of this chunk that starts at pc 0, as a hint for the direct call (Jit.inc: unit_call_direct): its number in the
-    // JitCode's units and its native offset. The call checks the hint against the unit before it trusts it.
-    mutable uint32_t opt_unit_off = 0;
-    mutable uint16_t opt_unit_ix = 0xFFFF;
 
     // A function whose whole body is `return <constant>`, `return this` or
     // `return this.name` is answered without a frame (VM::try_leaf_call). What the

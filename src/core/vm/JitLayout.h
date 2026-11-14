@@ -151,6 +151,9 @@ struct JitCode {
         // What the generated code addresses (r14): the GC poll counter. Heap-allocated so that its
         // address survives the unit being moved between JitCodes when the baseline JIT replaces one.
         std::unique_ptr<JitRt> rt = std::make_unique<JitRt>();
+        std::unique_ptr<BytecodeChunk::DirectCall> direct;   // what the chunk's direct call enters this unit with (BytecodeChunk::direct points here)
+        bool leaf = false;                                   // a unit that only reads (see DirectCall::leaf)
+        uint8_t leaf_regs = 0;
         uint32_t deopts = 0;
         // Inlined callees (index 0 is the root and unused): what rebuilding their interpreter frames needs.
         struct InlFrame {

@@ -297,6 +297,7 @@ struct Config {
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 250;      // largest callee (decoded instructions)
     uint32_t inline_total = 1500;      // all the callees of one unit together
+    bool leaf = true;                 // QUANTA_OPT_LEAF=0: a unit that only reads is entered like any other
     uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
     uint32_t inline_depth = 3;
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
@@ -346,6 +347,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_LEAF")) c.leaf = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLYINSNS")) c.poly_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INSNS")) c.inline_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_TOTAL")) c.inline_total = static_cast<uint32_t>(std::atoi(e));
@@ -5590,6 +5592,36 @@ inline JitCode* ensure_jitcode(const BytecodeChunk& chunk) {
     return chunk.jit.get();
 }
 
+// Whether a function's unit only reads: it stores nothing but to the frame's own registers, calls nothing, allocates nothing, loops nowhere, and a guard that
+// fails leaves it before anything was done (so the ordinary call can do the whole call again). Such a unit can run on a frame the caller never made
+// (Jit.inc: unit_leaf_call); `regs` is the number of registers that frame needs.
+inline bool leaf_graph(const Graph& g, uint8_t& regs) {
+    if (!g.fn_entry || !g.chunk || g.chunk->register_count > 16 || g.chunk->parameter_count > 16) return false;
+    for (int32_t blk : g.rpo) {
+        const Block& B = g.b[blk];
+        if (B.term.kind == T::StepBranch || B.loop_header) return false;
+        for (int32_t id : B.nodes) {
+            const Node& nd = g.n[id];
+            if (nd.dead) continue;
+            switch (nd.op) {
+            case K::ConstTagged: case K::ConstF64: case K::ConstBool: case K::ConstI32: case K::LoadReg: case K::LoadAcc: case K::Phi:
+            case K::ToNum: case K::ToTagged: case K::ToBool: case K::CheckNum: case K::BoxF64: case K::BoxBool: case K::ToI32: case K::I32ToF64: case K::U32ToF64:
+            case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::ModF: case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI:
+            case K::ShrI: case K::NotI: case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag: case K::NotBool:
+            case K::Truthy: case K::TruthyF: case K::NotTdz: case K::StoreReg: case K::StoreAcc: case K::CheckObj: case K::CheckShape: case K::LoadSlot:
+            case K::CheckDense: case K::ToIndex: case K::LoadElem: case K::ArrayLen: case K::LoadThis: case K::NonNegI32: case K::CheckFn: case K::CheckProto:
+            case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::CheckNotNullish: case K::IsFn: case K::Trap: case K::CheckBits: case K::MathF:
+            case K::IsNullish: case K::LoadTyped: case K::AddI: case K::SubI: case K::MulI: case K::CheckI32: case K::CmpI:
+                break;
+            default:
+                return false;
+            }
+        }
+    }
+    regs = static_cast<uint8_t>(std::max<uint32_t>(g.chunk->register_count, g.chunk->parameter_count));
+    return true;
+}
+
 #ifdef QUANTA_OPT_BACKEND
 // Builds, allocates and emits. On success the chunk's JitCode has its optimized entry points.
 inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, JitCode::OptUnit& unit) {
@@ -5641,6 +5673,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     unit.rt->opt_pc = pc;
     all_rts().push_back(unit.rt.get());
     unit.entries = std::move(entries);
+    unit.leaf = config().leaf && leaf_graph(g, unit.leaf_regs);
     unit.guards = em.guard_kinds;
     unit.descs = std::move(g.descs);
     unit.natives = std::move(g.natives);

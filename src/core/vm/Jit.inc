@@ -2890,8 +2890,22 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
 int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, JitRt* rt, uint64_t status);
 
 [[gnu::always_inline]] inline int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset) {
-    if (target == 0 && ui < 0xFFFF) { chunk.opt_unit_ix = static_cast<uint16_t>(ui); chunk.opt_unit_off = offset; }
     JitCode::OptUnit& u = jc->opt_units[ui];
+    if (target == 0 && ui < 0xFFFF) {
+        if (!u.direct) {
+            u.direct = std::make_unique<BytecodeChunk::DirectCall>();
+            u.direct->entry = reinterpret_cast<void*>(u.entry);
+            u.direct->rt = u.rt.get();
+            u.direct->target = u.base + offset;
+            u.direct->owner = jc->owner_thread;
+            u.direct->ix = static_cast<uint32_t>(ui);
+            u.direct->off = offset;
+            u.direct->plain = u.inl.empty();
+            u.direct->leaf = u.leaf && u.direct->plain;
+            u.direct->leaf_regs = u.leaf_regs;
+        }
+        chunk.direct = u.direct.get();
+    }
     if (__builtin_expect(!u.inl.empty() && !opt_can_materialize(f, u), 0)) return 0;
     // Steps inside the optimized code must not start stackless calls; the frame gets its permission back
     // when control returns to the interpreter.
@@ -2946,6 +2960,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             // A global epoch moved: the next build reads the new one.
             av.recompiles++;
             jc->opt_units[ui].entries.clear();
+            chunk.direct = nullptr;
             refused.erase({&chunk, target});
         } else if (!opt::config().stress && evar != -2 && ++av.fails[site] == opt::config().avoid_after && av.recompiles < opt::config().max_recompiles) {
             av.recompiles++;
@@ -2957,11 +2972,13 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             else if (int_guard) av.nonarrow.insert(gpc);
             else if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);
             jc->opt_units[ui].entries.clear();         // the unit is dead; the next offer compiles it again
+            chunk.direct = nullptr;
             refused.erase({&chunk, target});
         } else if (++jc->opt_units[ui].deopts > opt::config().max_deopts) {
             // A unit whose guards keep failing costs more than it saves: stop entering it.
             if (opt::config().log) std::fprintf(stderr, "[opt] giving up on the loop at pc %u\n", target);
             jc->opt_units[ui].entries.clear();
+            chunk.direct = nullptr;
             refused.insert({&chunk, target});
             chunk.opt_loops = 1;
         }
@@ -2984,25 +3001,88 @@ constexpr uint32_t kEntryMaxDepth = 96;
 // interpreter has to carry on with), the interpreter finishes it here, on the frame, before this returns: the frame is
 // made the bottom of its own run by cutting its link to the caller for the duration. False, with nothing done, for
 // anything this does not take -- the caller makes the call the ordinary way.
+// A call of a function whose unit only reads (DirectCall::leaf) needs no frame in the arena, no entry on the call stack and no environment: nothing it
+// does can be seen, so the unit runs on a frame of the thread's own and registers on the native stack. The conditions are the ones a stackless call
+// makes (inline_call_enter); anything else, and a guard that fails, is left to the ordinary call with nothing done.
+[[gnu::always_inline]] inline bool unit_leaf_call(Frame& caller, Function* fn, const FunctionExecutable& exe, uint8_t verdict, const BytecodeChunk::DirectCall& d,
+                                                  const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
+    Context& ctx = *caller.ctx;
+    if (UNLIKELY(d.owner != &g_thread_marker || fn->is_arrow() || ctx.this_needs_super() || ctx.has_pending_construct_call() ||
+                 ctx.is_strict_mode() != ((verdict & kInlineStrict) != 0) ||
+                 ((verdict & (kInlineWantsThis | kInlineStrict)) == kInlineWantsThis && !this_value.is_object() && !this_value.is_function()) ||
+                 exe.owner_realm() != g_current_realm))
+        return false;
+    const BytecodeChunk& chunk = *exe.bytecode_chunk;
+    static thread_local Frame* lf = nullptr;
+    if (UNLIKELY(!lf)) {
+        static thread_local InlineSlot slot;
+        inline_slot_frame_init(slot);
+        lf = &slot.frame();
+        lf->this_resolved = true;
+    }
+    Frame& f = *lf;
+    Value regs[16];
+    const unsigned n = d.leaf_regs;
+    const Value undef;
+#pragma clang loop vectorize(disable) interleave(disable) unroll(disable)
+    for (unsigned i = 0; i < n; i++) {
+        regs[i] = undef;
+        __asm__ volatile("" ::: "memory");
+    }
+    const uint32_t copy = std::min<uint32_t>(chunk.parameter_count, argc);
+#pragma clang loop vectorize(disable) interleave(disable) unroll(disable)
+    for (uint32_t i = 0; i < copy; i++) {
+        regs[i] = argv[i];
+        __asm__ volatile("" ::: "memory");
+    }
+    f.chunk = &chunk;
+    f.ctx = &ctx;
+    f.regs = regs;
+    f.code = chunk.code.data();
+    f.constants = chunk.constants.data();
+    f.this_value = this_value;
+    f.acc = Value();
+    f.pc = 0;
+    f.inline_ok = false;
+    const uint64_t status = reinterpret_cast<uint64_t (QUANTA_JIT_ABI *)(void*, JitRt*, const void*)>(d.entry)(&f, static_cast<JitRt*>(d.rt), d.target);
+    if (LIKELY(status == opt::kStatusFinished)) {
+        out = f.acc;
+        return true;
+    }
+    // (A unit that keeps failing here is no leaf: the ordinary call learns from it.)
+    if (++const_cast<BytecodeChunk::DirectCall&>(d).leaf_fails >= 8) const_cast<BytecodeChunk::DirectCall&>(d).leaf = false;
+    return false;
+}
+
 [[gnu::always_inline]] inline bool unit_call_direct(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
     const FunctionExecutable* exe = fn->get_executable().get();
     const BytecodeChunk& chunk = *exe->bytecode_chunk;
     if (chunk.opt_entry != 3) return false;
     const uint8_t verdict = chunk.inline_state;
     if (!(verdict & kInlineOk) || (verdict & kInlineEnv)) return false;
+    const BytecodeChunk::DirectCall* d = chunk.direct;
+    if (d && d->leaf && unit_leaf_call(caller, fn, *exe, verdict, *d, this_value, argv, argc, out)) return true;
     if (CallStack::established().depth() > kEntryMaxDepth) return false;
     Frame* cf;
     if (!inline_call_enter<false>(caller, fn, argv, argc, this_value, 0, cf)) return false;
     cf->code = chunk.code.data();
     int r;
     try {
-        JitCode* jc = chunk.jit.get();
-        const uint16_t ix = chunk.opt_unit_ix;
-        if (jc && jc->opt_state != 2 && jc->owner_thread == &g_thread_marker && ix < jc->opt_units.size() &&
-            !jc->opt_units[ix].entries.empty() && jc->opt_units[ix].entries[0].first == 0 && jc->opt_units[ix].entries[0].second == chunk.opt_unit_off) {
+        if (d && !d->plain && d->owner == &g_thread_marker && chunk.jit && chunk.jit->owner_thread == &g_thread_marker && d->ix < chunk.jit->opt_units.size()) {
+            // A unit with inlined callees: opt_run_unit checks that their frames can be rebuilt.
             cf->pc = 0;
             cf->acc = Value();
-            r = opt_run_unit(*cf, chunk, jc, ix, 0, chunk.opt_unit_off);
+            r = opt_run_unit(*cf, chunk, chunk.jit.get(), d->ix, 0, d->off);
+        } else if (__builtin_expect(d && d->plain && d->owner == &g_thread_marker, 1)) {
+            cf->pc = 0;
+            cf->acc = Value();
+            const bool was_inline_ok = cf->inline_ok;
+            cf->inline_ok = false;
+            JitRt* rt = static_cast<JitRt*>(d->rt);
+            rt->opt_runs++;
+            const uint64_t status = reinterpret_cast<uint64_t (QUANTA_JIT_ABI *)(void*, JitRt*, const void*)>(d->entry)(cf, rt, d->target);
+            cf->inline_ok = was_inline_ok;
+            r = __builtin_expect(status == opt::kStatusFinished, 1) ? 1 : opt_unit_exit(*cf, chunk, chunk.jit.get(), d->ix, 0, rt, status);
         } else {
             r = opt_osr(*cf, 0, Value());
         }
