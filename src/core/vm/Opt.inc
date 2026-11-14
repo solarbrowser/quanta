@@ -1458,6 +1458,12 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         if (fused) set(dst, v);
         return true;
     }
+    case Op::ToPropertyKey: {
+        // A number is left alone (the keyed access that follows converts it); anything else is the interpreter's, and a guard says which this is.
+        if (!numeric_value(value(acc()))) return false;
+        set(acc(), num(value(acc())));
+        return true;
+    }
     case Op::CheckObjectCoercible: {
         const int32_t v = tagged(value(acc()));
         set(acc(), guarded(K::CheckNotNullish, Rep::Tagged, v));
@@ -3336,8 +3342,8 @@ inline void Builder::cse() {
     };
     std::unordered_map<Key, int32_t, KeyHash> table;
     uint64_t next_epoch = 1;
-    std::vector<uint64_t> end_epoch(nb, 0), end_bepoch(nb, 0);
-    auto kind_of = [](const Node& nd) {   // 0 not shared, 1 pure, 2 memory-dependent, 3 binding-dependent
+    std::vector<uint64_t> end_epoch(nb, 0), end_bepoch(nb, 0), end_gepoch(nb, 0);
+    auto kind_of = [](const Node& nd) {   // 0 not shared, 1 pure, 2 memory-dependent, 3 binding-dependent, 4 guard (shape, density, prototype)
         const K op = nd.op;
         // A variable held in an environment slot (form 0) changes only by an assignment to it, which is a store to the
         // environment or something that runs script; a global that lives on an object (forms 1 and 2) can be written like any
@@ -3351,14 +3357,25 @@ inline void Builder::cse() {
         case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag:
         case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish: case K::CheckBits: case K::IsFn:
             return 1;
-        case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen: case K::LoadEnv:
-        case K::LoadThis: case K::CheckShape: case K::CheckDense: case K::CheckProto: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadTyped:
+        // A variable of an environment is changed only by a store to the environment or by something that runs script, which is what the binding epoch counts: a
+        // store to an array's element or an object's slot cannot touch it.
+        case K::LoadEnv:
+            return 3;
+        // What a guard says about an object -- its shape, that it is a dense array, its prototype -- stays true across the stores of this tier (an element or a slot
+        // that exists is written, an append keeps the array dense) and goes only with what runs script or builds an object another way.
+        case K::CheckShape: case K::CheckDense: case K::CheckDenseSt: case K::CheckProto:
+            return 4;
+        case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen:
+        case K::LoadThis: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadTyped:
             return 2;
         default: return 0;
         }
     };
     auto breaks_bindings = [](K op) {   // what can assign to an environment slot or run script that can
         return op == K::Step || op == K::StoreEnv || op == K::CallNative || op == K::CallFn || op == K::Rt;
+    };
+    auto breaks_guards = [](K op) {   // what can change an object's shape, density or prototype
+        return op == K::Step || op == K::CallNative || op == K::CallFn || op == K::Rt;
     };
     auto breaks_memory = [](K op) {
         return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreReg || op == K::StoreAcc ||
@@ -3370,8 +3387,9 @@ inline void Builder::cse() {
         // Epochs at the start of the block.
         uint64_t epoch = next_epoch++;
         uint64_t bepoch = next_epoch++;
+        uint64_t gepoch = next_epoch++;
         const Block& B = g_.b[blk];
-        if (B.preds.size() == 1 && idom[blk] == B.preds[0]) { epoch = end_epoch[B.preds[0]]; bepoch = end_bepoch[B.preds[0]]; }
+        if (B.preds.size() == 1 && idom[blk] == B.preds[0]) { epoch = end_epoch[B.preds[0]]; bepoch = end_bepoch[B.preds[0]]; gepoch = end_gepoch[B.preds[0]]; }
         stack.push_back({blk, 0, {}});
         Frame2& fr = stack.back();
         for (int32_t id : g_.b[blk].nodes) {
@@ -3380,8 +3398,10 @@ inline void Builder::cse() {
             nd.a = resolve(nd.a); nd.b = resolve(nd.b); nd.c = resolve(nd.c);
             const int kind = kind_of(nd);
             if (kind) {
-                Key k{nd.op, nd.a, nd.b, nd.c, nd.aux, nd.imm, kind == 2 ? epoch : kind == 3 ? bepoch : 0};
+                Key k{nd.op, nd.a, nd.b, nd.c, nd.aux, nd.imm, kind == 2 ? epoch : kind == 3 ? bepoch : kind == 4 ? gepoch : 0};
                 auto it = table.find(k);
+                // A dense array is also dense enough for a store.
+                if (nd.op == K::CheckDenseSt && it == table.end()) it = table.find(Key{K::CheckDense, nd.a, nd.b, nd.c, nd.aux, nd.imm, gepoch});
                 if (it != table.end() && !g_.n[it->second].dead) {
                     g_.repl[id] = it->second;
                     nd.dead = true;
@@ -3391,9 +3411,11 @@ inline void Builder::cse() {
             }
             if (breaks_memory(nd.op)) epoch = next_epoch++;
             if (breaks_bindings(nd.op)) bepoch = next_epoch++;
+            if (breaks_guards(nd.op)) gepoch = next_epoch++;
         }
         end_epoch[blk] = epoch;
         end_bepoch[blk] = bepoch;
+        end_gepoch[blk] = gepoch;
     };
     for (int32_t e : kids[kRoot]) {
         enter(e);
