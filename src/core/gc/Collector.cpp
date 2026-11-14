@@ -1114,7 +1114,7 @@ thread_local Collector::CycleStats g_last_cycle;
 // How many requested collections per major. Halved back to the floor by a
 // major that reclaimed a worthwhile share of what it marked, doubled by one
 // that did not.
-static const uint32_t kMajorIntervalFloor = [] { const char* e = std::getenv("QUANTA_GC_INTERVAL"); return e ? static_cast<uint32_t>(std::atoi(e)) : 12u; }();
+static const uint32_t kMajorIntervalFloor = [] { const char* e = std::getenv("QUANTA_GC_INTERVAL"); return e ? static_cast<uint32_t>(std::atoi(e)) : 8u; }();
 uint32_t& major_interval_ref() {
     static thread_local uint32_t interval = kMajorIntervalFloor;
     return interval;
@@ -2194,10 +2194,10 @@ void Collector::safepoint_slow() {
         // it: unproductive majors make this trigger progressively harder to
         // reach instead of firing on the same half-a-live-set forever.
         const size_t live = Heap::live_after_major();
-        static const size_t growth_percent = [] { const char* e = std::getenv("QUANTA_GC_GROWTH"); return e ? static_cast<size_t>(std::atoi(e)) : size_t(75); }();
+        static const size_t growth_percent = [] { const char* e = std::getenv("QUANTA_GC_GROWTH"); return e ? static_cast<size_t>(std::atoi(e)) : size_t(50); }();
         // A heap that is small is not worth a major for every megabyte it adds: marking has a fixed cost of its own (roots, stacks, the setup of the cycle), which a live
         // set of a few hundred kilobytes does not repay. So the growth that asks for one has a floor.
-        static const size_t min_growth = [] { const char* e = std::getenv("QUANTA_GC_MIN_GROWTH_KB"); return (e ? static_cast<size_t>(std::atoi(e)) : size_t(8192)) * 1024; }();
+        static const size_t min_growth = [] { const char* e = std::getenv("QUANTA_GC_MIN_GROWTH_KB"); return (e ? static_cast<size_t>(std::atoi(e)) : size_t(4096)) * 1024; }();
         const size_t growth_needed = std::max(live / 100 * growth_percent, min_growth) * (major_interval() / kMajorIntervalFloor);
         const bool pending_pressure = g_pending_env_bytes >= pending_env_trigger(live);
         if (pending_pressure) g_pending_env_requested = true;
