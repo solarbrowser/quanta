@@ -3136,26 +3136,135 @@ constexpr uint32_t kEntryMaxDepth = 96;
     return false;
 }
 
+// inline_call_enter for a unit whose DirectCall has been marked `fast`: everything the chunk decides was decided once.
+// False, with nothing done, for what the caller or the receiver rules out.
+[[gnu::always_inline]] inline bool unit_enter_fast(Frame& f, Function* fn, const BytecodeChunk& chunk, const BytecodeChunk::DirectCall& d,
+                                                   const Value* argv, uint32_t argc, const Value& this_value, Frame*& out) {
+    Context& ctx = *f.ctx;
+    if (UNLIKELY(ctx.this_needs_super() || ctx.is_strict_mode() != d.strict || d.realm != g_current_realm ||
+                 (d.sloppy_this && !this_value.is_object() && !this_value.is_function())))
+        return false;
+    InlineArena& arena = g_arena;
+    CallStack& stack = CallStack::established();
+    const uint32_t words = d.words;
+    if (UNLIKELY(stack.depth() > kEntryMaxDepth || arena.top + words > arena.limit)) return false;
+    // (A unit with inlined callees must be able to rebuild their frames: the arena and the call stack have room for the deepest chain, and the context is in the
+    // state those callees were checked against.)
+    if (UNLIKELY(d.inl_words != 0 && (ctx.is_strict_mode() != d.inl_strict || arena.top + words + d.inl_words > arena.limit ||
+                                      stack.depth() + d.inl_depth + 2 >= CallStack::MAX_STACK_DEPTH)))
+        return false;
+    ctx.consume_pending_construct_call();
+
+    Environment* outer_env = fn->get_closure_environment();
+    if (!outer_env && fn->get_closure_context()) outer_env = fn->get_closure_context()->get_lexical_environment();
+    if (!outer_env) outer_env = ctx.get_lexical_environment();
+    if (outer_env && !d.no_closures) outer_env->mark_escaped();
+
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
+    PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
+    if (UNLIKELY(d.uses_caches)) {
+        if (LIKELY(d.uses_lookup && !d.uses_private)) {
+            auto& ic = fn->instance_lookup_cache();
+            if (LIKELY(ic.size() >= d.names)) lookup_cache_data = ic.data();
+            else inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+        } else {
+            inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+        }
+    }
+
+    Value* bank = arena.top;
+    Value* regs = bank + 2;
+    bank[0] = this_value;
+    bank[1] = Value();
+    init_register_bank(reinterpret_cast<unsigned char*>(regs), d.nregs);
+    const uint32_t copy = std::min<uint32_t>(chunk.parameter_count, argc);
+#pragma clang loop vectorize(disable) interleave(disable) unroll(disable)
+    for (uint32_t i = 0; i < copy; i++) {
+        regs[i] = argv[i];
+        __asm__ volatile("" ::: "memory");
+    }
+    arena.top = bank + words;
+
+    if (UNLIKELY(arena.depth >= arena.ready)) inline_slots_grow();
+    InlineSlot& slot = arena.slots[arena.depth++];
+    slot.call_info.lexical_environment_ = outer_env;
+    slot.call_info.variable_environment_ = outer_env;
+    Frame* callee = inline_slot_frame(slot);
+    callee->chunk = &chunk;
+    callee->ctx = f.ctx;
+    callee->args = std::span<const Value>(argv, argc);
+    callee->owner = fn;
+    callee->regs = regs;
+    callee->lookup_cache_data = lookup_cache_data;
+    callee->private_feedback_data = private_feedback_data;
+    callee->code = chunk.code.data();
+    callee->constants = chunk.constants.data();
+    callee->entry_env = outer_env;
+    callee->this_value = this_value;
+    callee->env_save_top = 0;
+    callee->current_lexical_env = outer_env;
+    callee->current_variable_env = outer_env;
+    callee->caller = &f;
+    Frame* base = f.base ? f.base : &f;
+    callee->base = base;
+    callee->return_pc = 0;
+    callee->value_words = words;
+    if (UNLIKELY(d.verdict & kInlineHasOpt) && !chunk.opt_loops) callee->osr_budget = 1;     // (see inline_call_enter)
+    base->active = callee;
+    stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
+    out = callee;
+    return true;
+}
+
 [[gnu::always_inline]] inline bool unit_call_direct(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
     const FunctionExecutable* exe = fn->get_executable().get();
+    if (UNLIKELY(!exe || !exe->bytecode_chunk)) return false;
     const BytecodeChunk& chunk = *exe->bytecode_chunk;
-    if (chunk.opt_entry != 3) return false;
-    const uint8_t verdict = chunk.inline_state;
-    if (!(verdict & kInlineOk) || (verdict & kInlineEnv)) return false;
     const BytecodeChunk::DirectCall* d = chunk.direct;
-    if (d && d->leaf && unit_leaf_call(caller, fn, *exe, verdict, *d, this_value, argv, argc, out)) return true;
-    if (CallStack::established().depth() > kEntryMaxDepth) return false;
     Frame* cf;
-    if (!inline_call_enter<false>(caller, fn, argv, argc, this_value, 0, cf)) return false;
+    if (LIKELY(d && d->fast && chunk.opt_entry == 3 && d->owner == &g_thread_marker)) {
+        // Decided once for the declaration site (below): nothing of the chunk is asked again.
+        if (d->leaf && unit_leaf_call(caller, fn, *exe, d->verdict, *d, this_value, argv, argc, out)) return true;
+        if (!unit_enter_fast(caller, fn, chunk, *d, argv, argc, this_value, cf)) return false;
+    } else {
+        if (!fn->fast_callable() || chunk.opt_entry != 3) return false;
+        const uint8_t verdict = chunk.inline_state;
+        if (!(verdict & kInlineOk) || (verdict & kInlineEnv)) return false;
+        if (d && d->leaf && unit_leaf_call(caller, fn, *exe, verdict, *d, this_value, argv, argc, out)) return true;
+        if (CallStack::established().depth() > kEntryMaxDepth) return false;
+        if (!inline_call_enter<false>(caller, fn, argv, argc, this_value, 0, cf)) return false;
+        // What a later call of this chunk need not ask again: a unit of a function that is not an arrow (an arrow reads the `this` it was created with), on this
+        // thread, in an ordinary frame. The same for every closure of the declaration site.
+        if (d && d->owner == &g_thread_marker && !fn->is_arrow() && chunk.jit && chunk.jit->owner_thread == &g_thread_marker &&
+            d->ix < chunk.jit->opt_units.size() && opt::config().fast_enter) {
+            auto& m = const_cast<BytecodeChunk::DirectCall&>(*d);
+            const JitCode::OptUnit& u = chunk.jit->opt_units[d->ix];
+            m.verdict = verdict;
+            m.strict = (verdict & kInlineStrict) != 0;
+            m.sloppy_this = (verdict & (kInlineWantsThis | kInlineStrict)) == kInlineWantsThis;
+            m.no_closures = exe->fast_no_closures;
+            m.uses_lookup = chunk.uses_lookup_cache;
+            m.names = static_cast<uint32_t>(chunk.names.size());
+            m.uses_private = chunk.ic_feedback && !chunk.ic_feedback->private_feedback.empty();
+            m.uses_caches = chunk.uses_lookup_cache || m.uses_private;
+            m.nregs = std::max<uint32_t>(chunk.register_count, chunk.parameter_count);
+            m.words = inline_frame_words(m.nregs);
+            m.realm = exe->owner_realm();
+            m.inl_words = u.inl.empty() ? 0 : u.inl_words;
+            m.inl_depth = u.inl.empty() ? 0 : u.inl_depth;
+            m.inl_strict = u.inl_strict;
+            m.fast = true;
+        }
+    }
     cf->code = chunk.code.data();
     int r;
     try {
-        if (d && !d->plain && d->owner == &g_thread_marker && chunk.jit && chunk.jit->owner_thread == &g_thread_marker && d->ix < chunk.jit->opt_units.size()) {
+        if (d && !d->plain && !d->fast && d->owner == &g_thread_marker && chunk.jit && chunk.jit->owner_thread == &g_thread_marker && d->ix < chunk.jit->opt_units.size()) {
             // A unit with inlined callees: opt_run_unit checks that their frames can be rebuilt.
             cf->pc = 0;
             cf->acc = Value();
             r = opt_run_unit(*cf, chunk, chunk.jit.get(), d->ix, 0, d->off);
-        } else if (__builtin_expect(d && d->plain && d->owner == &g_thread_marker, 1)) {
+        } else if (__builtin_expect(d && (d->plain || d->fast) && d->owner == &g_thread_marker, 1)) {
             cf->pc = 0;
             cf->acc = Value();
             const bool was_inline_ok = cf->inline_ok;

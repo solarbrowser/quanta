@@ -307,6 +307,7 @@ struct Config {
     bool callee_env = true;           // QUANTA_OPT_CALLENV=0: an inlined callee's reads of enclosing variables are steps
     bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
     uint32_t rt_mask = 127;            // QUANTA_OPT_RTMASK: which generic operations: 1 binary, 2 typeof, 4 get named, 8 set named
+    bool fast_enter = true;           // QUANTA_OPT_FASTENTER=0: the frame of a unit's callee is made by the general entry
     bool direct = true;               // QUANTA_OPT_DIRECT=0: a call from a unit goes through the interpreter's call path
     uint32_t callfn = 1;              // QUANTA_OPT_CALLFN: 0 a call the tier does not inline stays a step; 1 it is made from the unit; 2 only when feedback names JS functions it reaches
     bool inline_loops = true;         // QUANTA_OPT_LOOPS=0: callees with loops are not inlined
@@ -367,6 +368,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_CALLENV")) c.callee_env = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RT")) c.rt = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RTMASK")) c.rt_mask = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_FASTENTER")) c.fast_enter = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DIRECT")) c.direct = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_CALLFN")) c.callfn = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
@@ -4346,6 +4348,9 @@ inline QUANTA_JIT_ABI uint64_t helper_dense_check(Object* obj, uint64_t for_stor
 inline QUANTA_JIT_ABI void helper_barrier_value(Object* obj, uint64_t bits) noexcept {
     Value v;
     std::memcpy(&v, &bits, 8);
+    // The container nothing has marked, with no major cycle open and no large cell about (the usual store: into an object made a moment ago): there is nothing to
+    // record or to shade, and the collector's own probe for the cell's block is not needed to say so.
+    if (__builtin_expect(!Collector::major_in_progress() && !Heap::any_large_cell().load(std::memory_order_relaxed) && !HeapBlock::from_cell(obj)->test_mark(obj), 1)) return;
     Collector::write_barrier_value(obj, v);
 }
 inline QUANTA_JIT_ABI void helper_barrier_env(Environment* env, uint64_t bits) noexcept {

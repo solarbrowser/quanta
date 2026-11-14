@@ -1045,6 +1045,23 @@ struct BytecodeChunk {
         bool leaf = false;
         uint8_t leaf_regs = 0;          // registers the leaf's frame needs
         uint8_t leaf_fails = 0;
+        // The call of a unit that has been through the ordinary entry once (unit_call_direct) and met everything a closure of this declaration site has to meet:
+        // what the per-call tests of inline_call_enter ask of the chunk is answered here, so a call asks only what the caller and the receiver decide.
+        bool fast = false;
+        bool strict = false;            // the callee runs strict
+        bool sloppy_this = false;       // a sloppy callee that reads `this` (a primitive receiver is not this path's)
+        bool no_closures = false;       // creates no closures: the outer environment need not be marked escaped
+        bool uses_caches = false;       // reads a global/closure name or a private name (the instance caches)
+        bool uses_lookup = false;       // ... a global/closure name: `names` entries
+        bool uses_private = false;      // ... a private name
+        bool inl_strict = false;        // the strictness the unit's inlined callees were checked against
+        uint8_t verdict = 0;            // the chunk's inline_state when this was made
+        uint32_t names = 0;
+        uint32_t words = 0;             // words the frame holds on the side stack
+        uint32_t nregs = 0;             // registers (at least the parameters)
+        uint32_t inl_words = 0;         // what the frames of the inlined callees need, should the unit have to rebuild them
+        uint32_t inl_depth = 0;
+        const void* realm = nullptr;    // the realm the function belongs to
     };
     FixedArray<LookupCacheEntry> lookup_cache; // indexed by name id
     mutable const DirectCall* direct = nullptr;
