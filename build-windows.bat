@@ -67,7 +67,7 @@ if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
     set "SIMD_FLAGS="
     set "TARGET_FLAGS=--target=aarch64-pc-windows-msvc"
 )
-set "CXXFLAGS=%TARGET_FLAGS% -fno-stack-protector -std=c++20 -Wall -O3 %ARCH_FLAGS% -DQUANTA_VERSION=\"2.0.0.alpha\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize %SIMD_FLAGS% -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+set "CXXFLAGS=%TARGET_FLAGS% -fno-stack-protector -std=c++20 -Wall -O3 %ARCH_FLAGS% -DQUANTA_VERSION=\"2.0.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize %SIMD_FLAGS% -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
 REM Profile-guided optimisation. A profile names functions by their mangled symbol, and the MSVC ABI mangles
 REM differently from the Itanium ABI the Linux/macOS profile (tools\pgo\quanta.profdata) was recorded with, so
 REM that one matches nothing here: Windows reads its own tools\pgo\quanta-windows.profdata. Record it with
