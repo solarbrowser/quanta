@@ -274,7 +274,7 @@ struct Config {
     uint32_t max_recompiles = 12;     // QUANTA_OPT_RECOMPILES
     uint32_t max_deopts = 40;         // guard failures before a loop is given up on
     bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
-    bool cold = true;                 // QUANTA_OPT_COLD=0 keeps never-executed blocks in the region
+    bool cold = false;                // QUANTA_OPT_COLD=1 prunes never-executed blocks (they deopt when reached: measured worse on RayTrace -18% and Splay -9%)
     bool light = false;               // QUANTA_OPT_LIGHT=1: steps write back only what they read (measured: no gain so far)
     bool allow_calls = false;         // QUANTA_OPT_CALLS=1: function-entry units may keep calls as steps
     uint32_t poly_max = 4;            // QUANTA_OPT_POLY=n: most callees one call site may have and still be inlined (1: monomorphic only)
@@ -291,6 +291,7 @@ struct Config {
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 250;      // largest callee (decoded instructions)
     uint32_t inline_total = 1500;      // all the callees of one unit together
+    uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
     uint32_t inline_depth = 3;
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
@@ -338,6 +339,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_CALLFN")) c.callfn = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_POLYINSNS")) c.poly_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INSNS")) c.inline_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_TOTAL")) c.inline_total = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_VARS")) c.inline_vars = static_cast<uint32_t>(std::atoi(e));
@@ -1621,6 +1623,7 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
         if (cs.pc != in.pc) continue;
         const bool construct = static_cast<Op>(in.op) == Op::Construct;
         if (cs.mega || cs.n == 0 || cs.n > config().poly_max || (construct && cs.n != 1)) return no(4);
+        uint32_t poly_total = 0;
         for (uint8_t t = 0; t < cs.n; t++) {
             Function* fn = cs.fns[t];
             if (!fn || fn->get_function_kind() != Function::FunctionKind::Plain) return no(4);
@@ -1653,8 +1656,10 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
             if (!strict && c.uses_this && static_cast<Op>(in.op) != Op::CallResolved) return no(10);
             uint32_t n = 0;
             if (!inline_scan(fn, c, n) || n > config().inline_insns) return no(11);
+            poly_total += n;
             out.push_back(fn);
         }
+        if (cs.n > 1 && poly_total > config().poly_insns) { out.clear(); return no(13); }
         return true;
     }
     return no(12);
