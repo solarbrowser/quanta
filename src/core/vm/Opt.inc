@@ -101,6 +101,8 @@ enum class K : uint8_t {
     CheckI32,             // Tagged -> I32, deopt unless a number whose value is an int32 and not a negative zero
     CmpI,                 // I32 a, I32 b -> Bool; aux: 0 <, 1 >, 2 <=, 3 >=, 4 ==, 5 !=
     NewArray,             // Tagged: a fresh array with room for aux elements (an array literal), or deopt
+    CheckDenseSt,         // CheckDense for a store: an array dense but for a tail of holes will do
+    NewArrayConst,        // Tagged: a fresh array of the aux constants (imm: their address in the pool), or deopt
     DefineElem,           // Tagged a, Tagged b: the element of index aux of the array literal a, appended; deopt (before doing anything) when it is not the next one
 };
 
@@ -231,7 +233,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "DefineElem"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "CheckDenseSt", "NewArrayConst", "DefineElem"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -244,7 +246,7 @@ inline bool is_pure_removable(K k) {
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
-    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem:
+    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem: case K::CheckDenseSt:
         return false;
     default: return true;
     }
@@ -1421,7 +1423,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         if (!object_value(value(rcv)) || !numeric_value(value(kreg))) return false;
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(kreg)));
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
-        guarded(K::CheckDense, Rep::None, obj);
+        guarded(K::CheckDenseSt, Rep::None, obj);
         const int32_t val = tagged(value(acc()));
         guarded(K::StoreElem, Rep::None, obj, idx, 0, 0, val);
         return true;
@@ -1472,6 +1474,12 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         const auto* ic = F().chunk->ic_feedback.get();
         if (!ic || ti >= ic->literal_templates.size() || !ic->literal_templates[ti].shape) return false;
         set(acc(), guarded(K::NewLiteral, Rep::Tagged, -1, -1, 0, reinterpret_cast<uint64_t>(&ic->literal_templates[ti])));
+        return true;
+    }
+    case Op::CreateArrayConst: {
+        const uint32_t start = u16(pc + 1), count = u16(pc + 3);
+        if (count == 0 || count > 64 || start + count > F().chunk->constants.size()) return false;
+        set(acc(), guarded(K::NewArrayConst, Rep::Tagged, -1, -1, count, reinterpret_cast<uint64_t>(F().chunk->constants.data() + start)));
         return true;
     }
     case Op::CreateArray: {
@@ -3738,6 +3746,20 @@ inline QUANTA_JIT_ABI uint64_t helper_new_literal(const BytecodeChunk::IcFeedbac
     std::memcpy(&bits, &r, 8);
     return bits;
 }
+// A keyed store into the array at the end of its storage (or in it, when the flags said no): what the interpreter's SetKeyed does for a dense array, 0 with nothing
+// done for anything else.
+inline QUANTA_JIT_ABI uint64_t helper_store_elem(uint64_t obj_ptr, uint64_t index, uint64_t val_bits) noexcept {
+    Object* obj = reinterpret_cast<Object*>(obj_ptr);
+    Value v;
+    std::memcpy(&v, &val_bits, 8);
+    const uint32_t idx = static_cast<uint32_t>(index);
+    if (obj->get_type() != Object::ObjectType::Array) return 0;
+    if (!obj->has_only_dense_elements() && !obj->is_dense_with_trailing_holes()) return 0;
+    const uint32_t count = obj->element_count();
+    if (idx > count) return 0;
+    if (idx == count && (!obj->is_extensible() || !obj->proto_chain_has_no_indices())) return 0;
+    return obj->store_dense_element(idx, v) ? 1 : 0;
+}
 // An array literal's array, as Op::CreateArray makes it.
 inline QUANTA_JIT_ABI uint64_t helper_new_array(uint64_t n, Context* ctx) noexcept {
     auto arr = ObjectFactory::create_array_with_room(static_cast<uint32_t>(n));
@@ -3747,6 +3769,18 @@ inline QUANTA_JIT_ABI uint64_t helper_new_array(uint64_t n, Context* ctx) noexce
     }
     Engine::fixup_new_array_realm(arr.get(), ctx);
     const Value r(arr.release());
+    uint64_t bits;
+    std::memcpy(&bits, &r, 8);
+    return bits;
+}
+// An array literal of constants, as Op::CreateArrayConst makes it.
+inline QUANTA_JIT_ABI uint64_t helper_new_array_const(const Value* values, uint64_t count, Context* ctx) noexcept {
+    Object* arr = ObjectFactory::create_array_with_room(static_cast<uint32_t>(count)).release();
+    arr->set_length(static_cast<uint32_t>(count));
+    arr->reserve_elements(static_cast<uint32_t>(count));
+    arr->fill_new_array(values, static_cast<uint32_t>(count));
+    Engine::fixup_new_array_realm(arr, ctx);
+    const Value r(arr);
     uint64_t bits;
     std::memcpy(&bits, &r, 8);
     return bits;
@@ -3764,8 +3798,10 @@ inline QUANTA_JIT_ABI uint64_t helper_define_elem(uint64_t obj_bits, uint64_t in
 inline QUANTA_JIT_ABI void helper_barrier(Object* obj) noexcept { Collector::write_barrier(obj); }
 // An array the unit meets that nobody has asked about yet (a fresh one: its dense flag is set by the first indexed access of the interpreter, which a unit
 // never makes): asked here, the flag is set, and the unit goes on instead of leaving at every new array.
-inline QUANTA_JIT_ABI uint64_t helper_dense_check(Object* obj) noexcept {
-    if (!obj->has_only_dense_elements()) return 0;
+inline QUANTA_JIT_ABI uint64_t helper_dense_check(Object* obj, uint64_t for_store) noexcept {
+    // `new Array(n)` before it is filled: the elements there are all real, the rest holes. A store may go into it (the unit appends at the end of the storage
+    // through the runtime); a read of its length may not (the length is not the storage's).
+    if (!obj->has_only_dense_elements()) return for_store && obj->is_dense_with_trailing_holes() ? 1 : 0;
     // The test the unit makes (the flag and the extras the elements live beside), made again.
     const uint8_t* bf = *reinterpret_cast<uint8_t* const*>(reinterpret_cast<const uint8_t*>(obj) + JitObjectLayout::butterfly());
     if (!bf) return 0;
@@ -4919,6 +4955,22 @@ inline void Emitter::emit_node(int32_t id) {
         commit_g(id, d);
         return;
     }
+    case K::NewArrayConst: {
+        Label& dl = deopt_label(n.state);
+        int32_t bytes;
+        save_live(bytes);
+        a_.mov_imm64(abi::A0, n.imm);
+        a_.mov_imm64(abi::A1, n.aux);
+        a_.mov_load(abi::A2, mem(RBX, static_cast<int32_t>(kOffCtx)));
+        call_c(reinterpret_cast<const void*>(&helper_new_array_const));
+        restore_live(bytes);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
     case K::DefineElem: {
         Label& dl = deopt_label(n.state);
         const Reg o = use_g(n.a, RAX);
@@ -5399,7 +5451,7 @@ inline void Emitter::emit_node(int32_t id) {
         emit_barrier_check(n.b, o, v);
         return;
     }
-    case K::CheckDense: {
+    case K::CheckDense: case K::CheckDenseSt: {
         const Reg o = use_g(n.a, RAX);
         Label& dl = deopt_label(n.state);
         a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::shape())));
@@ -5416,11 +5468,12 @@ inline void Emitter::emit_node(int32_t id) {
         Label& back = new_label();
         a_.jcc(CC_NE, cold);
         a_.bind(back);
-        cold_.push_back([this, o, &cold, &back, &dl]() {
+        cold_.push_back([this, o, store = n.op == K::CheckDenseSt, &cold, &back, &dl]() {
             a_.bind(cold);
             int32_t bytes;
             save_live(bytes);
             a_.mov(abi::A0, o);
+            a_.mov_imm32(abi::A1, store ? 1 : 0);
             call_c(reinterpret_cast<const void*>(&helper_dense_check));
             restore_live(bytes);
             a_.test(RAX, RAX);
@@ -5470,13 +5523,33 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg o = use_g(n.a, RAX);
         const Reg i = use_g(n.b, RCX);
         const Reg v = use_g(n.c, RDX);
+        Label& cold = new_label();
+        Label& done = new_label();
         a_.mov_load(R11, mem(o, static_cast<int32_t>(JitObjectLayout::butterfly())));
         a_.cmp32_load(i, mem(R11, -static_cast<int32_t>(JitObjectLayout::kExtrasBack) + static_cast<int32_t>(JitObjectLayout::kElementsLengthOff)));
-        a_.jcc(CC_AE, deopt_label(n.state));
+        a_.jcc(CC_AE, cold);
         if (i != RCX) a_.mov32(RCX, i);
         a_.neg64(RCX);
         a_.mov_store(mem_idx(R11, RCX, 8, -static_cast<int32_t>(JitObjectLayout::kElementBase * sizeof(Value))), v);
         emit_barrier_check(n.c, o, v);
+        a_.bind(done);
+        // At or past the end of the storage: the append (or the store into an array that is dense but for its tail of holes) is the runtime's, which does the barrier too.
+        cold_.push_back([this, o, i, v, &cold, &done, dl = &deopt_label(n.state)]() {
+            a_.bind(cold);
+            int32_t bytes;
+            save_live(bytes);
+            a_.push(o);
+            a_.push(i);
+            a_.push(v);
+            a_.pop(abi::A2);
+            a_.pop(abi::A1);
+            a_.pop(abi::A0);
+            call_c(reinterpret_cast<const void*>(&helper_store_elem));
+            restore_live(bytes);
+            a_.test(RAX, RAX);
+            a_.jcc(CC_E, *dl);
+            a_.jmp(done);
+        });
         return;
     }
     case K::ModF: {

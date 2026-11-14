@@ -10120,14 +10120,17 @@ QUANTA_HANDLER Value h_gen_CreateObject(HANDLER_PARAMS) {
 // the transition it makes, and they form a chain from the empty shape that adds the keys in order,
 // one slot each. That is checked here rather than assumed, so a literal with a repeated key, an index
 // key or a site that went megamorphic is never templated and keeps the one-property-at-a-time form.
-bool learn_literal_template(const BytecodeChunk& chunk, BytecodeChunk::IcFeedback::LiteralTemplate& t) {
-    if (t.sites.size() != t.count || t.count == 0) return false;
+// 1: learned, 0: this literal never will be, 2: its sites have not run yet (a literal whose values are made by a recursive call is evaluated again before
+// the first of them has finished: asked again at the next evaluation).
+int learn_literal_template(const BytecodeChunk& chunk, BytecodeChunk::IcFeedback::LiteralTemplate& t) {
+    if (t.sites.size() != t.count || t.count == 0) return 0;
     Shape* prev = Shape::root();
     for (uint32_t i = 0; i < t.count; i++) {
         const FeedbackBody* fb = chunk.feedback[t.sites[i]].peek();
-        if (!fb || fb->transition_mega || fb->transition_count != 1) return false;
+        if (!fb || (!fb->transition_mega && fb->transition_count == 0)) return 2;
+        if (fb->transition_mega || fb->transition_count != 1) return 0;
         const FeedbackSlot::TransitionEntry& te = fb->transitions[0];
-        if (te.from_shape != prev || te.slot_index != i || te.to_shape->slot_count() != i + 1) return false;
+        if (te.from_shape != prev || te.slot_index != i || te.to_shape->slot_count() != i + 1) return 0;
         prev = te.to_shape;
     }
     t.shape = prev;
@@ -10136,7 +10139,7 @@ bool learn_literal_template(const BytecodeChunk& chunk, BytecodeChunk::IcFeedbac
         fb->lit_shape = prev;
         fb->lit_slot = i;
     }
-    return true;
+    return 1;
 }
 
 QUANTA_HANDLER Value h_CreateObjectT(HANDLER_PARAMS);
@@ -10144,7 +10147,10 @@ QUANTA_HANDLER Value h_CreateObjectT(HANDLER_PARAMS);
 [[gnu::noinline]] QUANTA_HANDLER Value h_CreateObjectTSlow(HANDLER_PARAMS) {
     const BytecodeChunk& chunk = *f.chunk;
     BytecodeChunk::IcFeedback::LiteralTemplate& t = chunk.ic_feedback->literal_templates[read_u16(code, pc + 1)];
-    if (!t.refused && ++t.runs >= 2 && !learn_literal_template(chunk, t)) t.refused = true;
+    if (!t.refused && ++t.runs >= 2) {
+        const int learned = learn_literal_template(chunk, t);
+        if (learned == 0 || (learned == 2 && t.runs >= 200)) t.refused = true;
+    }
     if (t.shape) [[clang::musttail]] return h_CreateObjectT(f, pc, acc, regs, code);
     // The ordinary object, the way Op::CreateObject makes it; the properties arrive one by one.
     Object* obj;
