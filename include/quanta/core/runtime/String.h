@@ -142,6 +142,11 @@ public:
     static constexpr LinkAlloc link{};
     static void* operator new(size_t size);
     static void* operator new(size_t size, LinkAlloc);
+    // A flat string that holds its own bytes (inline_flat_): nothing to destroy unless it comes to be named by a side cache (note_impure then), so its cell goes in a block that
+    // the sweep frees by bitmap (see HeapBlock::set_pure_origin).
+    struct PureTag {};
+    static void* operator new(size_t size, PureTag);
+    static void  operator delete(void* p, PureTag) noexcept;
     static void  operator delete(void* p) noexcept;
     static void  operator delete(void* p, LinkAlloc) noexcept;
     static void* operator new[](size_t) = delete;

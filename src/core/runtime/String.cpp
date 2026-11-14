@@ -148,6 +148,14 @@ void* String::operator new(size_t size, LinkAlloc) {
     return Heap::active().allocate(size, CellKind::String);
 }
 
+void* String::operator new(size_t size, PureTag) {
+    return Heap::active().allocate_pure(size, CellKind::FlatString);
+}
+
+void String::operator delete(void* p, PureTag) noexcept {
+    Heap::cell_free(p);
+}
+
 void String::operator delete(void* p, LinkAlloc) noexcept {
     Heap::cell_free(p);
 }
@@ -409,7 +417,7 @@ String* String::make_flat_parts(const char* a, size_t alen, const char* b, size_
     if ((alen && std::memchr(a, 0xED, alen)) || (blen && std::memchr(b, 0xED, blen))) return nullptr;
     const StrLayout layout = detect_std_string_layout();
     if (layout == StrLayout::None) return nullptr;
-    void* mem = String::operator new(sizeof(String) + n + 1);
+    void* mem = String::operator new(sizeof(String) + n + 1, PureTag{});
     String* s = ::new (mem) String(InlineTag{});
     char* bytes = reinterpret_cast<char*>(mem) + sizeof(String);
     if (alen) std::memcpy(bytes, a, alen);
@@ -627,6 +635,7 @@ std::u16string_view String::utf16_units(uint64_t* id) const {
     victim->id = ++g_units_next_id;
     victim->used = ++g_units_tick;
     in_side_cache_ = true;
+    Heap::note_impure(this);  // a cache names this cell now: it has to be seen by the sweep
     if (id) *id = victim->id;
     for (;;) {
         size_t held = 0;
@@ -733,6 +742,7 @@ void String::park_utf16(size_t pos, size_t units) const {
         if (evicted) evicted->in_side_cache_ = evicted->still_cached_elsewhere();
         cur->owner = this;
         in_side_cache_ = true;
+        Heap::note_impure(this);
     }
     cur->bytes = pos;
     cur->units = units;
