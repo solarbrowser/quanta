@@ -499,7 +499,8 @@ void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bo
     if (fb.mega) return;
     // What the own-property fast path may serve: a plain data slot on a type it is allowed for.
     // Everything else is stored with the slow mark and found by the general handler's scan.
-    const uint64_t fast_word = (receiver && !is_accessor && shape_fast_path_ok(receiver->get_type()))
+    // (A function's word too: the callers admit one only for a name Function::get_property does not answer itself, and the word carries the type.)
+    const uint64_t fast_word = (receiver && !is_accessor && (shape_fast_path_ok(receiver->get_type()) || receiver->get_type() == Object::ObjectType::Function))
                                    ? receiver->raw_shape_word() : 0;
     for (uint8_t i = 0; i < fb.count; i++) {
         if (fb.entries[i].shape() == shape) {
@@ -959,7 +960,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     }
 
     Shape* obj_shape = obj->get_shape();
-    bool fast_type_ok = shape_fast_path_ok(obj->get_type());
+    // A function's own data properties (statics, `F.superConstructor`) live in shape slots like an ordinary object's: every name but the five
+    // Function::get_property answers itself is as cacheable as on an ordinary receiver.
+    bool fast_type_ok = shape_fast_path_ok(obj->get_type()) ||
+                        (obj->get_type() == Object::ObjectType::Function && function_proto_read_cacheable(name));
     uint64_t cur_epoch = Object::descriptor_epoch();
 
     // An own property answered out of the receiver's descriptor map, learned
@@ -1539,7 +1543,8 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     // Re-checked fresh, not reusing a pre-call flag: ordinary_set can migrate
     // obj to dictionary mode (shape transition cap hit while adding a new
     // property), which changes has_descriptor_override's answer for `name`.
-    if (fb_slot && !(fb && fb->mega) && shape_fast_path_ok(obj->get_type()) &&
+    if (fb_slot && !(fb && fb->mega) &&
+        (shape_fast_path_ok(obj->get_type()) || (obj->get_type() == Object::ObjectType::Function && function_proto_read_cacheable(name))) &&
         !obj->has_descriptor_override(name)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
@@ -7181,7 +7186,15 @@ QUANTA_HANDLER Value h_gen_CallViaFunctionCall(HANDLER_PARAMS) {
                                     Value this_arg = argc > 0 ? regs[args_start] : Value();
                                     std::span<const Value> call_args(
                                         regs + args_start + (argc > 0 ? 1 : 0), argc > 0 ? argc - 1 : 0);
-                                    acc = target.as_function()->call_register_args(ctx, call_args, this_arg);
+                                    // A plain function is entered stackless, as CallResolved enters it: no nested run of the interpreter.
+                                    Function* tf = target.as_function();
+                                    if (LIKELY(f.inline_ok && tf->fast_callable() &&
+                                               tf->get_executable()->bytecode_chunk->inline_state != kInlineNever)) {
+                                        Frame* callee_frame;
+                                        if (inline_call_enter(f, tf, call_args.data(), static_cast<uint32_t>(call_args.size()), this_arg, pc, callee_frame))
+                                            [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
+                                    }
+                                    acc = tf->call_register_args(ctx, call_args, this_arg);
                                     handled = true;
                                 }
                                 break;
@@ -8315,6 +8328,31 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
                 }
             }
         }
+        // A function's own data property (`F.superConstructor`, a static): the shape's slot, as for an ordinary receiver, for every name
+        // Function::get_property does not answer itself.
+        {
+            static constinit thread_local const std::string* special[5] = {};
+            if (UNLIKELY(!special[0])) {
+                special[0] = Shape::intern("prototype"); special[1] = Shape::intern("name"); special[2] = Shape::intern("length");
+                special[3] = Shape::intern("arguments"); special[4] = Shape::intern("caller");
+            }
+            const std::string* nm = f.chunk->names[read_u16(code, pc + 2)];
+            if (nm != special[0] && nm != special[1] && nm != special[2] && nm != special[3] && nm != special[4]) {
+                Object* fo = receiver.as_object();
+                const FeedbackBody& ffb = f.chunk->feedback[read_u16(code, pc + 4)].read();
+                Shape* own_shape = fo->get_shape();
+                for (uint8_t k = 0; k < ffb.count; k++) {
+                    const FeedbackSlot::Entry& cand = ffb.entries[k];
+                    if (cand.shape() != own_shape) continue;
+                    if (fo->has_any_descriptor_override() || cand.is_accessor) break;
+                    if (const Value* slot = fo->get_shape_slot_unchecked(cand.slot_index)) {
+                        acc = *slot;
+                        FUSED_TAIL(6);
+                    }
+                    break;
+                }
+            }
+        }
         // A function is not is_object() (see Value's own tag split), so it
         // never reaches the branch above -- but Function IS-A Object in the
         // C++ hierarchy, and as_object() reads the same payload bits
@@ -8561,6 +8599,32 @@ QUANTA_HANDLER Value h_SetNamedFast(HANDLER_PARAMS) {
             // New-property transition cache: see h_SetNamedTransition.
             if (LIKELY(!fb.transition_mega && fb.transition_count != 0)) {
                 [[clang::musttail]] return h_SetNamedTransition(f, pc, acc, regs, code);
+            }
+        }
+    }
+    if (receiver.is_function()) {
+        // A function's own writable data property (`F.count = n`): the shape's slot, for every name Function::set_property does not treat itself.
+        static constinit thread_local const std::string* special[5] = {};
+        if (UNLIKELY(!special[0])) {
+            special[0] = Shape::intern("prototype"); special[1] = Shape::intern("name"); special[2] = Shape::intern("length");
+            special[3] = Shape::intern("arguments"); special[4] = Shape::intern("caller");
+        }
+        const std::string* nm = f.chunk->names[read_u16(code, pc + 2)];
+        if (nm != special[0] && nm != special[1] && nm != special[2] && nm != special[3] && nm != special[4]) {
+            Object* fo = receiver.as_object();
+            const FeedbackBody& ffb = f.chunk->feedback[read_u16(code, pc + 4)].read();
+            Shape* own_shape = fo->get_shape();
+            for (uint8_t k = 0; k < ffb.count; k++) {
+                const FeedbackSlot::Entry& cand = ffb.entries[k];
+                if (cand.shape() != own_shape) continue;
+                if (fo->has_any_descriptor_override() || cand.is_accessor) break;
+                if (Value* slot = fo->get_shape_slot_unchecked(cand.slot_index)) {
+                    write_barrier_for(fo, acc);
+                    *slot = acc;
+                    pc += 6;
+                    DISPATCH();
+                }
+                break;
             }
         }
     }

@@ -287,7 +287,7 @@ struct Config {
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     bool typed = true;                // QUANTA_OPT_TYPED=0: typed array elements are stepped
     bool int32 = true;                // QUANTA_OPT_INT32=0: numbers that stay int32 are kept as doubles (no AddI/SubI/MulI, no int32 loop variables)
-    bool small_callee = false;        // QUANTA_OPT_SMALLCALLEE=1: a short function a unit calls through the interpreter is given a unit (costs memory)
+    bool small_callee = true;         // QUANTA_OPT_SMALLCALLEE=0: a short function a unit calls through the interpreter is not given a unit (saves memory)
     bool callee_env = true;           // QUANTA_OPT_CALLENV=0: an inlined callee's reads of enclosing variables are steps
     bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
     uint32_t rt_mask = 127;            // QUANTA_OPT_RTMASK: which generic operations: 1 binary, 2 typeof, 4 get named, 8 set named
@@ -486,6 +486,7 @@ private:
     bool native_call(const Insn& in);
     int typed_kind(uint32_t fb_pc) const;
     bool call_fn(const Insn& in);
+    bool call_via(const Insn& in);
     bool numeric_arg(int32_t x) { const Node& nd = g_.n[resolve(x)]; return nd.rep != Rep::Bool && nd.rep != Rep::I32 && nd.op != K::ConstTagged; }
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
@@ -1300,13 +1301,16 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         }
         if (!own && !array_len && !inh) return false;
         if (!object_value(value(rcv))) return false;
-        const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+        // A function's own property (a static, `F.superConstructor`): the receiver is a function value, whose word carries that type.
+        const auto is_fn_word = [](uint64_t w) { return (w & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function); };
+        const bool fnrecv = own && !(fb.entries[0].word & FeedbackBody::Entry::kSlow) && is_fn_word(fb.entries[0].word);
+        const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, fnrecv ? 3 : 0);
         int32_t v;
         if (own && fb.count >= 2 && fb.count <= 4) {
             Graph::Poly p;
             bool plain = true;
             for (uint8_t k = 0; k < fb.count; k++) {
-                if (fb.entries[k].is_accessor || (fb.entries[k].word & FeedbackBody::Entry::kSlow)) plain = false;
+                if (fb.entries[k].is_accessor || (fb.entries[k].word & FeedbackBody::Entry::kSlow) || is_fn_word(fb.entries[k].word) != fnrecv) plain = false;
                 p.word[k] = fb.entries[k].word;
                 p.slot[k] = fb.entries[k].slot_index;
             }
@@ -1355,9 +1359,10 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             return true;
         }
         const FeedbackBody& fb = F().chunk->feedback[fbi].read();
-        if (fb.count < 1 || fb.mega || fb.entries[0].is_accessor) return false;
+        if (fb.count < 1 || fb.mega || fb.entries[0].is_accessor || (fb.entries[0].word & FeedbackBody::Entry::kSlow)) return false;
         if (!object_value(value(rcv))) return false;
-        const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+        const bool fnrecv = (fb.entries[0].word & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function);
+        const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, fnrecv ? 3 : 0);
         guarded(K::CheckShape, Rep::None, obj, -1, 0, fb.entries[0].word);
         const int32_t val = tagged(value(acc()));
         emit(K::StoreSlot, Rep::None, obj, val, fb.entries[0].slot_index);
@@ -1495,6 +1500,8 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         ended = true;
         return true;
     }
+    case Op::CallViaFunctionCall: case Op::CallViaFunctionCallWide:
+        return call_via(in);
     case Op::Call: case Op::CallResolved: case Op::Construct: {
         const int32_t callee = site_of(cf_, pc);
         if (callee < 0) {
@@ -1927,6 +1934,27 @@ inline bool Builder::call_fn(const Insn& in) {
         std::fprintf(stderr, "\n");
     }
     const int32_t id = guarded(K::CallFn, Rep::Tagged, calleev, thisv, argc | (construct ? 0x10u : 0u) | (root_pc << 8), 0, a0);
+    g_.n[id].ins = std::move(rest);
+    set(acc(), id);
+    return true;
+}
+
+// `fn.call(thisArg, ...)`: a call of fn with the receiver and the arguments the instruction names, once the helper has seen that `call` is still the
+// real one (the check is the interpreter's own, made at every call). Only in the root function: the check reads the instruction's feedback by its pc.
+inline bool Builder::call_via(const Insn& in) {
+    if (!config().callfn || F().no_light || cf_ != 0) return false;
+    const uint8_t* code = F().chunk->code.data();
+    const uint32_t callee_r = F().var_base + code[in.pc + 1];
+    const uint32_t start = F().var_base + code[in.pc + 2];
+    const uint32_t total = code[in.pc + 3];
+    if (total > 5 || callee_r >= F().acc_var || start + total > F().acc_var) return false;
+    const uint32_t argc = total > 0 ? total - 1 : 0;
+    const int32_t calleev = tagged(value(callee_r));
+    const int32_t thisv = total > 0 ? tagged(value(start)) : const_of(Value());
+    const int32_t a0 = argc >= 1 ? tagged(value(start + 1)) : const_of(Value());
+    std::vector<int32_t> rest;
+    for (uint32_t i = 1; i < argc; i++) rest.push_back(tagged(value(start + 1 + i)));
+    const int32_t id = guarded(K::CallFn, Rep::Tagged, calleev, thisv, argc | 0x20u | (in.pc << 8), 0, a0);
     g_.n[id].ins = std::move(rest);
     set(acc(), id);
     return true;
@@ -3488,6 +3516,29 @@ inline QUANTA_JIT_ABI uint64_t helper_call_native(VM::Frame* f, const JitCode::O
 // bits, or: all ones, the callee threw (the unit leaves as a step that threw does); all ones minus one, a C++ exception is
 // pending in the code's slot (rethrown on the way out); minus two, the callee is not a function (nothing has happened: the
 // unit deoptimizes to the call, and the interpreter says what is wrong with it).
+// Whether `target.call` at the CallViaFunctionCall of `pc` is still Function.prototype.call, answered as the interpreter's handler answers it
+// (h_gen_CallViaFunctionCall): from what the site has cached, the receiver's shape and prototype and the two epochs. False leaves the instruction to the
+// interpreter, which reads the property for real.
+inline bool via_call_pristine(const VM::Frame& f, uint32_t pc, const Value& target) {
+    if (!target.is_function() || !f.feedback_rooted) return false;
+    const BytecodeChunk& chunk = *f.chunk;
+    const uint8_t* code = chunk.code.data();
+    const uint32_t fb_idx = static_cast<Op>(code[pc]) == Op::CallViaFunctionCallWide ? read_u32(code, pc + 4) : read_u16(code, pc + 4);
+    const FeedbackBody& fb = chunk.feedback[fb_idx].read();
+    Object* obj = target.as_object();
+    if (fb.proto_mega || obj->has_any_descriptor_override()) return false;
+    Shape* rs = obj->get_shape();
+    Object* p0 = obj->get_prototype();
+    const uint64_t pep = Object::proto_epoch();
+    for (uint8_t k = 0; k < fb.proto_count; k++) {
+        const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+        if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep)
+            return pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() && pe.cached_value.is_function() &&
+                   pe.cached_value.as_function() == ObjectFactory::get_pristine_function_call();
+    }
+    return false;
+}
+
 inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, uint64_t this_bits, const uint64_t* argv) noexcept {
     constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1, kNotFn = ~0ull - 2;
     // The unit wrote the receiver and the arguments as Values into its frame; they are read where they lie.
@@ -3500,6 +3551,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     Function* fn = fv.as_function();
     Context& ctx = *f->ctx;
     f->instr_pc = static_cast<uint32_t>(meta >> 8);
+    if (__builtin_expect(meta & 0x20, 0) && !via_call_pristine(*f, f->instr_pc, fv)) return kNotFn;      // `fn.call(this, ...)`: the interpreter takes it from here
     Value r;
     if (__builtin_expect(meta & 0x10, 0)) {
         // `new`: h_ConstructPlain's call, new.target set for its duration.
@@ -5218,7 +5270,7 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg d = def_g(id, RAX);
         a_.mov(RCX, s);
         a_.shr_imm(RCX, 48);
-        a_.cmp32_imm(RCX, n.aux == 2 ? 0x7FF4 : 0x7FF7);      // aux 2: a string
+        a_.cmp32_imm(RCX, n.aux == 2 ? 0x7FF4 : n.aux == 3 ? 0x7FF9 : 0x7FF7);      // aux 2: a string, 3: a function
         a_.jcc(CC_NE, deopt_label(n.state));
         if (d != s) a_.mov(d, s);
         a_.shl_imm(d, 16);
