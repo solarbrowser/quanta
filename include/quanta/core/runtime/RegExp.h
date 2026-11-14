@@ -145,6 +145,9 @@ public:
     // on the PCRE2 path or the match ran out of what the limits allow: the caller takes the general algorithm.
     // The texts of every match of a global, non-sticky pattern, in order (String.prototype.match with the g flag, when nothing observable is in between); false for a
     // pattern this does not take. lastIndex is left at zero, where the failing exec that ends the general path leaves it.
+    // Every match (or the first, for a pattern without g) as pairs of UTF-16 offsets -- (captures + 1) pairs each, PCRE2_UNSET for a group that took no part --
+    // for a pattern without named groups or the y flag; false for any other, with nothing done. `global`: from zero, to the end; lastIndex is left at zero.
+    bool collect_matches(const std::string& str, std::vector<size_t>& pairs, uint32_t& captures);
     bool match_all_texts(const std::string& str, std::vector<std::string>& texts);
     struct SplitPiece { std::string text; bool undefined = false; };
     bool split_all(const std::string& str, uint32_t lim, std::vector<SplitPiece>& pieces);

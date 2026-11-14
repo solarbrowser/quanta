@@ -1071,6 +1071,69 @@ void register_regexp_builtins(Context& ctx) {
                     }
                 }
             }
+            // An ordinary pattern without named groups, whose replacement has to be built (a template with $ in it, or a function): the matches are collected first, as the
+            // spec's loop collects its results, and the replacements built from them -- no match object per match, no property read by name.
+            if (Object::regexp_proto_protector_intact() && this_obj->get_prototype() == Object::watched_regexp_prototype() && !regexp_has_shortcut_override(this_obj)) {
+                RegExpObject* reo_fast = RegExpObject::from(this_obj);
+                RegExp* impl_fast = reo_fast ? reo_fast->impl().get() : nullptr;
+                if (impl_fast && !impl_fast->get_sticky() && (is_fn_replace || replace_str.find('$') != std::string::npos)) {
+                    const bool global_fast = impl_fast->get_global();
+                    if (global_fast) {
+                        bool li_ok = regexp_set_last_index(this_obj, 0.0);
+                        if (ctx.has_exception()) return Value();
+                        if (!li_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex' of regexp"); return Value(); }
+                    }
+                    std::vector<size_t> pairs;
+                    uint32_t ncap = 0;
+                    if (impl_fast->collect_matches(str, pairs, ncap)) {
+                        const size_t stride = (ncap + 1) * 2;
+                        const bool ascii_fast = subject_cell ? subject_cell->is_ascii() : utf8_is_ascii(str);
+                        std::u16string str16_fast;
+                        if (!ascii_fast) str16_fast = wtf8_to_utf16(str);
+                        auto cut = [&](size_t from, size_t to) -> std::string {
+                            return ascii_fast ? str.substr(from, to - from) : utf16_to_wtf8(str16_fast.data() + from, to - from);
+                        };
+                        std::string result;
+                        size_t last_end = 0;
+                        for (size_t k = 0; k + stride <= pairs.size(); k += stride) {
+                            const size_t ms = pairs[k], me = pairs[k + 1];
+                            std::string matched = cut(ms, me);
+                            std::string repl;
+                            if (is_fn_replace) {
+                                std::vector<Value> fn_args;
+                                fn_args.push_back(Value(matched));
+                                for (uint32_t c = 1; c <= ncap; c++) {
+                                    if (pairs[k + 2 * c] == static_cast<size_t>(~size_t(0))) fn_args.push_back(Value());
+                                    else fn_args.push_back(Value(cut(pairs[k + 2 * c], pairs[k + 2 * c + 1])));
+                                }
+                                fn_args.push_back(Value(static_cast<double>(ms)));
+                                fn_args.push_back(subject_cell ? Value(const_cast<String*>(subject_cell)) : Value(str));
+                                Value r = replace_val.as_function()->call(ctx, fn_args, Value());
+                                if (ctx.has_exception()) return Value();
+                                if (r.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
+                                else if (r.is_object() || r.is_function()) { repl = r.to_property_key(); if (ctx.has_exception()) return Value(); }
+                                else { repl = r.to_string(); if (ctx.has_exception()) return Value(); }
+                            } else {
+                                std::vector<std::string> caps;
+                                for (uint32_t c = 1; c <= ncap; c++)
+                                    caps.push_back(pairs[k + 2 * c] == static_cast<size_t>(~size_t(0)) ? std::string() : cut(pairs[k + 2 * c], pairs[k + 2 * c + 1]));
+                                std::u16string str16_t;
+                                if (replace_str.find("$`") != std::string::npos || replace_str.find("$'") != std::string::npos)
+                                    str16_t = ascii_fast ? wtf8_to_utf16(str) : str16_fast;
+                                if (!regexp_get_substitution(ctx, replace_str, str16_t, ms, me, matched, caps, Value(), repl)) return Value();
+                            }
+                            if (ms >= last_end) {
+                                result += cut(last_end, ms);
+                                result += repl;
+                                last_end = me;
+                            }
+                        }
+                        const size_t total = ascii_fast ? str.size() : str16_fast.size();
+                        if (last_end < total) result += cut(last_end, total);
+                        return Value(result);
+                    }
+                }
+            }
             // Steps 7-9: global/unicode, the only two flags this function itself
             // branches on. The general path reads the "flags" string (which
             // itself calls all eight per-flag getters) and rescans it for 'g'

@@ -2974,6 +2974,47 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     return true;
 }
 
+bool RegExp::collect_matches(const std::string& str, std::vector<size_t>& pairs, uint32_t& captures) {
+    if (sticky_ || backtrack_engine_ || !code_ || !named_groups_.empty() || has_indices_) return false;
+    resource_exhausted_ = false;
+    SubjectBuffer decode_buffer;
+    std::u16string& decode_scratch = decode_buffer.get();
+    uint64_t subject_id = 0;
+    std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id);
+    std::u16string sanitized;
+    if (unicode_ && has_lone_surrogate(orig)) {
+        sanitized = std::u16string(orig);
+        sanitize_utf16_surrogates(sanitized);
+    }
+    std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
+    pcre2_code* re = static_cast<pcre2_code*>(code_);
+    pcre2_match_data* md = static_cast<pcre2_match_data*>(ensure_match_data());
+    if (!md) return false;
+    pcre2_pattern_info(re, PCRE2_INFO_CAPTURECOUNT, &captures);
+    pairs.clear();
+    std::vector<PCRE2_SIZE> cur;
+    size_t pos = 0;
+    while (pos <= subject.size()) {
+        int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(), pos, kSubjectAlreadyChecked, md, resource_exhausted_);
+        if (rc < 0) break;
+        PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+        cur.assign(ov, ov + (captures + 1) * 2);
+        reset_stale_captures(pattern_, code_, code_owner_, cur, captures);
+        pairs.insert(pairs.end(), cur.begin(), cur.end());
+        if (!global_) break;
+        const size_t ms = cur[0], me = cur[1];
+        if (me != ms) { pos = me; continue; }
+        pos = ms + 1;
+        if (unicode_ && pos < subject.size() && subject[ms] >= 0xD800 && subject[ms] <= 0xDBFF && subject[pos] >= 0xDC00 && subject[pos] <= 0xDFFF) pos++;
+    }
+    if (!pairs.empty()) {
+        const size_t stride = (captures + 1) * 2;
+        note_legacy_match(str, nullptr, pairs.data() + pairs.size() - stride, captures + 1);
+    }
+    if (global_) last_index_ = 0;
+    return true;
+}
+
 bool RegExp::match_all_texts(const std::string& str, std::vector<std::string>& texts) {
     if (!global_ || sticky_) return false;
     if (backtrack_engine_) return false;
