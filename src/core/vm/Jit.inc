@@ -2949,7 +2949,12 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             refused.erase({&chunk, target});
         } else if (!opt::config().stress && evar != -2 && ++av.fails[site] == opt::config().avoid_after && av.recompiles < opt::config().max_recompiles) {
             av.recompiles++;
+            // An integer speculation that failed (a sum or a product that left the int32 range, a loop variable that was not an integer): the next build keeps that
+            // operation (or the variables entering that loop) as doubles instead of leaving the instruction to the interpreter.
+            const char* kind = known ? std::get<1>(gs[st]) : nullptr;
+            const bool int_guard = kind && (!std::strcmp(kind, "AddI") || !std::strcmp(kind, "SubI") || !std::strcmp(kind, "MulI") || !std::strcmp(kind, "CheckI32"));
             if (inlined) av.no_inline.insert({&chunk, site_pc});
+            else if (int_guard) av.nonarrow.insert(gpc);
             else if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);
             jc->opt_units[ui].entries.clear();         // the unit is dead; the next offer compiles it again
             refused.erase({&chunk, target});

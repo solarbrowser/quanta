@@ -96,6 +96,9 @@ enum class K : uint8_t {
     StoreTyped,           // F64 c stored at element b (I32) of the typed array a, same conditions; also deopts when the value does not fit the integer type
     Rt,                   // Tagged: one of the interpreter's generic operations (aux: kRt*), operands a, b; runs without a step, may run script, may throw
     CallFn,               // Tagged a (the callee), b (this), c and ins (arguments, aux low byte: their count, the rest: the call's pc in the root): calls a JS function through the interpreter's call path; deopts (to the call) when a is not a function
+    // Integers: a number that is an int32 for as long as the speculation holds, kept in a general register (see Builder::narrow_integers).
+    AddI, SubI, MulI,     // I32 a, b -> I32; deopt when the result leaves the int32 range (MulI: or is a negative zero)
+    CheckI32,             // Tagged -> I32, deopt unless a number whose value is an int32 and not a negative zero
 };
 
 struct Node {
@@ -225,7 +228,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -238,7 +241,7 @@ inline bool is_pure_removable(K k) {
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
-    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped:
+    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32:
         return false;
     default: return true;
     }
@@ -251,6 +254,7 @@ constexpr uint32_t kNoPc = 0xFFFFFFFFu;
 // steps from now on) and loop-carried variables that turned out not to be numbers (kept tagged).
 struct Avoid {
     std::set<uint32_t> pcs;
+    std::set<uint32_t> nonarrow;                      // pcs of arithmetic (and loop headers) whose int32 speculation failed: kept as doubles
     std::set<std::pair<uint32_t, uint32_t>> phis;     // (loop header pc, variable)
     std::map<uint64_t, uint32_t> fails;               // site -> failures so far
     std::set<std::pair<const BytecodeChunk*, uint32_t>> no_inline;   // call sites (chunk, pc) that are not worth inlining
@@ -281,6 +285,7 @@ struct Config {
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     bool typed = true;                // QUANTA_OPT_TYPED=0: typed array elements are stepped
+    bool int32 = true;                // QUANTA_OPT_INT32=0: numbers that stay int32 are kept as doubles (no AddI/SubI/MulI, no int32 loop variables)
     bool small_callee = false;        // QUANTA_OPT_SMALLCALLEE=1: a short function a unit calls through the interpreter is given a unit (costs memory)
     bool callee_env = true;           // QUANTA_OPT_CALLENV=0: an inlined callee's reads of enclosing variables are steps
     bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
@@ -338,6 +343,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_DIRECT")) c.direct = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_CALLFN")) c.callfn = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_POLYINSNS")) c.poly_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INSNS")) c.inline_insns = static_cast<uint32_t>(std::atoi(e));
@@ -564,6 +570,8 @@ private:
     void materialize_mem_operands();
     void remove_trivial_phis();
     void select_representations();
+    void narrow_integers();
+    void apply_replacements();
     void lower();
     void eliminate_dead();
     void fold();
@@ -1043,6 +1051,12 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         int32_t a, b;
         if (!number_operands(value(r), value(acc()), a, b)) return false;
         const K k = op == Op::Add ? K::AddF : op == Op::Sub ? K::SubF : op == Op::Mul ? K::MulF : op == Op::Mod ? K::ModF : K::DivF;
+        // Add, subtract and multiply carry the frame state of this instruction: narrow_integers may turn them into int32 operations that leave the unit when the
+        // result leaves the int32 range (the state is dropped from those that stay doubles). aux: the pc, which the avoid table is asked about.
+        if (config().int32 && (k == K::AddF || k == K::SubF || k == K::MulF) && !(cf_ == 0 && avoid_ && avoid_->nonarrow.count(in.pc))) {
+            set(acc(), guarded(k, Rep::F64, a, b, in.pc));
+            return true;
+        }
         set(acc(), emit(k, Rep::F64, a, b));
         return true;
     }
@@ -1132,6 +1146,10 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         if (!numeric_value(value(acc()))) return false;
         const int32_t a = num(value(acc()));
         const int32_t one = const_of(Value(1.0));
+        if (config().int32 && !(cf_ == 0 && avoid_ && avoid_->nonarrow.count(in.pc))) {
+            set(acc(), guarded(op == Op::Inc ? K::AddF : K::SubF, Rep::F64, a, one, in.pc));      // (see Add)
+            return true;
+        }
         set(acc(), emit(op == Op::Inc ? K::AddF : K::SubF, Rep::F64, a, one));
         return true;
     }
@@ -2610,6 +2628,7 @@ inline void Builder::finalize() {
     select_representations();
     lower();
     optimize();
+    narrow_integers();
     eliminate_dead();
     // A region that spends its time in steps is slower than the interpreter (every step writes the whole
     // register file back and reads it again), so it is not worth having.
@@ -2729,6 +2748,172 @@ inline void Builder::select_representations() {
         }
     }
     for (int32_t p : phis) g_.n[p].rep = (cand[p] && !disq[p]) ? Rep::F64 : Rep::Tagged;
+}
+
+// Every reference goes through the replacement map (the way lower() ends).
+inline void Builder::apply_replacements() {
+    auto fix = [&](int32_t& x) { if (x >= 0) x = resolve(x); };
+    for (int32_t blk : g_.rpo) {
+        Block& B = g_.b[blk];
+        fix(B.term.cond);
+        for (int32_t id : B.nodes) { Node& nd = g_.n[id]; fix(nd.a); fix(nd.b); fix(nd.c); for (int32_t& o : nd.ins) fix(o); }
+    }
+    for (State& st : g_.states) {
+        std::vector<std::pair<uint32_t, int32_t>> keep;
+        for (auto& [v, d] : st.defs) {
+            const int32_t r = resolve(d);
+            if (r >= 0) keep.push_back({v, r});
+        }
+        st.defs = std::move(keep);
+    }
+}
+
+// Numbers that are int32 for as long as the code has only ever seen them so are kept as int32 in general registers. The doubles the builder made of them cost a conversion
+// to and from an integer at every bit operation and an array index, and a loop variable that goes through one of those every iteration waits on the conversions' latency
+// (a loop of `s = (s + i * 3) & 0xffff` took 4 ns an iteration, 7 times what V8 takes). The speculation is the usual one: a sum, a difference or a product of two int32
+// values is an int32 unless it overflows (or, for a product, is a negative zero), and when it does the unit leaves through the frame state the instruction was made with.
+// A value is taken for an int32 when it is a constant that is one, the result of an integer operation, a phi all of whose inputs are, or -- on the entry of a loop -- a
+// register that holds one right now; anything else (a division, a value loaded from an object or an array, a function's parameter) stays a double.
+inline void Builder::narrow_integers() {
+#ifdef QUANTA_JIT_ARCH_A64
+    return;
+#else
+    if (!config().int32) return;
+    const size_t nn = g_.n.size();
+    std::vector<uint8_t> isint(nn, 0), tentative(nn, 0), viaint(nn, 0);
+    auto dbl = [](uint64_t bits) { double d; std::memcpy(&d, &bits, 8); return d; };
+    auto int_const = [&](const Node& nd) {
+        double d = dbl(nd.imm);
+        return d >= -2147483648.0 && d <= 2147483647.0 && d == std::floor(d) && !(d == 0 && std::signbit(d));
+    };
+    // The entry of a loop: the value the register has now is the one the first iteration starts with.
+    auto entry_int = [&](const Node& nd) {
+        if (nd.op != K::CheckNum || !g_.frame || g_.fn_entry) return false;
+        if (avoid_ && avoid_->nonarrow.count(g_.entry_pc)) return false;
+        const Node& on = g_.n[resolve(nd.a)];
+        if (on.op != K::LoadReg && on.op != K::LoadAcc) return false;
+        const Block& B = g_.b[on.blk];
+        if (!B.synthetic || B.osr_pc != static_cast<int32_t>(g_.entry_pc)) return false;
+        const Value& v = on.op == K::LoadAcc ? g_.frame->acc : g_.frame->regs[on.aux];
+        if (!v.is_number()) return false;
+        const double d = v.as_number();
+        return d >= -2147483648.0 && d <= 2147483647.0 && d == std::floor(d) && !(d == 0 && std::signbit(d));
+    };
+    std::vector<int32_t> work;
+    for (int32_t blk : g_.rpo)
+        for (int32_t id : g_.b[blk].nodes) {
+            const Node& nd = g_.n[id];
+            if (nd.dead || nd.rep != Rep::F64) continue;
+            switch (nd.op) {
+            case K::ConstF64: isint[id] = int_const(nd); break;
+            case K::I32ToF64: isint[id] = 1; break;
+            case K::CheckNum: isint[id] = entry_int(nd); break;
+            case K::AddF: case K::SubF: case K::MulF: if (nd.state >= 0) { tentative[id] = 1; isint[id] = 1; work.push_back(id); } break;
+            case K::Phi: tentative[id] = 1; isint[id] = 1; work.push_back(id); break;
+            default: break;
+            }
+        }
+    auto operands_int = [&](int32_t id) {
+        const Node& nd = g_.n[id];
+        if (nd.op == K::Phi) {
+            for (int32_t o : nd.ins) { o = resolve(o); if (!isint[o]) return false; }
+            return true;
+        }
+        return isint[resolve(nd.a)] && isint[resolve(nd.b)];
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int32_t id : work) {
+            if (!isint[id] || operands_int(id)) continue;
+            isint[id] = 0;
+            changed = true;
+        }
+    }
+    // Nothing to gain unless an integer operation or an integer loop variable comes out of it.
+    bool any = false;
+    for (int32_t id : work) if (isint[id]) any = true;
+    if (!any) {
+        for (int32_t id : work) if (g_.n[id].op != K::Phi) g_.n[id].state = -1;
+        return;
+    }
+    // Rewrite.
+    for (int32_t blk : g_.rpo)
+        for (int32_t id : g_.b[blk].nodes) {
+            Node& nd = g_.n[id];
+            if (nd.dead) continue;
+            if (nd.op == K::ToI32 && isint[resolve(nd.a)]) { g_.repl[id] = resolve(nd.a); nd.dead = true; continue; }
+            if (!isint[id]) {
+                if (tentative[id] && nd.op != K::Phi) nd.state = -1;     // stays a double: no frame state to keep alive
+                continue;
+            }
+            switch (nd.op) {
+            case K::ConstF64: nd.op = K::ConstI32; nd.rep = Rep::I32; nd.imm = static_cast<uint32_t>(static_cast<int32_t>(dbl(nd.imm))); break;
+            case K::I32ToF64: g_.repl[id] = nd.a; viaint[resolve(nd.a)] = 1; nd.dead = true; break;
+            case K::AddF: nd.op = K::AddI; nd.rep = Rep::I32; break;
+            case K::SubF: nd.op = K::SubI; nd.rep = Rep::I32; break;
+            case K::MulF: nd.op = K::MulI; nd.rep = Rep::I32; break;
+            case K::CheckNum: nd.op = K::CheckI32; nd.rep = Rep::I32; break;
+            case K::Phi: nd.rep = Rep::I32; break;
+            default: break;
+            }
+        }
+    // A ToIndex of an integer is the sign check alone.
+    auto is_int_node = [&](int32_t x) { x = resolve(x); return x >= 0 && static_cast<size_t>(x) < isint.size() && g_.n[x].rep == Rep::I32 && (isint[x] || viaint[x]); };
+    apply_replacements();
+    for (int32_t blk : g_.rpo)
+        for (int32_t id : g_.b[blk].nodes) {
+            Node& nd = g_.n[id];
+            if (nd.dead || nd.op != K::ToIndex) continue;
+            if (is_int_node(nd.a)) { nd.op = K::NonNegI32; nd.rep = Rep::I32; }
+        }
+    // What is left that wants a double gets one.
+    auto takes_i32 = [](K k) {
+        switch (k) {
+        case K::AddI: case K::SubI: case K::MulI: case K::NonNegI32: case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
+        case K::I32ToF64: case K::U32ToF64: case K::Phi: return true;
+        default: return false;
+        }
+    };
+    for (int32_t blk : g_.rpo) {
+        std::vector<int32_t> out;
+        std::map<int32_t, int32_t> conv;      // value -> its double, in this block
+        const std::vector<int32_t> nodes = g_.b[blk].nodes;
+        for (int32_t id : nodes) {
+            if (g_.n[id].dead) { out.push_back(id); continue; }
+            if (g_.n[id].op == K::Step && !g_.n[id].light) conv.clear();     // nothing may be live across a step
+            if (!takes_i32(g_.n[id].op)) {
+                for (int slot = 0; slot < 3; slot++) {
+                    const int32_t x = slot == 0 ? g_.n[id].a : slot == 1 ? g_.n[id].b : g_.n[id].c;
+                    if (x < 0 || !is_int_node(x)) continue;
+                    auto it = conv.find(x);
+                    if (it == conv.end()) {
+                        const int32_t c = add_node(blk, K::I32ToF64, Rep::F64, x);     // (the node list may have moved: indexes from here on)
+                        out.push_back(c);
+                        it = conv.emplace(x, c).first;
+                    }
+                    (slot == 0 ? g_.n[id].a : slot == 1 ? g_.n[id].b : g_.n[id].c) = it->second;
+                }
+            }
+            out.push_back(id);
+        }
+        g_.b[blk].nodes = std::move(out);
+    }
+    // A phi that stays a double takes the double of an integer coming in on its edge.
+    for (int32_t blk : g_.rpo) {
+        const std::vector<int32_t> ids = g_.b[blk].nodes;     // (a copy: the block may be its own predecessor)
+        for (int32_t id : ids) {
+            if (g_.n[id].op != K::Phi || g_.n[id].dead || g_.n[id].rep != Rep::F64) continue;
+            for (size_t i = 0; i < g_.n[id].ins.size(); i++) {
+                const int32_t o = resolve(g_.n[id].ins[i]);
+                if (!is_int_node(o)) continue;
+                const int32_t p = g_.b[blk].preds[i];
+                cb_ = p;
+                const int32_t c = emit_in(p, K::I32ToF64, Rep::F64, o);
+                g_.n[id].ins[i] = c;
+            }
+        }
+    }
+#endif
 }
 
 inline void Builder::lower() {
@@ -3680,6 +3865,7 @@ inline Reg Emitter::use_g(int32_t id, Reg scratch) {
     const Loc& l = loc_[id];
     if (l.kind == kGpr) return static_cast<Reg>(l.reg);
     if (l.kind == kStack) { a_.mov_load(scratch, slot_mem(l)); return scratch; }
+    if (config().log) std::fprintf(stderr, "[opt] no general register for v%d %s %s (used by %s)\n", id, kname(n.op), rname(n.rep), cur_kind_ ? cur_kind_ : "?");
     why_ = "operand without a location";
     return scratch;
 }
@@ -3694,6 +3880,7 @@ inline Xmm Emitter::use_x(int32_t id, Xmm scratch) {
     const Loc& l = loc_[id];
     if (l.kind == kXmm) return static_cast<Xmm>(l.reg);
     if (l.kind == kStack) { a_.movsd_load(scratch, slot_mem(l)); return scratch; }
+    if (config().log) std::fprintf(stderr, "[opt] no xmm register for v%d %s %s (used by %s)\n", id, kname(n.op), rname(n.rep), cur_kind_ ? cur_kind_ : "?");
     why_ = "operand without a location";
     return scratch;
 }
@@ -3810,6 +3997,13 @@ inline void Emitter::emit_deopt_stub(int32_t state) {
         Reg val = RAX;
         switch (nd.rep) {
         case Rep::F64: emit_box_inline(RAX, use_x(d, XMM0)); break;
+        case Rep::I32: {
+            // An int32 value is boxed as the double it stands for.
+            const Reg r32 = use_g(d, RDX);
+            a_.cvtsi2sd32(XMM0, r32);
+            emit_box_inline(RAX, XMM0);
+            break;
+        }
         case Rep::Bool: {
             const Reg b = use_g(d, RDX);
             a_.mov(RCX, b);
@@ -4046,6 +4240,67 @@ inline void Emitter::emit_node(int32_t id) {
         const Xmm d = def_x(id, XMM0);
         a_.cvtsi2sd32(d, s);
         commit_x(id, d);
+        return;
+    }
+    case K::AddI: case K::SubI: {
+        const Reg a = use_g(n.a, RAX);
+        const Reg b = use_g(n.b, RCX);
+        Reg d = def_g(id, RAX);
+        if (d == b && d != a) d = RAX;
+        if (d != a) a_.mov32(d, a);
+        if (n.op == K::AddI) a_.add32(d, b); else a_.sub32(d, b);
+        a_.jcc(CC_O, deopt_label(n.state));
+        if (loc_[id].kind == kGpr && static_cast<Reg>(loc_[id].reg) != d) a_.mov32(static_cast<Reg>(loc_[id].reg), d);
+        else commit_g(id, d);
+        return;
+    }
+    case K::MulI: {
+        const Reg a = use_g(n.a, RAX);
+        const Reg b = use_g(n.b, RCX);
+        // A product of zero is a negative zero when either factor is negative: the sign of the two together, taken before the product overwrites a.
+        a_.mov32(RDX, a);
+        a_.or32(RDX, b);
+        Reg d = def_g(id, RAX);
+        if (d == b && d != a) d = RAX;
+        if (d != a) a_.mov32(d, a);
+        a_.imul32(d, b);
+        Label& dl = deopt_label(n.state);
+        a_.jcc(CC_O, dl);
+        Label& nonzero = new_label();
+        a_.test32(d, d);
+        a_.jcc(CC_NE, nonzero);
+        a_.test32(RDX, RDX);
+        a_.jcc(CC_S, dl);
+        a_.bind(nonzero);
+        if (loc_[id].kind == kGpr && static_cast<Reg>(loc_[id].reg) != d) a_.mov32(static_cast<Reg>(loc_[id].reg), d);
+        else commit_g(id, d);
+        return;
+    }
+    case K::CheckI32: {
+        const Reg s = use_g(n.a, RAX);
+        const Reg d = def_g(id, RAX);
+        Label& dl = deopt_label(n.state);
+        // A tag or an infinity or a NaN is not an int32; nor is a double that does not come back the same from an integer, nor a negative zero.
+        a_.mov(RCX, s);
+        a_.shr_imm(RCX, 52);
+        a_.cmp32_imm(RCX, 0x7FF);
+        a_.jcc(CC_E, dl);
+        a_.mov(RDX, s);
+        a_.shr_imm(RDX, 63);                // the sign, for the zero case
+        a_.movq_to_xmm(XMM1, s);
+        a_.cvttsd2si32(RCX, XMM1);
+        a_.cvtsi2sd32(XMM0, RCX);
+        a_.ucomisd(XMM0, XMM1);
+        a_.jcc(CC_NE, dl);
+        a_.jcc(CC_P, dl);
+        Label& nonzero = new_label();
+        a_.test32(RCX, RCX);
+        a_.jcc(CC_NE, nonzero);
+        a_.test32(RDX, RDX);
+        a_.jcc(CC_NE, dl);
+        a_.bind(nonzero);
+        a_.mov32(d, RCX);
+        commit_g(id, d);
         return;
     }
     case K::U32ToF64: {
