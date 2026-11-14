@@ -172,6 +172,9 @@ else ifeq ($(UNAME_S),Darwin)
     EXE_EXT =
     RM = rm -rf
     MKDIR_P = mkdir -p
+    ifndef QUANTA_NO_APPLE_MIMALLOC
+    CXXFLAGS += -DQUANTA_APPLE_MIMALLOC
+    endif
 else
     LIBS = -lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32
     STACK_FLAGS = -Wl,/stack:67108864

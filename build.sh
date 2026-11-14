@@ -351,6 +351,14 @@ CXXFLAGS=(
     -pthread
 )
 
+# On macOS C++ allocation goes to mimalloc too (src/core/runtime/MiMalloc.cpp explains why it used to be left out: the executable
+# has to keep the operator new/delete it exports, so it must not be stripped, `strip -x` is fine). The system allocator cost
+# Apple Silicon 14 per cent of the suite (Richards +24, DeltaBlue +19, Crypto +27, RegExp +25 with it).
+# QUANTA_NO_APPLE_MIMALLOC=1 leaves it out.
+if [ "$(uname -s)" = "Darwin" ] && [ -z "${QUANTA_NO_APPLE_MIMALLOC:-}" ]; then
+    CXXFLAGS+=(-DQUANTA_APPLE_MIMALLOC)
+fi
+
 # QUANTA_EXTRA_CXXFLAGS="..." appends to every compile and the link (profile-guided builds:
 # see tools/pgo/README.md).
 if [ -n "${QUANTA_EXTRA_CXXFLAGS:-}" ]; then

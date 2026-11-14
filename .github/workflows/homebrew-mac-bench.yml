@@ -29,9 +29,9 @@ jobs:
       matrix:
         include:
           - variant: llvm
-            extra_flags: ''
+            no_mimalloc: '1'
           - variant: llvm-mimalloc
-            extra_flags: '-DQUANTA_APPLE_MIMALLOC'
+            no_mimalloc: ''
     name: macOS (Apple Silicon, Homebrew LLVM, ${{ matrix.variant }})
     runs-on: macos-latest
     steps:
@@ -58,7 +58,7 @@ jobs:
       - name: Build engine
         env:
           QUANTA_ARCH_FLAGS: '-mcpu=apple-m1'
-          QUANTA_EXTRA_CXXFLAGS: ${{ matrix.extra_flags }}
+          QUANTA_NO_APPLE_MIMALLOC: ${{ matrix.no_mimalloc }}
         run: |
           chmod +x build.sh
           ./build.sh 2>&1 | tee build-output.txt

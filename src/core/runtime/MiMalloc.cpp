@@ -36,7 +36,8 @@
 // mimalloc, and mi_free crashes on the foreign pointer. strip -x / -S leave the
 // exports alone and were fine; a plain strip crashed the GC script on macOS
 // arm64. ELF and Windows resolve operator new program-wide.
-// QUANTA_APPLE_MIMALLOC (a compile flag, off by default) turns it on there anyway, for a build that is not stripped (the Homebrew-LLVM bench workflow measures it).
+// QUANTA_APPLE_MIMALLOC (a compile flag; build.sh and the Makefile set it on macOS unless QUANTA_NO_APPLE_MIMALLOC is set) turns it on there, for a build that is not stripped
+// with a plain `strip`. The system allocator cost Apple Silicon 14 per cent of the suite.
 #if !defined(__APPLE__) || defined(QUANTA_APPLE_MIMALLOC)
 #include <mimalloc-new-delete.h>
 #endif
