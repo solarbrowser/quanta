@@ -161,6 +161,7 @@ struct JitCode {
             const BytecodeChunk* chunk = nullptr;
             int32_t parent = -1;
             uint32_t var_base = 0, nregs = 0, call_pc = 0, call_len = 0;
+            bool gctor = false;       // a constructor run for `new` whose body is not private (it can call): its interpreter frame is a construction's
         };
         // What an inlined `new` allocates (helper_new_object): the object takes its final shape at once.
         struct NewDesc { Shape* from = nullptr; Shape* to = nullptr; Object* proto = nullptr; uint32_t nslots = 0; };

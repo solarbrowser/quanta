@@ -173,6 +173,7 @@ struct Func {
     int32_t entry_block = -1;
     const void* exe = nullptr;           // the executable the call site was seen to reach (guarded on entry)
     bool no_light = false;               // the function makes an arguments object, which can alias its registers: its steps write everything back
+    bool gctor = false;                  // a constructor of no plan: the object is made plain and the body is inlined as a function's
     bool ctor = false;                   // a constructor run for `new`: private to the new object, so a deoptimization leaves through the `new` itself
     int32_t plan = -1;                   // its entry in Graph::ctors
     bool sloppy_this = false;            // reads a sloppy `this`: only an object may reach it as it is
@@ -318,6 +319,7 @@ struct Config {
     bool proto_poly = true;           // QUANTA_OPT_PROTOPOLY=0: a method read of several receiver shapes goes through the runtime
     bool set_transition_rt = true;    // QUANTA_OPT_SETRT=0: a store site that adds and overwrites is compiled on its first entry
     bool leaf = true;                 // QUANTA_OPT_LEAF=0: a unit that only reads is entered like any other
+    bool gctor = true;                // QUANTA_OPT_GCTOR=0: a constructor of no plan is not inlined
     uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
     uint32_t inline_depth = 3;
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
@@ -373,6 +375,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_PROTOPOLY")) c.proto_poly = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_SETRT")) c.set_transition_rt = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_LEAF")) c.leaf = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_GCTOR")) c.gctor = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLYINSNS")) c.poly_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INSNS")) c.inline_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_TOTAL")) c.inline_total = static_cast<uint32_t>(std::atoi(e));
@@ -518,6 +521,7 @@ private:
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
     bool inline_enter(const Insn& in, int32_t callee, bool& ended);
     bool inline_define(const Insn& in, int32_t ci, int32_t fv, bool guard);
+    bool ctor_generic_ok(Function* fn, uint32_t& insns);
     bool poly_dispatch(int32_t site, int32_t t, bool& ended);
     int32_t make_instance(int32_t fi, const Insn& call, Function* target, std::vector<int32_t>& added);
     int32_t poly_of(int32_t fi, uint32_t pc) const {
@@ -1606,7 +1610,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     }
     case Op::Return: {
         int32_t v = tagged(value(acc()));
-        if (cf_ != 0 && F().ctor) {
+        if (cf_ != 0 && (F().ctor || F().gctor)) {
             // `new` yields the object unless the constructor returns another: only a body that returns nothing is inlined.
             const Node& rn = g_.n[resolve(v)];
             if (rn.op != K::ConstTagged || rn.imm != std::bit_cast<uint64_t>(Value())) return false;
@@ -1837,7 +1841,7 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
                 const bool sc = fn->stackless_constructible() && !fn->is_class_constructor();
                 const bool ok = sc && ctor_plan(fn, plan, n, false);
                 if (config().log) std::fprintf(stderr, "[opt] new at pc %u: constructible=%d plan=%d\n", in.pc, sc, ok);
-                if (!ok) return no(6);
+                if (!ok && !(sc && ctor_generic_ok(fn, n))) return no(6);
                 out.push_back(fn);
                 continue;
             }
@@ -2117,8 +2121,18 @@ inline bool Builder::call_fn(const Insn& in) {
 // `fn.call(thisArg, ...)`: a call of fn with the receiver and the arguments the instruction names, once the helper has seen that `call` is still the
 // real one (the check is the interpreter's own, made at every call). Only in the root function: the check reads the instruction's feedback by its pc.
 inline bool Builder::call_via(const Insn& in) {
-    if (!config().callfn || F().no_light || cf_ != 0) return false;
+    if (!config().callfn || F().no_light) return false;
     const uint8_t* code = F().chunk->code.data();
+    // In an inlined callee the helper cannot read the site's feedback (it knows the root's chunk): the checks are the unit's own, for the function the profile saw
+    // (the two epochs and the function's shape), and the call that follows is an ordinary one.
+    Function* seen = nullptr;
+    if (cf_ != 0) {
+        if (static_cast<Op>(in.op) != Op::CallViaFunctionCall) return false;
+        const auto* fbk = F().chunk->ic_feedback.get();
+        if (!fbk) return false;
+        for (const auto& cs : fbk->call_sites) if (cs.pc == in.pc && cs.n >= 1 && !cs.mega) seen = cs.fns[0];
+        if (!seen || seen->is_native() || !via_call_pristine_in(*F().chunk, in.pc, Value(seen))) return false;
+    }
     const uint32_t callee_r = F().var_base + code[in.pc + 1];
     const uint32_t start = F().var_base + code[in.pc + 2];
     const uint32_t total = code[in.pc + 3];
@@ -2129,7 +2143,15 @@ inline bool Builder::call_via(const Insn& in) {
     const int32_t a0 = argc >= 1 ? tagged(value(start + 1)) : const_of(Value());
     std::vector<int32_t> rest;
     for (uint32_t i = 1; i < argc; i++) rest.push_back(tagged(value(start + 1 + i)));
-    const int32_t id = guarded(K::CallFn, Rep::Tagged, calleev, thisv, argc | 0x20u | (in.pc << 8), 0, a0);
+    uint32_t root_pc = in.pc;
+    for (int32_t k = cf_; k > 0; k = g_.funcs[k].parent) root_pc = g_.funcs[k].call_pc;
+    if (cf_ != 0) {
+        epoch_guard(0, Object::proto_epoch());
+        epoch_guard(1, Object::descriptor_epoch());
+        const int32_t fobj = guarded(K::CheckObj, Rep::Ptr, calleev, -1, 3);
+        guarded(K::CheckShape, Rep::None, fobj, -1, 0, static_cast<Object*>(seen)->raw_shape_word());
+    }
+    const int32_t id = guarded(K::CallFn, Rep::Tagged, calleev, thisv, argc | (cf_ == 0 ? 0x20u : 0u) | (root_pc << 8), 0, a0);
     g_.n[id].ins = std::move(rest);
     set(acc(), id);
     return true;
@@ -2178,6 +2200,31 @@ inline bool apply_forwarder(const BytecodeChunk& c, uint32_t& name_index) {
     return pc == size;
 }
 
+// Whether a constructor that has no plan (its body calls, or does more than store) can be inlined all the same: a plain function (not a class or a derived
+// class) whose body is loop-free and small, runs in this realm and strictness (so a deoptimization can rebuild its frame, as a stackless `new` makes it), does not
+// read new.target or use super, and returns nothing (the object is the result). The object is made plain; the body's stores are ordinary ones.
+inline bool Builder::ctor_generic_ok(Function* fn, uint32_t& insns) {
+    if (!config().gctor || !g_.frame || fn->is_class_constructor() || fn->is_arrow()) return false;
+    const FunctionExecutable* exe = fn->get_executable().get();
+    if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm || exe->fast_uses_super) return false;
+    const BytecodeChunk& c = *exe->bytecode_chunk;
+    uint8_t v = c.inline_state;
+    if (v & kInlineNever) return false;
+    if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
+    if (!(v & kInlineOk) || (v & kInlineEnv) || (v & kInlineNever)) return false;
+    if (g_.frame->ctx->is_strict_mode() != ((v & kInlineStrict) != 0)) return false;
+    if (!inline_scan(fn, c, insns) || insns > config().inline_insns) return false;
+    const uint8_t* code = c.code.data();
+    const uint32_t size = static_cast<uint32_t>(c.code.size());
+    for (uint32_t pc = 0; pc < size;) {
+        const Op op = static_cast<Op>(code[pc]);
+        if (op == Op::LdaNewTarget || op == Op::SuperCall || op == Op::SuperCallSpread || op == Op::GetSuper || op == Op::SetSuper) return false;
+        if (op == Op::Return && (pc == 0 || static_cast<Op>(code[pc - 1]) != Op::LdaUndefined)) return false;
+        pc += 1 + static_cast<uint32_t>(op_operand_bytes(op));
+    }
+    return true;
+}
+
 inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc) {
     const FunctionExecutable* exe = fn->get_executable().get();
     const Value pv = fn->constructor_prototype();
@@ -2224,6 +2271,8 @@ inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& in
         if (returned || code[pc] >= static_cast<uint8_t>(Op::kCount)) return fail_plan(3);
         const Op op = static_cast<Op>(code[pc]);
         if (op_unsupported(op) || op == Op::Throw) return fail_plan(4);
+        // A body that calls is not private to the new object (a call is a step, which an inlined constructor cannot make): the general kind inlines it.
+        if (op == Op::Call || op == Op::CallResolved || op == Op::Construct || op == Op::CallViaFunctionCall || op == Op::CallViaFunctionCallWide || op == Op::CallViaFunctionApply || op == Op::CallSpread) return fail_plan(11);
         // Forward branches only (a conditional expression computing a value): the code between a branch and its target runs
         // on some paths and not on others, and a store there would add its property on some paths only.
         if (const int bp = branch_offset_pos(op); bp >= 0) {
@@ -2285,18 +2334,23 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
     const bool is_ctor = static_cast<Op>(call.op) == Op::Construct;
     uint32_t n = 0;
     Graph::CtorPlan plan;
-    if (is_ctor && !ctor_plan(target, plan, n, true)) return -1;
+    bool generic = false;
+    if (is_ctor && !ctor_plan(target, plan, n, true)) {
+        if (!ctor_generic_ok(target, n)) return -1;
+        generic = true;
+        plan = Graph::CtorPlan();
+    }
     // The function whose body is inlined: the callee, or the method a forwarding constructor calls.
     Function* body = plan.inner ? plan.inner : target;
     const FunctionExecutable* exe = body->get_executable().get();
     const BytecodeChunk& c = *exe->bytecode_chunk;
-    if (!is_ctor) inline_scan(target, c, n);
+    if (!is_ctor || generic) inline_scan(target, c, n);
     const uint32_t nregs = std::max<uint32_t>(c.register_count, c.parameter_count);
     if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + 3 > config().inline_vars) return -1;
     inline_insns_ += n;
     inline_vars_ += nregs + 3;
-    const bool leaf = is_ctor || (c.inline_state & kInlineLeaf) != 0;
-    const bool strict = is_ctor || (leaf ? (target->is_strict() || exe->fast_strict) : (c.inline_state & kInlineStrict) != 0);
+    const bool leaf = (is_ctor && !generic) || (c.inline_state & kInlineLeaf) != 0;
+    const bool strict = (is_ctor && !generic) || (leaf ? (target->is_strict() || exe->fast_strict) : (c.inline_state & kInlineStrict) != 0);
 
     Func f;
     f.chunk = &c;
@@ -2319,7 +2373,8 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
         inline_instance_caches(c, body, f.lookup, unused);
     }
     f.sloppy_this = !strict && c.uses_this && !is_ctor;
-    if (is_ctor) {
+    f.gctor = generic;
+    if (is_ctor && !generic) {
         f.ctor = true;
         f.plan = static_cast<int32_t>(g_.ctors.size());
         g_.ctors.push_back(plan);
@@ -2377,7 +2432,7 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
         for (Function* t : targets) {
             const BytecodeChunk& c = *t->get_executable()->bytecode_chunk;
             uint32_t n = 0;
-            if (static_cast<Op>(call.op) == Op::Construct) { Graph::CtorPlan plan; if (!ctor_plan(t, plan, n, false)) return false; }
+            if (static_cast<Op>(call.op) == Op::Construct) { Graph::CtorPlan plan; if (!ctor_plan(t, plan, n, false) && !ctor_generic_ok(t, n)) return false; }
             else inline_scan(t, c, n);
             insns += n;
             vars += std::max<uint32_t>(c.register_count, c.parameter_count) + 3;
@@ -2495,7 +2550,9 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
         guarded(K::CheckShape, Rep::None, fobj, -1, 0, static_cast<Object*>(C.fnp)->raw_shape_word());
     }
     int32_t thisv;
-    if (construct) {
+    if (construct && C.gctor) {
+        thisv = guarded(K::NewObject, Rep::Tagged, fv, -1, 0, 0);
+    } else if (construct) {
         // The constructor's object: made with the shape the stores will give it, so they are plain slot writes.
         const Graph::CtorPlan& plan = g_.ctors[C.plan];
         epoch_guard(0, plan.proto_epoch);
@@ -4136,6 +4193,14 @@ inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode
     Function* fn = fv.as_function();
     const Value pv = fn->constructor_prototype();
     Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
+    if (!d) {
+        // A constructor of no plan: the object the interpreter's `new` makes, to be given its properties by the body.
+        if (!proto) return 0;
+        const Value r(fn->new_construct_object(proto));
+        uint64_t bits;
+        std::memcpy(&bits, &r, 8);
+        return bits;
+    }
     if (proto != d->proto) return 0;
     Object* self = fn->new_construct_object(proto);
     if (self->get_shape() != d->from) return 0;
@@ -6446,7 +6511,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         unit.inl.resize(g.funcs.size());
         for (size_t k = 1; k < g.funcs.size(); k++) {
             const Func& fn = g.funcs[k];
-            unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len};
+            unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len, fn.gctor};
         }
         unit.inl_states.resize(g.states.size());
         for (size_t k = 0; k < g.states.size(); k++) {

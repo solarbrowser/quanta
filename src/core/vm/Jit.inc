@@ -2837,6 +2837,27 @@ Frame* opt_materialize(Frame& root, const JitCode::OptUnit& u, const JitRt* rt, 
             std::fprintf(stderr, "quanta: the optimizing tier could not rebuild an inlined frame\n");
             std::abort();
         }
+        if (fr.gctor) {
+            // The frame of a `new` that the unit was running inline: what h_ConstructInlineGo puts on the context for a stackless construction, so the
+            // frame's return picks between the value and `this`, and popping it puts the context back.
+            Context& ctx = *cf->ctx;
+            const Value self = at(fr.var_base + fr.nregs + 1);
+            InlineConstructState& st = reinterpret_cast<InlineSlot*>(cf)->construct;
+            st.saved_new_target = ctx.get_new_target();
+            st.proto = self.is_object() ? self.as_object()->get_prototype() : nullptr;
+            st.super_called = ctx.was_super_called();
+            st.in_constructor_call = ctx.is_in_constructor_call();
+            st.super_override = ctx.last_super_override();
+            st.super_override_needs_reparent = ctx.last_super_override_needs_reparent();
+            st.construct_explicit_return = ctx.last_construct_explicit_return();
+            ctx.set_in_constructor_call(true);
+            ctx.set_super_called(false);
+            ctx.set_new_target(fnv);
+            ctx.set_last_super_override(nullptr);
+            ctx.set_last_super_override_needs_reparent(false);
+            cf->construct_call = true;
+            cf->rare_pop = true;
+        }
         for (uint32_t v : s.vars)
             if (v >= fr.var_base && v < fr.var_base + fr.nregs) cf->regs[v - fr.var_base] = at(v);
         if (i == 0) {
@@ -2975,7 +2996,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             while (cu.inl[k].parent > 0) k = cu.inl[k].parent;
             site_pc = cu.inl[k].call_pc;
             gpc = site_pc;
-            evar = -1;
+            if (evar != -2) evar = -1;       // (a moved epoch is no reason to stop inlining the callee: the next build reads the new one)
         }
         if (opt::config().log)
             std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u, chunk %p): %s%s\n", gpc, target, static_cast<const void*>(&chunk),
