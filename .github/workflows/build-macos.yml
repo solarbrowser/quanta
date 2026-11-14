@@ -26,6 +26,15 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install Homebrew LLVM and lld
+        # Apple's clang cannot read tools/pgo/quanta.profdata (written by a newer LLVM) and the runner has no lld, so
+        # build.sh built without profile-guided optimisation and without ThinLTO. Homebrew's LLVM has both.
+        run: |
+          brew install llvm lld
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+
       - name: Build
         # See build-linux.yml's identical note: -march=native would bake in
         # this specific runner's own Apple Silicon generation, which is not
