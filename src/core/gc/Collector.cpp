@@ -33,6 +33,7 @@
 #include "quanta/core/runtime/TypedArray.h"
 #include <algorithm>
 #include <atomic>
+#include <mimalloc.h>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -87,7 +88,7 @@ constinit thread_local uint8_t g_major_epoch = 1;
 constinit thread_local size_t g_expect_minor = 0;
 constinit thread_local size_t g_expect_major = 0;
 // QUANTA_GC_PROFILE: what the helper threads did (rounds, cells each of them marked, cells handed back to the collecting thread, work left when a round ended).
-constinit thread_local size_t g_par_rounds = 0, g_par_left = 0, g_par_deferred = 0;
+constinit thread_local size_t g_par_rounds = 0, g_par_left = 0, g_par_deferred = 0, g_par_maxfront = 0;
 constinit thread_local size_t g_par_marked[8] = {};
 
 } // anonymous namespace
@@ -115,6 +116,13 @@ public:
     std::vector<FinalizationRegistry*> registries;
     size_t marked = 0;
     bool clear_remembered = false;
+
+    // Reserved by the thread that makes the marker, so the helpers do not allocate in their rounds: what a thread allocates and another frees stays with the allocating thread's
+    // heap until it takes it back, and a helper asleep between rounds never does.
+    ParMarker() {
+        local.reserve(16384);
+        deferred.reserve(4096);
+    }
 
     void reset() {
         local.clear(); deferred.clear(); contexts.clear(); environments.clear();
@@ -258,8 +266,9 @@ public:
         {
             std::unique_lock<std::mutex> lock(m_);
             cv_done_.wait(lock, [&] { return finished_ == helpers_; });
-            // What was left when the time was up.
-            work.insert(work.end(), shared_.begin(), shared_.end());
+            // What was left when the time was up: the shared list's own buffer is taken over (a copy would hold the whole frontier twice, and it can be hundreds of
+            // thousands of cells), and the buffer that comes back in its place is empty.
+            work.swap(shared_);
             shared_.clear();
             shared_count_.store(0, std::memory_order_relaxed);
         }
@@ -271,6 +280,33 @@ public:
     }
 
     std::vector<std::unique_ptr<ParMarker>>& markers() { return markers_; }
+
+    // A cycle is over: what capacity a big round grew the helpers' lists to is given back -- by the helpers themselves. A buffer freed by another thread than the one
+    // that allocated it is left for its owner to take back, and a helper asleep between rounds never does, so the memory stayed resident however the collecting thread
+    // freed it; each helper frees its own lists and hands its idle pages back (mi_collect), in a round of its own that the collecting thread waits for. Only when some list
+    // has grown past what is worth keeping.
+    void release_excess_capacity() {
+        std::unique_lock<std::mutex> round(round_mutex_, std::try_to_lock);
+        if (!round.owns_lock() || !started_) return;
+        bool big = shared_.capacity() > kWorthTrimming;
+        for (auto& m : markers_) big = big || m->local.capacity() > kWorthTrimming || m->deferred.capacity() > kWorthTrimming ||
+                                       m->contexts.capacity() > kWorthTrimming || m->environments.capacity() > kWorthTrimming;
+        if (!big) return;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            trim_only_ = true;
+            finished_ = 0;
+            generation_++;
+        }
+        cv_work_.notify_all();
+        trim_markers(*markers_[0]);
+        std::unique_lock<std::mutex> lock(m_);
+        cv_done_.wait(lock, [&] { return finished_ == helpers_; });
+        trim_only_ = false;
+        std::vector<Heap::ProbeResult> fresh;
+        fresh.reserve(65536);
+        shared_.swap(fresh);
+    }
 
 private:
     ParallelMarkPool() {
@@ -284,6 +320,7 @@ private:
         if (helpers_ < 0) helpers_ = 0;
         if (helpers_ > 15) helpers_ = 15;
         for (int i = 0; i <= helpers_; i++) markers_.push_back(std::make_unique<ParMarker>());
+        shared_.reserve(65536);
     }
 
     void ensure_threads() {
@@ -302,8 +339,12 @@ private:
                 cv_work_.wait(lock, [&] { return generation_ != seen; });
                 seen = generation_;
             }
-            Heap::adopt_heaps(main_heaps_, main_active_);
-            worker(*markers_[static_cast<size_t>(id)]);
+            if (trim_only_) {
+                trim_markers(*markers_[static_cast<size_t>(id)]);
+            } else {
+                Heap::adopt_heaps(main_heaps_, main_active_);
+                worker(*markers_[static_cast<size_t>(id)]);
+            }
             {
                 std::lock_guard<std::mutex> lock(m_);
                 finished_++;
@@ -374,6 +415,23 @@ private:
         }
     }
 
+    static constexpr size_t kKeepEntries = 4096;
+    // (A trim is a round of its own and walks the allocator's pages: only when a list is past half a megabyte, and only at the end of a major.)
+    static constexpr size_t kWorthTrimming = 32768;
+    // Run by the thread that owns the lists: frees what is past kKeepEntries, and hands the thread's idle allocator pages back.
+    void trim_markers(ParMarker& me) {
+        // Replaced by a list of the size they start with, so that no round has to allocate.
+        const auto shed = [](auto& list, size_t keep) {
+            if (list.capacity() > keep) {
+                std::remove_reference_t<decltype(list)> fresh;
+                fresh.reserve(keep);
+                list.swap(fresh);
+            }
+        };
+        shed(me.local, 16384); shed(me.deferred, 4096); shed(me.contexts, 0); shed(me.environments, 0);
+        mi_collect(true);
+    }
+
     void signal_stop() {
         stop_flag_.store(true, std::memory_order_relaxed);
         {
@@ -404,6 +462,7 @@ private:
     bool stop_ = false;
     bool done_ = false;
     bool started_ = false;
+    bool trim_only_ = false;
     int helpers_ = 0;
     int idle_ = 0;
     int participants_ = 1;
@@ -641,7 +700,8 @@ public:
         if (have < (always ? 2u : 8u)) return false;
         if (ParallelMarkPool::instance().helpers() == 0) return false;
         if (always) return true;
-        return have >= kParallelMinWork || (Collector::major_in_progress_ ? g_expect_major : g_expect_minor) >= kParallelMinExpected;
+        static const size_t min_expected = std::getenv("QUANTA_GC_PAR_MIN") ? static_cast<size_t>(std::atoll(std::getenv("QUANTA_GC_PAR_MIN"))) : kParallelMinExpected;
+        return have >= kParallelMinWork || (Collector::major_in_progress_ ? g_expect_major : g_expect_minor) >= min_expected;
     }
 
     // Traces the gray cells (and those waiting in the prefetch ring) on the helpers and this thread, until they are all traced or `deadline` has come. What the helpers
@@ -658,9 +718,11 @@ public:
             return;
         }
         parallel_busy_ = false;
-        gray_.insert(gray_.end(), work.begin(), work.end());
+        if (gray_.empty()) gray_ = std::move(work);
+        else gray_.insert(gray_.end(), work.begin(), work.end());
         g_par_rounds++;
-        g_par_left += work.size();
+        g_par_left += gray_.size();
+        if (gray_.size() > g_par_maxfront) g_par_maxfront = gray_.size();
         for (size_t mi = 0; mi < pool.markers().size() && mi < 8; mi++) { g_par_marked[mi] += pool.markers()[mi]->marked; g_par_deferred += pool.markers()[mi]->deferred.size(); }
         for (auto& m : pool.markers()) {
             marked_cells += m->marked;
@@ -1739,6 +1801,7 @@ void finish_major_cycle(MarkVisitor& v) {
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
         g_expect_major = v.marked_cells;
         v.release_excess_capacity();
+        ParallelMarkPool::instance().release_excess_capacity();
         Heap::decommit_idle_memory();
     }
 
@@ -1747,7 +1810,7 @@ void finish_major_cycle(MarkVisitor& v) {
             std::chrono::steady_clock::now() - g_major_cycle_start).count();
         std::fprintf(stderr, "[gc-prof] major slices=%u total=%ldus marked=%zu\n",
                      g_major_slice_count, total_us, v.marked_cells);
-        std::fprintf(stderr, "[gc-prof] par rounds=%zu left=%zu deferred=%zu marked per thread: %zu %zu %zu %zu\n", g_par_rounds, g_par_left, g_par_deferred,
+        std::fprintf(stderr, "[gc-prof] par maxfrontier=%zu rounds=%zu left=%zu deferred=%zu marked per thread: %zu %zu %zu %zu\n", g_par_maxfront, g_par_rounds, g_par_left, g_par_deferred,
                      g_par_marked[0], g_par_marked[1], g_par_marked[2], g_par_marked[3]);
     }
     if (log) {
