@@ -2989,7 +2989,17 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             // operation (or the variables entering that loop) as doubles instead of leaving the instruction to the interpreter.
             const char* kind = known ? std::get<1>(gs[st]) : nullptr;
             const bool int_guard = kind && (!std::strcmp(kind, "AddI") || !std::strcmp(kind, "SubI") || !std::strcmp(kind, "MulI") || !std::strcmp(kind, "CheckI32"));
-            if (inlined) av.no_inline.insert({&chunk, site_pc});
+            // A callee that none of the inlined ones matched: the site stays inlined for those and calls the rest through the runtime (the next build), where it
+            // was left to the interpreter for good; only a site that failed pays for the join this makes (a number coming out of an inlined callee stays unboxed
+            // where it is the only way out).
+            const bool call_guard = kind && !std::strcmp(kind, "CheckFn");
+            const uint32_t state_pc = known ? std::get<0>(gs[st]) : f.pc;
+            if (call_guard && opt::config().fallback) {
+                const BytecodeChunk* sc = inlined ? cu.inl[cu.inl_states[st].func].chunk : &chunk;
+                av.fallback.insert({sc, inlined ? cu.inl_states[st].pc : state_pc});
+                av.fallback_all = true;
+            }
+            else if (inlined) av.no_inline.insert({&chunk, site_pc});
             else if (int_guard) av.nonarrow.insert(gpc);
             else if (evar >= 0) av.phis.insert({gpc, static_cast<uint32_t>(evar)}); else av.pcs.insert(gpc);
             jc->opt_units[ui].entries.clear();         // the unit is dead; the next offer compiles it again

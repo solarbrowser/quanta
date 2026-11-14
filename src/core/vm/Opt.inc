@@ -101,6 +101,7 @@ enum class K : uint8_t {
     CheckI32,             // Tagged -> I32, deopt unless a number whose value is an int32 and not a negative zero
     CmpI,                 // I32 a, I32 b -> Bool; aux: 0 <, 1 >, 2 <=, 3 >=, 4 ==, 5 !=
     NewArray,             // Tagged: a fresh array with room for aux elements (an array literal), or deopt
+    LoadProtoPoly,        // Ptr a -> Tagged: a property found on the prototype chain, for the receiver shapes of g_.proto_polys[aux] (each with its prototype and where the value is), or deopt
     CheckDenseSt,         // CheckDense for a store: an array dense but for a tail of holes will do
     NewArrayConst,        // Tagged: a fresh array of the aux constants (imm: their address in the pool), or deopt
     DefineElem,           // Tagged a, Tagged b: the element of index aux of the array literal a, appended; deopt (before doing anything) when it is not the next one
@@ -149,7 +150,7 @@ struct Block {
     int32_t first_insn = -1, last_insn = -1;   // [first, last] indices into the function's instructions
     int32_t func = 0;                    // which function's bytecode the block is made of
     bool cold = false;                   // a block of an inlined function that has never run: it only deoptimizes
-    int32_t poly_kind = 0, poly_site = -1, poly_t = -1;   // 1: tests callee poly_t of a polymorphic call, 2: sets that callee up
+    int32_t poly_kind = 0, poly_site = -1, poly_t = -1;   // 1: tests callee poly_t of a polymorphic call, 2: sets that callee up, 3: the call made through the runtime (no callee matched)
     int32_t ret_to = -1;                 // a block of an inlined function that returns: where it goes
 };
 
@@ -189,6 +190,7 @@ struct Func {
         Insn call{};
         std::vector<int32_t> callees;                         // the instances, in the order they are tried
         int32_t fv = -1;                                      // the callee value, read once by the call block
+        bool fallback = false;                                // a callee that is none of them is called through the runtime (the last check leads there), not left through a deopt
     };
     std::vector<PolySite> polys;
 };
@@ -218,6 +220,10 @@ struct Graph {
     std::vector<std::unique_ptr<JitCode::OptUnit::RtDesc>> rtdescs;
     struct Poly { uint8_t n = 0; uint64_t word[4] = {}; uint32_t slot[4] = {}; };
     std::vector<Poly> polys;             // the shapes a polymorphic property read serves
+    // A property read of several receiver shapes that find it on the prototype chain: for each, the receiver's shape word, the prototype it has, and where the value is
+    // (kind 0 a slot of a holder, 1 a value the site has cached, 2 absent: undefined).
+    struct ProtoPoly { uint8_t n = 0; uint64_t word[4] = {}; uint64_t proto[4] = {}; uint8_t kind[4] = {}; uint64_t holder[4] = {}; uint32_t slot[4] = {}; uint64_t value[4] = {}; };
+    std::vector<ProtoPoly> proto_polys;
     std::vector<State> states;
     std::vector<int32_t> entries;        // synthetic entry blocks
     std::vector<int32_t> rpo;
@@ -233,7 +239,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "CheckDenseSt", "NewArrayConst", "DefineElem"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -263,6 +269,8 @@ struct Avoid {
     std::set<std::pair<uint32_t, uint32_t>> phis;     // (loop header pc, variable)
     std::map<uint64_t, uint32_t> fails;               // site -> failures so far
     std::set<std::pair<const BytecodeChunk*, uint32_t>> no_inline;   // call sites (chunk, pc) that are not worth inlining
+    std::set<std::pair<const BytecodeChunk*, uint32_t>> fallback;    // inlined call sites whose callee check failed: what matches none of the callees is called through the runtime
+    bool fallback_all = false;                                       // one did: every inlined call of this chunk's units is built that way (the profile was too short for this chunk's callees)
     uint32_t recompiles = 0;
 };
 inline std::map<const BytecodeChunk*, Avoid>& avoid_table() { static std::map<const BytecodeChunk*, Avoid> t; return t; }
@@ -301,6 +309,10 @@ struct Config {
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 250;      // largest callee (decoded instructions)
     uint32_t inline_total = 1500;      // all the callees of one unit together
+    bool fallback_every = false;      // QUANTA_OPT_FALLBACK=2: every inlined call is built so (a test mode)
+    bool fallback = true;             // QUANTA_OPT_FALLBACK=0: an inlined call whose callee is none of those inlined leaves the unit
+    bool proto_poly = true;           // QUANTA_OPT_PROTOPOLY=0: a method read of several receiver shapes goes through the runtime
+    bool set_transition_rt = true;    // QUANTA_OPT_SETRT=0: a store site that adds and overwrites is compiled on its first entry
     bool leaf = true;                 // QUANTA_OPT_LEAF=0: a unit that only reads is entered like any other
     uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
     uint32_t inline_depth = 3;
@@ -351,6 +363,9 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_FALLBACK")) { c.fallback = e[0] && e[0] != '0'; c.fallback_every = e[0] == '2'; }
+        if (const char* e = std::getenv("QUANTA_OPT_PROTOPOLY")) c.proto_poly = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_SETRT")) c.set_transition_rt = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_LEAF")) c.leaf = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLYINSNS")) c.poly_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INSNS")) c.inline_insns = static_cast<uint32_t>(std::atoi(e));
@@ -491,6 +506,7 @@ private:
     int typed_kind(uint32_t fb_pc) const;
     bool call_fn(const Insn& in);
     bool call_via(const Insn& in);
+    bool call_fn_ok(int32_t fi, const Insn& in) const;
     bool numeric_arg(int32_t x) { const Node& nd = g_.n[resolve(x)]; return nd.rep != Rep::Bool && nd.rep != Rep::I32 && nd.op != K::ConstTagged; }
     bool inline_scan(const Function* fn, const BytecodeChunk& c, uint32_t& insns);
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
@@ -1290,6 +1306,42 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             const FeedbackBody::ProtoEntry& pe = fb.proto_entries[0];
             if (pe.absent && !pe.is_getter && !pe.is_setter && pe.receiver_word && pe.prototype && pe.proto_epoch == Object::proto_epoch()) absent = &pe;
         }
+        // The same of a site that has seen several receiver shapes (a method of a class hierarchy: each class has its own prototype).
+        bool proto_poly = false;
+        Graph::ProtoPoly pp;
+        if (config().proto_poly && !own && !array_len && !inh && !absent && fb.count == 0 && !fb.mega && !fb.proto_mega && fb.proto_count >= 2 && fb.proto_count <= 4) {
+            proto_poly = true;
+            const bool first_fn = (fb.proto_entries[0].receiver_word & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function);
+            for (uint8_t k = 0; k < fb.proto_count && proto_poly; k++) {
+                const FeedbackBody::ProtoEntry& pe = fb.proto_entries[k];
+                const bool fnk = (pe.receiver_word & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function);
+                if (pe.is_getter || pe.is_setter || !pe.receiver_word || !pe.prototype || pe.proto_epoch != Object::proto_epoch() || fnk != first_fn) { proto_poly = false; break; }
+                pp.word[k] = pe.receiver_word;
+                pp.proto[k] = reinterpret_cast<uint64_t>(pe.prototype);
+                if (pe.absent) { pp.kind[k] = 2; }
+                else if (pe.from_descriptor) {
+                    if (pe.desc_epoch != Object::descriptor_epoch()) { proto_poly = false; break; }
+                    pp.kind[k] = 1;
+                    std::memcpy(&pp.value[k], &pe.cached_value, 8);
+                } else if (pe.holder) { pp.kind[k] = 0; pp.holder[k] = reinterpret_cast<uint64_t>(pe.holder); pp.slot[k] = pe.slot_index; }
+                else { proto_poly = false; break; }
+            }
+            pp.n = fb.proto_count;
+        }
+        if (proto_poly) {
+            if (!object_value(value(rcv))) return false;
+            const bool fnrecv = (pp.word[0] & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function);
+            const int32_t pobj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, fnrecv ? 3 : 0);
+            epoch_guard(0, Object::proto_epoch());
+            bool any_desc = false;
+            for (uint8_t k = 0; k < pp.n; k++) any_desc |= pp.kind[k] == 1;
+            if (any_desc) epoch_guard(1, Object::descriptor_epoch());
+            g_.proto_polys.push_back(pp);
+            const int32_t pv = guarded(K::LoadProtoPoly, Rep::Tagged, pobj, -1, static_cast<uint32_t>(g_.proto_polys.size() - 1));
+            set(acc(), pv);
+            if (fused) set(dst, pv);
+            return true;
+        }
         if (config().log && !own && !array_len && !inh && fb.count == 0 && fb.proto_count >= 1) {
             const FeedbackBody::ProtoEntry& pe = fb.proto_entries[0];
             std::fprintf(stderr, "[opt]   proto entry: getter=%d absent=%d setter=%d recv=%d proto=%d epoch_ok=%d (entry %llu now %llu) desc=%d holder=%d mega=%d\n", pe.is_getter, pe.absent, pe.is_setter,
@@ -1393,6 +1445,9 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         }
         const FeedbackBody& fb = F().chunk->feedback[fbi].read();
         if (fb.count < 1 || fb.mega || fb.entries[0].is_accessor || (fb.entries[0].word & FeedbackBody::Entry::kSlow)) return false;
+        // A site that also adds the property (a constructor's `this.x = ...` sees both: an object that has it, and a new one) would leave the unit for every object
+        // of the other kind; the runtime's store does both.
+        if (config().set_transition_rt && fb.transition_count > 0) return false;
         if (!object_value(value(rcv))) return false;
         const bool fnrecv = (fb.entries[0].word & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function);
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, fnrecv ? 3 : 0);
@@ -1613,8 +1668,13 @@ inline bool Builder::translate_block(int32_t blk) {
         bool ok;
         if (B0.poly_kind == 1) {
             ok = poly_dispatch(B0.poly_site, B0.poly_t, ended);
+        } else if (B0.poly_kind == 3) {
+            ok = call_fn(ps.call);
+            Block& B = g_.b[blk];
+            B.term.kind = T::Jump;
+            B.term.t = B.succs[0];
         } else {
-            const bool last = static_cast<size_t>(B0.poly_t) + 1 == ps.callees.size();
+            const bool last = !ps.fallback && static_cast<size_t>(B0.poly_t) + 1 == ps.callees.size();
             ok = inline_define(ps.call, ps.callees[B0.poly_t], ps.fv, last);
             Block& B = g_.b[blk];
             B.term.kind = T::Jump;
@@ -1908,6 +1968,7 @@ inline bool Builder::native_call(const Insn& in) {
     Function* fn = nullptr;
     for (const auto& cs : fbk->call_sites) if (cs.pc == in.pc && !cs.mega && cs.n == 1) fn = cs.fns[0];
     if (!fn || !fn->is_native()) return false;
+    if (avoid_ && avoid_->fallback.count({F().chunk, in.pc})) return false;      // its identity check failed (the callee is not always that native): the call is made through the runtime
     const uint8_t* code = F().chunk->code.data();
     const bool resolved = static_cast<Op>(in.op) == Op::CallResolved;
     const uint32_t callee_r = F().var_base + code[in.pc + 1];
@@ -1956,6 +2017,21 @@ inline bool Builder::native_call(const Insn& in) {
 // variables survives the call (a step forgets all of it). The callee may do anything to the heap, which the memory epoch
 // of the common-subexpression pass accounts for. A callee that is not a function deoptimizes to the call before anything
 // has happened; an exception leaves the unit the way a step's does.
+// Whether the call `in` of function `fi` can be made through the runtime (K::CallFn): what call_fn asks of it.
+inline bool Builder::call_fn_ok(int32_t fi, const Insn& in) const {
+    const Func& F_ = g_.funcs[fi];
+    if (config().callfn != 1 || F_.no_light) return false;
+    const uint8_t* code = F_.chunk->code.data();
+    const Op op = static_cast<Op>(in.op);
+    if (op != Op::Call && op != Op::CallResolved && op != Op::Construct) return false;
+    const bool resolved = op == Op::CallResolved;
+    const uint32_t callee_r = F_.var_base + code[in.pc + 1];
+    const uint32_t this_r = resolved ? F_.var_base + code[in.pc + 2] : 0;
+    const uint32_t start = F_.var_base + code[in.pc + (resolved ? 3 : 2)];
+    const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
+    return !(argc > 4 || callee_r >= F_.acc_var || (resolved && this_r >= F_.acc_var) || start + argc > F_.acc_var);
+}
+
 inline bool Builder::call_fn(const Insn& in) {
     if (!config().callfn || F().no_light) return false;
     if (config().callfn == 2) {
@@ -2274,7 +2350,13 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
         }
         if (inline_insns_ + insns > config().inline_total || inline_vars_ + vars > config().inline_vars) return false;
     }
-    if (targets.size() == 1) {
+    // A call that can also be made through the runtime is inlined behind its identity checks and calls what none of them matched, where a call the profile
+    // knew too few callees of would leave the unit (and be built again, again and again as more turned up).
+    const bool failed_before = avoid_ && avoid_->fallback.count({g_.funcs[fi].chunk, call.pc});
+    if (failed_before && !call_fn_ok(fi, call)) return false;      // (it cannot be called through the runtime either: not inlined)
+    // A site the profile saw several callees at is the likelier to meet another; one callee only is inlined with a plain check until it is seen to fail.
+    const bool fallback = config().fallback && (failed_before || config().fallback_every || targets.size() >= 2 || (avoid_ && avoid_->fallback_all)) && call_fn_ok(fi, call);
+    if (targets.size() == 1 && !fallback) {
         const int32_t ci = make_instance(fi, call, targets[0], added);
         if (ci < 0) return false;
         g_.funcs[fi].sites.push_back({call.pc, ci});
@@ -2292,6 +2374,7 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
     ps.pc = call.pc;
     ps.call = call;
     ps.callees = cis;
+    ps.fallback = fallback;
     const int32_t site_index = static_cast<int32_t>(g_.funcs[fi].polys.size());
     auto make = [&](int32_t kind, int32_t t) {
         const int32_t b = new_block(call.pc, call.pc);
@@ -2307,11 +2390,18 @@ inline bool Builder::expand_inline(int32_t blk, std::vector<int32_t>& added) {
         prep[t] = make(2, t);
         g_.b[prep[t]].succs.assign(1, g_.funcs[cis[t]].entry_block);
     }
-    // disp[j] decides between target j and the rest; the call block itself decides target 0, the last needs no check of its own.
-    for (int32_t j = 1; j + 1 < k; j++) disp[j] = make(1, j);
-    auto next_of = [&](int32_t j) { return j + 1 < k - 1 ? disp[j + 1] : prep[k - 1]; };
-    g_.b[blk].succs = {prep[0], k == 2 ? prep[1] : disp[1]};
-    for (int32_t j = 1; j + 1 < k; j++) g_.b[disp[j]].succs = {prep[j], next_of(j)};
+    // disp[j] decides between target j and the rest; the call block itself decides target 0, the last needs no check of its own
+    // (unless the call can be made through the runtime: then it is checked, and what matches none goes there).
+    int32_t gcall = -1;
+    if (fallback) {
+        gcall = make(3, -1);
+        g_.b[gcall].succs = g_.b[blk].succs;        // where the call's block went on to
+    }
+    const int32_t checked = fallback ? k : k - 1;
+    for (int32_t j = 1; j < checked; j++) disp[j] = make(1, j);
+    auto next_of = [&](int32_t j) { return j + 1 < checked ? disp[j + 1] : fallback ? gcall : prep[k - 1]; };
+    g_.b[blk].succs = {prep[0], checked > 1 ? disp[1] : fallback ? gcall : prep[1]};
+    for (int32_t j = 1; j < checked; j++) g_.b[disp[j]].succs = {prep[j], next_of(j)};
     g_.funcs[fi].polys.push_back(std::move(ps));
     for (int32_t x : got) added.push_back(x);
     return true;
@@ -3366,7 +3456,7 @@ inline void Builder::cse() {
         case K::CheckShape: case K::CheckDense: case K::CheckDenseSt: case K::CheckProto:
             return 4;
         case K::LoadReg: case K::LoadAcc: case K::LoadSlot: case K::LoadElem: case K::ArrayLen:
-        case K::LoadThis: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadTyped:
+        case K::LoadThis: case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadTyped: case K::LoadProtoPoly:
             return 2;
         default: return 0;
         }
@@ -5071,6 +5161,43 @@ inline void Emitter::emit_node(int32_t id) {
         commit_g(id, d);
         return;
     }
+    case K::LoadProtoPoly: {
+        const Reg o = use_g(n.a, RAX);
+        const Reg d = def_g(id, RAX);
+        const Graph::ProtoPoly& p = g_.proto_polys[n.aux];
+        Label& dl = deopt_label(n.state);
+        Label& done = new_label();
+        a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::shape())));
+        a_.test8_mem_imm(mem(o, static_cast<int32_t>(JitObjectLayout::proto())), static_cast<uint8_t>(JitObjectLayout::kHasDescriptors));
+        a_.jcc(CC_NE, dl);
+        for (uint8_t k = 0; k < p.n; k++) {
+            Label& miss = new_label();
+            a_.mov_imm64(RDX, p.word[k]);
+            a_.cmp(RCX, RDX);
+            a_.jcc(CC_NE, miss);
+            a_.mov_load(RDX, mem(o, static_cast<int32_t>(JitObjectLayout::proto())));
+            a_.shr_imm(RDX, 4);
+            a_.shl_imm(RDX, 4);
+            a_.mov_imm64(R11, p.proto[k]);
+            a_.cmp(RDX, R11);
+            a_.jcc(CC_NE, miss);
+            if (p.kind[k] == 0) {
+                a_.mov_imm64(RDX, p.holder[k]);
+                a_.mov_load(RDX, mem(RDX, static_cast<int32_t>(JitObjectLayout::butterfly())));
+                a_.mov_load(d, mem(RDX, static_cast<int32_t>(p.slot[k] * sizeof(Value))));
+            } else if (p.kind[k] == 1) {
+                a_.mov_imm64(d, p.value[k]);
+            } else {
+                a_.mov_imm64(d, std::bit_cast<uint64_t>(Value()));
+            }
+            a_.jmp(done);
+            a_.bind(miss);
+        }
+        a_.jmp(dl);
+        a_.bind(done);
+        commit_g(id, d);
+        return;
+    }
     case K::LoadPoly: {
         const Reg o = use_g(n.a, RAX);
         const Reg d = def_g(id, RAX);
@@ -5935,7 +6062,7 @@ inline bool leaf_graph(const Graph& g, uint8_t& regs) {
             case K::ShrI: case K::NotI: case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag: case K::NotBool:
             case K::Truthy: case K::TruthyF: case K::NotTdz: case K::StoreReg: case K::StoreAcc: case K::CheckObj: case K::CheckShape: case K::LoadSlot:
             case K::CheckDense: case K::ToIndex: case K::LoadElem: case K::ArrayLen: case K::LoadThis: case K::NonNegI32: case K::CheckFn: case K::CheckProto:
-            case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::CheckNotNullish: case K::IsFn: case K::Trap: case K::CheckBits: case K::MathF:
+            case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadProtoPoly: case K::CheckNotNullish: case K::IsFn: case K::Trap: case K::CheckBits: case K::MathF:
             case K::IsNullish: case K::LoadTyped: case K::AddI: case K::SubI: case K::MulI: case K::CheckI32: case K::CmpI:
                 break;
             default:
