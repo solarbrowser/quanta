@@ -1114,8 +1114,9 @@ thread_local Collector::CycleStats g_last_cycle;
 // How many requested collections per major. Halved back to the floor by a
 // major that reclaimed a worthwhile share of what it marked, doubled by one
 // that did not.
+static const uint32_t kMajorIntervalFloor = [] { const char* e = std::getenv("QUANTA_GC_INTERVAL"); return e ? static_cast<uint32_t>(std::atoi(e)) : 12u; }();
 uint32_t& major_interval_ref() {
-    static thread_local uint32_t interval = 8;
+    static thread_local uint32_t interval = kMajorIntervalFloor;
     return interval;
 }
 uint32_t major_interval() { return major_interval_ref(); }
@@ -1128,8 +1129,7 @@ uint32_t major_interval() { return major_interval_ref(); }
 // ever being productive -- majors there marked thirteen cells per cell freed
 // and the backoff below reset to the floor every time, so it never engaged.
 constexpr size_t kMajorYieldDivisor = 4;
-constexpr uint32_t kMajorIntervalFloor = 8;
-constexpr uint32_t kMajorIntervalCap = 64;
+static const uint32_t kMajorIntervalCap = kMajorIntervalFloor * 8;
 
 void note_major_yield(size_t marked, size_t swept) {
     uint32_t& interval = major_interval_ref();
@@ -2194,7 +2194,8 @@ void Collector::safepoint_slow() {
         // it: unproductive majors make this trigger progressively harder to
         // reach instead of firing on the same half-a-live-set forever.
         const size_t live = Heap::live_after_major();
-        const size_t growth_needed = (live / 2) * (major_interval() / kMajorIntervalFloor);
+        static const size_t growth_percent = [] { const char* e = std::getenv("QUANTA_GC_GROWTH"); return e ? static_cast<size_t>(std::atoi(e)) : size_t(75); }();
+        const size_t growth_needed = (live / 100 * growth_percent) * (major_interval() / kMajorIntervalFloor);
         const bool pending_pressure = g_pending_env_bytes >= pending_env_trigger(live);
         if (pending_pressure) g_pending_env_requested = true;
         const bool grown_enough = (live > 0 && Heap::bytes_since_major() >= growth_needed) || pending_pressure;
