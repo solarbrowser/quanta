@@ -44,6 +44,9 @@
 #include <unordered_set>
 #include <vector>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX  // (windows.h defines min and max, which std::min and std::max are not)
+#endif
 #include <windows.h>
 #else
 #include <pthread.h>
