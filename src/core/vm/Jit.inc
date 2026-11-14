@@ -2960,6 +2960,10 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         const JitCode::OptUnit& cu = jc->opt_units[ui];
         const bool inlined = st < cu.inl_states.size() && cu.inl_states[st].func != 0;
         const bool known = st < gs.size() && std::get<1>(gs[st]);
+        const uint32_t lg = rt->last_guard;
+        rt->last_guard = ~0u;
+        // The guard that failed (the state's recorded kind is the first of those that share it).
+        const char* gkind = known ? (lg != ~0u ? opt::kname(static_cast<opt::K>(lg)) : std::get<1>(gs[st])) : nullptr;
         uint32_t gpc = known ? std::get<0>(gs[st]) : f.pc;
         const uint32_t raw_pc = gpc;     // (the state's own pc: for an inlined callee's state, a pc of the callee)
         int32_t evar = known ? std::get<2>(gs[st]) : -1;
@@ -2975,7 +2979,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         }
         if (opt::config().log)
             std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u, chunk %p): %s%s\n", gpc, target, static_cast<const void*>(&chunk),
-                         known ? std::get<1>(gs[st]) : "?", evar >= 0 ? " (loop-carried value)" : evar == -3 ? " (check taken out of a loop)" : "");
+                         gkind ? gkind : "?", evar >= 0 ? " (loop-carried value)" : evar == -3 ? " (check taken out of a loop)" : "");
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
         const uint64_t site = (static_cast<uint64_t>(gpc) << 16) | static_cast<uint16_t>(evar + 1);
@@ -2996,12 +3000,12 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             av.recompiles++;
             // An integer speculation that failed (a sum or a product that left the int32 range, a loop variable that was not an integer): the next build keeps that
             // operation (or the variables entering that loop) as doubles instead of leaving the instruction to the interpreter.
-            const char* kind = known ? std::get<1>(gs[st]) : nullptr;
+            const char* kind = gkind;
             const bool int_guard = kind && (!std::strcmp(kind, "AddI") || !std::strcmp(kind, "SubI") || !std::strcmp(kind, "MulI") || !std::strcmp(kind, "CheckI32"));
             // A callee that none of the inlined ones matched: the site stays inlined for those and calls the rest through the runtime (the next build), where it
             // was left to the interpreter for good; only a site that failed pays for the join this makes (a number coming out of an inlined callee stays unboxed
             // where it is the only way out).
-            const bool call_guard = kind && !std::strcmp(kind, "CheckFn");
+            const bool call_guard = kind && (!std::strcmp(kind, "CheckFn") || !std::strcmp(kind, "CallNative"));
             const uint32_t state_pc = known ? std::get<0>(gs[st]) : f.pc;
             if (call_guard && opt::config().fallback) {
                 const BytecodeChunk* sc = inlined ? cu.inl[cu.inl_states[st].func].chunk : &chunk;

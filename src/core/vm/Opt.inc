@@ -4239,6 +4239,8 @@ private:
     std::vector<std::function<void()>> cold_;
     int32_t frame_bytes_ = 0;
     const char* cur_kind_ = "?";
+    K cur_op_ = K::Trap;
+    std::map<std::pair<int32_t, int>, Label*> guard_labels_;
 
     bool fail(const char* w) { if (!why_) why_ = w; return false; }
     Label& new_label() { labels_.emplace_back(); return labels_.back(); }
@@ -4506,7 +4508,21 @@ inline Label& Emitter::deopt_label(int32_t state) {
     if (!state_label_[state]) state_label_[state] = &new_label();
     if (guard_kinds.size() <= static_cast<size_t>(state)) guard_kinds.resize(state + 1, {0, nullptr, -1});
     if (!std::get<1>(guard_kinds[state])) guard_kinds[state] = {g_.states[state].pc, cur_kind_, g_.states[state].edge_var};
-    return *state_label_[state];
+    // Each kind of guard gets a stub of its own that says which one it is, then joins the state's: what the runtime learns from a deoptimization is
+    // about the guard that failed, not about whichever of the guards sharing the state was emitted first.
+    const auto key = std::make_pair(state, static_cast<int>(cur_op_));
+    auto it = guard_labels_.find(key);
+    if (it != guard_labels_.end()) return *it->second;
+    Label* g = &new_label();
+    guard_labels_[key] = g;
+    Label* shared = state_label_[state];
+    const uint32_t op = static_cast<uint32_t>(cur_op_);
+    cold_.push_back([this, g, shared, op]() {
+        a_.bind(*g);
+        a_.mov_store32_imm(mem(R14, static_cast<int32_t>(offsetof(JitRt, last_guard))), op);
+        a_.jmp(*shared);
+    });
+    return *g;
 }
 
 // d = the boxed form of the double in `s`. Clobbers RCX.
@@ -4731,6 +4747,7 @@ inline void Emitter::emit_phi_moves(int32_t from, int32_t to) {
 inline void Emitter::emit_node(int32_t id) {
     const Node& n = g_.n[id];
     cur_kind_ = kname(n.op);
+    cur_op_ = n.op;
     if (n.state >= 0 && config().stress) stress_guard(n.state);
     switch (n.op) {
     case K::ConstTagged: case K::ConstF64: case K::ConstBool: case K::ConstI32: case K::Phi:

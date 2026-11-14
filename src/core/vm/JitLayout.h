@@ -98,6 +98,7 @@ struct JitRt {
     // calls them through this table.
     const void* stubs[8] = {};
     uint32_t last_deopt = 0;
+    uint32_t last_guard = ~0u;         // the K op of the guard that took the last deoptimization (several guards share one state)
     uint32_t last_reason = 0;
     int32_t stress = 0;                // QUANTA_OPT_DEOPT_STRESS: guards left before the next forced deoptimization
     uint64_t opt_runs = 0, opt_exits = 0, opt_cycles = 0, opt_iters = 0;
