@@ -303,7 +303,7 @@ struct Config {
     bool inl = true;                  // QUANTA_OPT_INLINE=0 turns call inlining off
     bool typed = true;                // QUANTA_OPT_TYPED=0: typed array elements are stepped
     bool int32 = true;                // QUANTA_OPT_INT32=0: numbers that stay int32 are kept as doubles (no AddI/SubI/MulI, no int32 loop variables)
-    bool small_callee = true;         // QUANTA_OPT_SMALLCALLEE=0: a short function a unit calls through the interpreter is not given a unit (saves memory)
+    bool small_callee = false;         // QUANTA_OPT_SMALLCALLEE=1: a short function a unit calls through the interpreter is given a unit (+3 per cent DeltaBlue, +55 MB peak on a 3 MB bundle)
     bool callee_env = true;           // QUANTA_OPT_CALLENV=0: an inlined callee's reads of enclosing variables are steps
     bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
     uint32_t rt_mask = 127;            // QUANTA_OPT_RTMASK: which generic operations: 1 binary, 2 typeof, 4 get named, 8 set named
