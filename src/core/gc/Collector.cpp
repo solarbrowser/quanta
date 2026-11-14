@@ -2195,7 +2195,10 @@ void Collector::safepoint_slow() {
         // reach instead of firing on the same half-a-live-set forever.
         const size_t live = Heap::live_after_major();
         static const size_t growth_percent = [] { const char* e = std::getenv("QUANTA_GC_GROWTH"); return e ? static_cast<size_t>(std::atoi(e)) : size_t(75); }();
-        const size_t growth_needed = (live / 100 * growth_percent) * (major_interval() / kMajorIntervalFloor);
+        // A heap that is small is not worth a major for every megabyte it adds: marking has a fixed cost of its own (roots, stacks, the setup of the cycle), which a live
+        // set of a few hundred kilobytes does not repay. So the growth that asks for one has a floor.
+        static const size_t min_growth = [] { const char* e = std::getenv("QUANTA_GC_MIN_GROWTH_KB"); return (e ? static_cast<size_t>(std::atoi(e)) : size_t(8192)) * 1024; }();
+        const size_t growth_needed = std::max(live / 100 * growth_percent, min_growth) * (major_interval() / kMajorIntervalFloor);
         const bool pending_pressure = g_pending_env_bytes >= pending_env_trigger(live);
         if (pending_pressure) g_pending_env_requested = true;
         const bool grown_enough = (live > 0 && Heap::bytes_since_major() >= growth_needed) || pending_pressure;
