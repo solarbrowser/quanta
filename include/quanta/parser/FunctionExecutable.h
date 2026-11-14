@@ -267,9 +267,20 @@ private:
     // set would cost a node plus a malloc per construction and a hash+erase
     // per destruction. Doubly linked so unlinking stays O(1): executables die
     // in arbitrary order, not LIFO.
-    static constinit thread_local FunctionExecutable* live_head_;
-    FunctionExecutable* live_next_ = nullptr;
-    FunctionExecutable* live_prev_ = nullptr;
+    //
+    // Two lists, not one: the executables a collection has something to look at (new ones, ones whose feedback changed since they were traced, ones with parameter
+    // chunks, which have no signal of change) are on the pending list, and every other is on the settled list. A minor walks the pending list alone; a major, which opens a
+    // new epoch and traces every chunk once, walks both. With the one list a minor walked every executable of the program (some 30000 for a large script) to find the
+    // few that had changed.
+    static constinit thread_local FunctionExecutable* live_head_;      // pending
+    static constinit thread_local FunctionExecutable* settled_head_;
+    mutable FunctionExecutable* live_next_ = nullptr;
+    mutable FunctionExecutable* live_prev_ = nullptr;
+    void unlink_live() const;
+    void link_live(FunctionExecutable*& head) const;
+    void move_to_pending() const;
+    void move_to_settled() const;
+    bool has_parameter_chunks() const;
     // The realm that was running when this was made, which is whose cells its
     // chunks' feedback comes to name.
     class Realm* owner_realm_;
@@ -431,6 +442,8 @@ public:
     // flag below.
     mutable uint8_t gc_traced_epoch_ = 0;
     mutable bool gc_feedback_dirty_ = false;
+    // On the pending list (see live_head_) rather than the settled one.
+    mutable bool gc_in_pending_ = false;
     void recompute_fast_gate() const {
         fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
                     strict_directive_state >= 0 && closure_props_state == 0;
@@ -491,7 +504,10 @@ public:
     // runs for a freshly-marked-or-remembered instance this cycle), so it
     // does not need a second, independent skip on top of that.
     void trace_chunks_unconditional(Visitor& v) const;
-    void mark_feedback_dirty() const { gc_feedback_dirty_ = true; }
+    void mark_feedback_dirty() const {
+        gc_feedback_dirty_ = true;
+        if (!gc_in_pending_) move_to_pending();
+    }
 
 private:
     mutable uint32_t ref_count_ = 0;

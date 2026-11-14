@@ -60,17 +60,48 @@ static_assert(sizeof(FunctionExecutable) <= 256);
 #endif
 
 constinit thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;
+constinit thread_local FunctionExecutable* FunctionExecutable::settled_head_ = nullptr;
+
+void FunctionExecutable::unlink_live() const {
+    if (live_prev_) live_prev_->live_next_ = live_next_;
+    else (gc_in_pending_ ? live_head_ : settled_head_) = live_next_;
+    if (live_next_) live_next_->live_prev_ = live_prev_;
+    live_next_ = live_prev_ = nullptr;
+}
+
+void FunctionExecutable::link_live(FunctionExecutable*& head) const {
+    live_prev_ = nullptr;
+    live_next_ = head;
+    if (head) head->live_prev_ = const_cast<FunctionExecutable*>(this);
+    head = const_cast<FunctionExecutable*>(this);
+}
+
+void FunctionExecutable::move_to_pending() const {
+    unlink_live();
+    gc_in_pending_ = true;
+    link_live(live_head_);
+}
+
+void FunctionExecutable::move_to_settled() const {
+    unlink_live();
+    gc_in_pending_ = false;
+    link_live(settled_head_);
+}
+
+bool FunctionExecutable::has_parameter_chunks() const {
+    for (const auto& p : parameter_objects) {
+        if (p && (p->default_chunk() || p->pattern_chunk())) return true;
+    }
+    return false;
+}
 
 FunctionExecutable::FunctionExecutable() : owner_realm_(g_current_realm) {
-    live_next_ = live_head_;
-    if (live_head_) live_head_->live_prev_ = this;
-    live_head_ = this;
+    gc_in_pending_ = true;
+    link_live(live_head_);
 }
 
 FunctionExecutable::~FunctionExecutable() {
-    if (live_prev_) live_prev_->live_next_ = live_next_;
-    else live_head_ = live_next_;
-    if (live_next_) live_next_->live_prev_ = live_prev_;
+    unlink_live();
 }
 
 bool FunctionExecutable::param_has_default(size_t i) const {
@@ -142,21 +173,34 @@ void FunctionExecutable::add_parameter(const Parameter& p, bool copy) {
 }
 
 void FunctionExecutable::drop_feedback_of(const Realm* realm) {
-    for (FunctionExecutable* exe = live_head_; exe; exe = exe->live_next_) {
-        if (realm && exe->owner_realm_ != realm) continue;
-        if (exe->bytecode_chunk) exe->bytecode_chunk->drop_feedback();
-        if (exe->suspendable_chunk) exe->suspendable_chunk->drop_feedback();
-        for (const auto& p : exe->parameter_objects) {
-            if (!p) continue;
-            if (p->default_chunk()) p->default_chunk()->drop_feedback();
-            if (p->pattern_chunk()) p->pattern_chunk()->drop_feedback();
+    for (FunctionExecutable* head : {live_head_, settled_head_}) {
+        for (FunctionExecutable* exe = head; exe; exe = exe->live_next_) {
+            if (realm && exe->owner_realm_ != realm) continue;
+            if (exe->bytecode_chunk) exe->bytecode_chunk->drop_feedback();
+            if (exe->suspendable_chunk) exe->suspendable_chunk->drop_feedback();
+            for (const auto& p : exe->parameter_objects) {
+                if (!p) continue;
+                if (p->default_chunk()) p->default_chunk()->drop_feedback();
+                if (p->pattern_chunk()) p->pattern_chunk()->drop_feedback();
+            }
         }
     }
 }
 
 void FunctionExecutable::gc_trace_roots(Visitor& v) {
-    for (FunctionExecutable* exe = live_head_; exe; exe = exe->live_next_) {
+    // A new major epoch means every chunk is to be traced once more (and the marks it left on cells are gone); within the epoch, only what changed.
+    static constinit thread_local uint8_t walked_epoch = 0;
+    const uint8_t epoch = Collector::current_major_epoch();
+    if (epoch != walked_epoch) {
+        walked_epoch = epoch;
+        for (FunctionExecutable* exe = settled_head_; exe; exe = exe->live_next_) exe->trace_chunks_if_needed(v);
+    }
+    for (FunctionExecutable* exe = live_head_; exe;) {
+        FunctionExecutable* next = exe->live_next_;
         exe->trace_chunks_if_needed(v);
+        // Traced and nothing to come back for: off the list a minor walks. (One with parameter chunks has no signal of change, so it stays.)
+        if (!exe->has_parameter_chunks()) exe->move_to_settled();
+        exe = next;
     }
 }
 
