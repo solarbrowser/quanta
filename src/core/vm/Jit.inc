@@ -228,8 +228,6 @@ bool selfcheck() {
 #if defined(__linux__) && defined(__x86_64__)
 // QUANTA_PROF=1: a sampling profile of which JS functions the time goes to, and whether it was spent in generated code.
 // A debugging aid (the profile prints at exit); samples attribute to the function at the top of the call stack.
-struct FnEnterStat { uint64_t calls = 0, st3 = 0, st1 = 0, other = 0, r0 = 0, r1 = 0, r3 = 0, deep = 0; };
-inline std::unordered_map<const BytecodeChunk*, FnEnterStat>& fn_enter_stats() { static auto* m = new std::unordered_map<const BytecodeChunk*, FnEnterStat>(); return *m; }
 namespace prof {
 // Everything the report needs is copied when a function is first sampled: the collector may free it before
 // the report prints, and a signal handler can read the executable but not allocate.
@@ -290,7 +288,6 @@ inline void print() {
         const FunctionExecutable* pe = sl.fn->get_executable().get();
         std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  chunk=%p  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
                      sl.jit, sl.interp, sl.bytes, sl.entry, pe ? static_cast<const void*>(pe->bytecode_chunk.get()) : nullptr, sl.name);
-        if (pe && pe->bytecode_chunk) { auto it = fn_enter_stats().find(pe->bytecode_chunk.get()); if (it != fn_enter_stats().end()) { const FnEnterStat& q = it->second; std::fprintf(stderr, "[prof]      fn_enter: calls=%llu st3=%llu st1=%llu other=%llu deep=%llu -> r0=%llu r1=%llu r3=%llu opt_entry_now=%d\n", (unsigned long long)q.calls, (unsigned long long)q.st3, (unsigned long long)q.st1, (unsigned long long)q.other, (unsigned long long)q.deep, (unsigned long long)q.r0, (unsigned long long)q.r1, (unsigned long long)q.r3, pe->bytecode_chunk->opt_entry); } }
     }
 }
 }  // namespace prof
@@ -3358,17 +3355,7 @@ void note_unit_callee(const BytecodeChunk& chunk) {
     chunk.inline_state |= kInlineHasOpt;
 }
 
-int opt_fn_enter_inner(Frame& f);
 int opt_fn_enter(Frame& f) {
-    FnEnterStat& st = fn_enter_stats()[f.chunk];
-    st.calls++;
-    if (f.chunk->opt_entry == 3) st.st3++; else if (f.chunk->opt_entry == 1) st.st1++; else st.other++;
-    if (CallStack::established().depth() > kEntryMaxDepth) st.deep++;
-    const int r = opt_fn_enter_inner(f);
-    if (r == 0) st.r0++; else if (r == 1) st.r1++; else st.r3++;
-    return r;
-}
-int opt_fn_enter_inner(Frame& f) {
     const BytecodeChunk& chunk = *f.chunk;
     if (chunk.opt_entry == 3) {
         if (CallStack::established().depth() > kEntryMaxDepth) return 0;
