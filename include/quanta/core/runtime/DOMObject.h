@@ -304,6 +304,8 @@ public:
     // in docs/embedding/native-objects.md.
     static bool finalization_pending();
     static void finalize_dead(const std::vector<Heap::DeadCell>& dead);
+    // Weak handles whose target the sweep is about to free are emptied: read from the mark bits, before any cell is freed (it needs no list of the dead).
+    static void clear_dead_weak_handles();
 
     friend struct DOMLegacyAccess;
 

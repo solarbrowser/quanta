@@ -878,8 +878,11 @@ size_t run_sweep(bool minor) {
     // every cycle costs more than the destructors it is holding. Only up to a
     // point, though -- see the end of this function.
     static thread_local std::vector<Heap::DeadCell> dead;
+    // The blocks of pure cells (see HeapBlock::set_pure_origin): freed by bitmap after the destructors below have run, with none of their cells looked at.
+    static thread_local std::vector<HeapBlock*> pure_blocks;
     dead.clear();
-    Heap::collect_dead_cells(dead, minor);
+    pure_blocks.clear();
+    Heap::collect_dead_cells(dead, pure_blocks, minor);
     // QUANTA_GC_POISON=1: fill freed cells with a recognizable pattern and
     // leak the slot instead of reusing it -- any use-after-free then crashes
     // deterministically on the poison instead of silently reading a
@@ -887,7 +890,10 @@ size_t run_sweep(bool minor) {
     static const bool poison = env_flag("QUANTA_GC_POISON");
     // Host objects that asked to hear of their death, and weak handles to what died, before any
     // destructor of this collection runs: every cell is still intact.
-    if (DOMObject::finalization_pending()) DOMObject::finalize_dead(dead);
+    if (DOMObject::finalization_pending()) {
+        DOMObject::clear_dead_weak_handles();
+        DOMObject::finalize_dead(dead);
+    }
     for (const Heap::DeadCell& d : dead) {
         switch (d.kind) {
             case CellKind::Object: {
@@ -974,7 +980,8 @@ size_t run_sweep(bool minor) {
         }
         Heap::cell_free(d.cell);
     }
-    const size_t swept = dead.size();
+    const size_t swept = dead.size() + Heap::free_pure_dead(pure_blocks);
+    pure_blocks.clear();
     // One major can hand over hundreds of thousands of cells, and a list that
     // keeps that capacity holds it for the rest of the run (4MB on a 1.4M-cell
     // heap) although every sweep after it is small. Minors and ordinary majors

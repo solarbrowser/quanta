@@ -67,6 +67,17 @@ void* Object::operator new(size_t size, size_t trailing_bytes) {
     return Heap::active().allocate(size + trailing_bytes, CellKind::Object);
 }
 
+void* Object::operator new(size_t size, size_t trailing_bytes, PureTag) {
+    return Heap::active().allocate_pure(size + trailing_bytes, CellKind::Object);
+}
+
+void* Object::operator new(size_t size, PureTag) {
+    return Heap::active().allocate_pure(size, CellKind::Object);
+}
+
+void Object::operator delete(void* p, size_t, PureTag) noexcept { Heap::cell_free(p); }
+void Object::operator delete(void* p, PureTag) noexcept { Heap::cell_free(p); }
+
 void Object::operator delete(void* p) noexcept {
     Heap::cell_free(p);
 }
@@ -192,7 +203,10 @@ ButterflyExtras& Object::ensure_butterfly_extras() {
 
 RareExtras& Object::ensure_extras() {
     ButterflyExtras& e = ensure_butterfly_extras();
-    if (!e.extras) e.extras = new RareExtras();
+    if (!e.extras) {
+        e.extras = new RareExtras();
+        Heap::note_impure(this);
+    }
     return *e.extras;
 }
 
@@ -456,6 +470,8 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
         if (new_bytes > old_bytes) Heap::note_extra_bytes(new_bytes - old_bytes);
     }
 
+    // The butterfly is a block of its own now, and freeing it is the destructor's work: this cell's block is no longer swept by its bitmaps.
+    Heap::note_impure(this);
     char* new_block = static_cast<char*>(SmallMapPool::take(new_bytes));
     Value* new_butterfly = reinterpret_cast<Value*>(new_block + new_elements_capacity * sizeof(Value) +
                                                       header_bytes);
@@ -4239,7 +4255,7 @@ namespace ObjectFactory {
 void initialize_memory_pools() {}
 
 std::unique_ptr<Object> create_object_with_slots(uint32_t slots) {
-    void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(slots));
+    void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(slots), Object::PureTag{});
     Object* obj = ::new (cell) Object(Object::ObjectType::Ordinary);
     obj->adopt_inline_butterfly(sizeof(Object), slots);
     if (Object* obj_proto = get_object_prototype()) obj->initialize_prototype_of_new(obj_proto);
@@ -4248,7 +4264,7 @@ std::unique_ptr<Object> create_object_with_slots(uint32_t slots) {
 
 std::unique_ptr<Object> create_array_with_room(uint32_t capacity) {
     if (capacity == 0 || capacity > kInlineArrayMax) return create_array(0);
-    void* cell = Object::operator new(sizeof(Object), Object::inline_array_bytes(capacity));
+    void* cell = Object::operator new(sizeof(Object), Object::inline_array_bytes(capacity), Object::PureTag{});
     Object* array = ::new (cell) Object(Object::ObjectType::Array, Object::StorageAdoptedTag{});
     array->adopt_inline_array_butterfly(sizeof(Object), capacity);
     if (Object* array_proto = get_array_prototype()) array->initialize_prototype_of_new(array_proto);
@@ -4256,7 +4272,7 @@ std::unique_ptr<Object> create_array_with_room(uint32_t capacity) {
 }
 
 std::unique_ptr<Object> get_pooled_object() {
-    auto obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
+    auto obj = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Ordinary));
     Object* obj_proto = get_object_prototype();
     if (obj_proto) {
         obj->initialize_prototype_of_new(obj_proto);
@@ -4265,7 +4281,7 @@ std::unique_ptr<Object> get_pooled_object() {
 }
 
 std::unique_ptr<Object> get_pooled_array() {
-    auto array = std::make_unique<Object>(Object::ObjectType::Array);
+    auto array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
     Object* array_proto = get_array_prototype();
     if (array_proto) {
         array->initialize_prototype_of_new(array_proto);
@@ -4361,7 +4377,7 @@ std::unique_ptr<Object> create_object(Object* prototype) {
             return get_pooled_object();
         }
         
-        return std::make_unique<Object>(prototype, Object::ObjectType::Ordinary);
+        return std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(prototype, Object::ObjectType::Ordinary));
     } catch (...) {
         return nullptr;
     }
@@ -4370,7 +4386,7 @@ std::unique_ptr<Object> create_object(Object* prototype) {
 std::unique_ptr<Object> create_array(uint32_t length) {
     std::unique_ptr<Object> array;
 
-    array = std::make_unique<Object>(Object::ObjectType::Array);
+    array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
 
     if (!array) {
         return nullptr;

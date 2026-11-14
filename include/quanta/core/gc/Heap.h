@@ -57,6 +57,12 @@ public:
 
     void* allocate(size_t size, CellKind kind,
                    HeapSegment segment = HeapSegment::Core);
+    // The same, for a cell whose destruction needs nothing from the sweep (see HeapBlock::set_pure_origin): it is placed in a block of its own kind of cells, which
+    // the sweep frees by bitmap. A cell made this way that comes to own something must call note_impure() on itself.
+    void* allocate_pure(size_t size, CellKind kind);
+    static void note_impure(const void* cell);
+    // Whether the sweep about to run keeps this cell: it is marked, or it is not a cell of a heap this thread collects (nothing here can say it is dead).
+    static bool survives_sweep(const void* cell);
 
     // Constructs a T (a DOMObject subclass) in a cell of the active heap.
     // Defined in DOMObject.h, which is what knows what a DOMObject is.
@@ -192,7 +198,10 @@ public:
     // every minor pass over the whole heap, which on a large live set is most
     // of what the collection costs. A major clears the marks first, so it has
     // to look everywhere.
-    static void collect_dead_cells(std::vector<DeadCell>& out, bool minor_only);
+    // The cells whose destruction has to be run (and freed one by one); the blocks of pure cells are handed over in `pure_blocks` instead, to be freed by
+    // free_pure_dead() once the destructors are done.
+    static void collect_dead_cells(std::vector<DeadCell>& out, std::vector<HeapBlock*>& pure_blocks, bool minor_only);
+    static size_t free_pure_dead(const std::vector<HeapBlock*>& pure_blocks);
     // Empties the dirty list and re-seeds it with the blocks allocation is
     // currently pointed at. Must run before rebuild_allocation_candidates,
     // which is what releases blocks: a released block must not still be on it.
@@ -282,7 +291,7 @@ private:
     static constexpr uint64_t kLargeMagic = 0x514C41524745ULL;  // "QLARGE"
 
     static size_t size_class_index(size_t size);
-    HeapBlock* fresh_block(CellKind kind, HeapSegment segment, size_t cls);
+    HeapBlock* fresh_block(CellKind kind, HeapSegment segment, size_t cls, bool pure);
     void* allocate_large(size_t size, CellKind kind);
     static void free_large(void* p);
 
@@ -296,8 +305,10 @@ private:
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into
     // all_blocks_ chains and come back via partial_blocks_ after a sweep.
-    HeapBlock* active_block_[kNumCellKinds][kNumSizeClasses] = {};
-    HeapBlock* all_blocks_[kNumCellKinds][kNumSizeClasses] = {};
+    // Two lanes of classes: [0, kNumSizeClasses) for ordinary cells, [kNumSizeClasses, kLanes) for the blocks of pure cells.
+    static constexpr size_t kLanes = kNumSizeClasses * 2;
+    HeapBlock* active_block_[kNumCellKinds][kLanes] = {};
+    HeapBlock* all_blocks_[kNumCellKinds][kLanes] = {};
     // See collect_dead_cells: the blocks a minor sweep has any reason to look at.
     std::vector<HeapBlock*> dirty_blocks_;
     void note_dirty(HeapBlock* b) {
@@ -305,7 +316,8 @@ private:
         b->set_in_dirty_list(true);
         dirty_blocks_.push_back(b);
     }
-    std::vector<HeapBlock*> partial_blocks_[kNumCellKinds][kNumSizeClasses];
+    std::vector<HeapBlock*> partial_blocks_[kNumCellKinds][kLanes];
+    void* allocate_in_lane(size_t size, CellKind kind, HeapSegment segment, bool pure);
     LargeCell* large_cells_ = nullptr;
     size_t block_count_ = 0;
     // The bytes of live cells in the blocks, as of the last time they were counted (rebuild_allocation_candidates counts them all; a minor moves it by the

@@ -114,12 +114,14 @@ size_t Heap::size_class_index(size_t size) {
     return kSizeClassTable.index[(size + 15) / 16];
 }
 
-HeapBlock* Heap::fresh_block(CellKind kind, HeapSegment segment, size_t cls) {
+HeapBlock* Heap::fresh_block(CellKind kind, HeapSegment segment, size_t cls, bool pure) {
     void* region = block_allocator_.allocate_block_region();
     HeapBlock* block = HeapBlock::init(region, this, kind, segment, kSizeClasses[cls]);
+    if (pure) block->set_pure_origin();
     size_t k = static_cast<size_t>(kind);
-    block->set_next(all_blocks_[k][cls]);
-    all_blocks_[k][cls] = block;
+    const size_t lane = cls + (pure ? kNumSizeClasses : 0);
+    block->set_next(all_blocks_[k][lane]);
+    all_blocks_[k][lane] = block;
     block_count_++;
     return block;
 }
@@ -209,28 +211,62 @@ void Heap::note_offheap_bytes(size_t bytes) {
 }
 
 void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
+    return allocate_in_lane(size, kind, segment, false);
+}
+
+void* Heap::allocate_pure(size_t size, CellKind kind) {
+    // Poison mode wants every freed cell recycled by nobody and filled with a pattern, which needs the cell-by-cell sweep. QUANTA_NO_PURE=1 does the same for hunting
+    // a cell that was made pure and should not have been (something it owns that nobody freed).
+    static const bool poison = std::getenv("QUANTA_GC_POISON") != nullptr || std::getenv("QUANTA_NO_PURE") != nullptr;
+    return allocate_in_lane(size, kind, HeapSegment::Core, !poison);
+}
+
+void Heap::note_impure(const void* cell) {
+    if (cell && BlockAllocator::owns_address(cell)) HeapBlock::from_cell(cell)->mark_impure();
+}
+
+bool Heap::survives_sweep(const void* cell) {
+    if (!cell) return true;
+    if (BlockAllocator::owns_address(cell)) {
+        HeapBlock* block = HeapBlock::from_cell(cell);
+        if (!owns_heap_on_this_thread(block->heap())) return true;
+        return block->test_mark(cell);
+    }
+    // A large cell is told by its header; anything else is not ours to judge.
+    const auto* lc = reinterpret_cast<const LargeCell*>(static_cast<const char*>(cell) - kLargeHeaderSize);
+    if (!any_large_cell().load(std::memory_order_relaxed)) return true;
+    for (Heap* heap : thread_heaps()) {
+        for (const LargeCell* l = heap->large_cells_; l; l = l->next) {
+            if (l == lc) return l->marked;
+        }
+    }
+    return true;
+}
+
+void* Heap::allocate_in_lane(size_t size, CellKind kind, HeapSegment segment, bool pure) {
     if (size == 0) size = 1;
     account_bytes(size);
     size_t cls = size_class_index(size);
     if (cls == kNumSizeClasses) return allocate_large(size, kind);
 
     size_t k = static_cast<size_t>(kind);
-    HeapBlock* block = active_block_[k][cls];
+    const size_t lane = cls + (pure ? kNumSizeClasses : 0);
+    HeapBlock* block = active_block_[k][lane];
     if (block) {
         if (void* p = block->try_allocate()) return p;
     }
-    auto& partial = partial_blocks_[k][cls];
+    auto& partial = partial_blocks_[k][lane];
     while (!partial.empty()) {
         block = partial.back();
         partial.pop_back();
         if (void* p = block->try_allocate()) {
-            active_block_[k][cls] = block;
+            active_block_[k][lane] = block;
             note_dirty(block);
             return p;
         }
     }
-    block = fresh_block(kind, segment, cls);
-    active_block_[k][cls] = block;
+    block = fresh_block(kind, segment, cls, pure);
+    active_block_[k][lane] = block;
     note_dirty(block);
     void* p = block->try_allocate();
     assert(p && "fresh block must satisfy a Tier-1 allocation");
@@ -464,13 +500,14 @@ size_t Heap::rebuild_allocation_candidates() {
     for (Heap* heap : thread_heaps()) {
         size_t heap_block_live = 0;
         for (size_t k = 0; k < kNumCellKinds; k++) {
-            for (size_t c = 0; c < kNumSizeClasses; c++) {
+            for (size_t c = 0; c < kLanes; c++) {
                 auto& partial = heap->partial_blocks_[k][c];
                 partial.clear();
                 HeapBlock* prev = nullptr;
                 HeapBlock* b = heap->all_blocks_[k][c];
                 while (b) {
                     HeapBlock* next = b->next();
+                    b->clear_impure_if_empty();
                     if (b != heap->active_block_[k][c] && b->is_empty()) {
                         // Fully-dead block: unlink and return its raw 16KB region to
                         // the allocator's pool, so a future block of ANY (kind, size
@@ -512,7 +549,9 @@ size_t Heap::update_allocation_candidates_after_minor() {
             const std::ptrdiff_t change = static_cast<std::ptrdiff_t>(b->live_count()) - static_cast<std::ptrdiff_t>(b->accounted_live());
             heap->block_live_bytes_ = static_cast<size_t>(static_cast<std::ptrdiff_t>(heap->block_live_bytes_) + change * static_cast<std::ptrdiff_t>(b->cell_size()));
             b->set_accounted_live(b->live_count());
-            if (cls < kNumSizeClasses && b != heap->active_block_[k][cls] && !b->is_full()) heap->partial_blocks_[k][cls].push_back(b);
+            b->clear_impure_if_empty();
+            const size_t lane = cls + (b->pure_origin() ? kNumSizeClasses : 0);
+            if (cls < kNumSizeClasses && b != heap->active_block_[k][lane] && !b->is_full()) heap->partial_blocks_[k][lane].push_back(b);
         }
         if (heap == counted) {
             live_bytes += heap->block_live_bytes_;
@@ -562,7 +601,7 @@ void Heap::decommit_idle_memory() {
 void Heap::clear_all_marks() {
     for (Heap* heap : thread_heaps()) {
         for (size_t k = 0; k < kNumCellKinds; k++) {
-            for (size_t c = 0; c < kNumSizeClasses; c++) {
+            for (size_t c = 0; c < kLanes; c++) {
                 for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
                     b->clear_marks();
                 }
@@ -575,7 +614,7 @@ void Heap::clear_all_marks() {
 void Heap::for_each_cell(const std::function<void(void*, CellKind, bool)>& fn) {
     for (Heap* heap : thread_heaps()) {
         for (size_t k = 0; k < kNumCellKinds; k++) {
-            for (size_t c = 0; c < kNumSizeClasses; c++) {
+            for (size_t c = 0; c < kLanes; c++) {
                 for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
                     CellKind kind = b->cell_kind();
                     b->for_each_cell([&](void* cell, bool marked) { fn(cell, kind, marked); });
@@ -588,9 +627,11 @@ void Heap::for_each_cell(const std::function<void(void*, CellKind, bool)>& fn) {
     }
 }
 
-void Heap::collect_dead_cells(std::vector<DeadCell>& out, bool minor_only) {
+void Heap::collect_dead_cells(std::vector<DeadCell>& out, std::vector<HeapBlock*>& pure_blocks, bool minor_only) {
     for (Heap* heap : thread_heaps()) {
-        auto sweep_block = [&out](HeapBlock* b) {
+        auto sweep_block = [&out, &pure_blocks](HeapBlock* b) {
+            // A block of pure cells is freed by its bitmaps after the destructors have run: not one of its cells is read.
+            if (b->fast_sweepable()) { pure_blocks.push_back(b); return; }
             const CellKind kind = b->cell_kind();
             b->for_each_dead_cell([&](void* cell) { out.push_back({cell, kind}); });
         };
@@ -598,7 +639,7 @@ void Heap::collect_dead_cells(std::vector<DeadCell>& out, bool minor_only) {
             for (HeapBlock* b : heap->dirty_blocks_) sweep_block(b);
         } else {
             for (size_t k = 0; k < kNumCellKinds; k++) {
-                for (size_t c = 0; c < kNumSizeClasses; c++) {
+                for (size_t c = 0; c < kLanes; c++) {
                     for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) sweep_block(b);
                 }
             }
@@ -613,6 +654,12 @@ void Heap::collect_dead_cells(std::vector<DeadCell>& out, bool minor_only) {
     }
 }
 
+size_t Heap::free_pure_dead(const std::vector<HeapBlock*>& pure_blocks) {
+    size_t freed = 0;
+    for (HeapBlock* b : pure_blocks) freed += b->free_dead_bits();
+    return freed;
+}
+
 void Heap::reset_dirty_blocks() {
     for (Heap* heap : thread_heaps()) {
         for (HeapBlock* b : heap->dirty_blocks_) b->set_in_dirty_list(false);
@@ -620,7 +667,7 @@ void Heap::reset_dirty_blocks() {
         // Whatever allocation is currently pointed at will take the next cell
         // handed out, so it starts the new cycle dirty.
         for (size_t k = 0; k < kNumCellKinds; k++) {
-            for (size_t c = 0; c < kNumSizeClasses; c++) {
+            for (size_t c = 0; c < kLanes; c++) {
                 if (HeapBlock* b = heap->active_block_[k][c]) heap->note_dirty(b);
             }
         }
@@ -632,7 +679,7 @@ Heap::Stats Heap::stats() const {
     s.chunk_count = block_allocator_.chunk_count();
     s.block_count = block_count_;
     for (size_t k = 0; k < kNumCellKinds; k++) {
-        for (size_t c = 0; c < kNumSizeClasses; c++) {
+        for (size_t c = 0; c < kLanes; c++) {
             for (HeapBlock* b = all_blocks_[k][c]; b; b = b->next()) {
                 s.live_cells += b->live_count();
                 s.live_bytes += static_cast<size_t>(b->live_count()) * b->cell_size();

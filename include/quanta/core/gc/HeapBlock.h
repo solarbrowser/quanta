@@ -53,6 +53,17 @@ public:
     uint32_t    capacity() const    { return h_.capacity; }
     uint32_t    live_count() const  { return h_.bump_cursor - h_.free_count; }
     bool        is_empty() const    { return live_count() == 0; }
+
+    // A block of "pure" cells: every cell was made by an allocation that says its destruction does nothing the sweep has to do (an ordinary object or an array whose
+    // properties and elements live inside the cell). Such a block is swept by its bitmaps alone: no cell is looked at, no destructor run. A cell that gets something
+    // to destroy after all (a butterfly of its own, a RareExtras) calls mark_impure(), and the block is swept cell by cell again until it is empty.
+    void set_pure_origin()              { h_.pure_origin = true; }
+    bool pure_origin() const            { return h_.pure_origin; }
+    bool fast_sweepable() const         { return h_.pure_origin && !h_.impure && !h_.no_reuse; }
+    void mark_impure()                  { h_.impure = true; }
+    void clear_impure_if_empty()        { if (h_.impure && live_count() == 0) h_.impure = false; }
+    // Frees every allocated cell that is not marked, looking at none of them; the number freed.
+    uint32_t free_dead_bits();
     bool        is_full() const     { return !h_.free_count && h_.bump_cursor == h_.capacity; }
 
     HeapBlock*  next() const           { return h_.next; }
@@ -171,6 +182,9 @@ private:
         // Set once a cell has been retired (poison mode): a freed slot of this block is never handed out
         // again, which is the point of retiring one.
         bool       no_reuse;
+        // See set_pure_origin().
+        bool       pure_origin;
+        bool       impure;
         uint64_t   remembered_bitmap[kBitmapWords];
     };
 

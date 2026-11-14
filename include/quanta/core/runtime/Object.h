@@ -404,6 +404,13 @@ public:
     // single-argument delete: the heap knows the cell's size from its block.
     static void* operator new(size_t size, size_t trailing_bytes);
     static void  operator delete(void* p, size_t trailing_bytes) noexcept;
+    // An ordinary object or an array made by the factory: nothing to destroy but a butterfly of its own, which it does not have yet. Its cell goes in a block of such
+    // cells (HeapBlock::set_pure_origin), which the sweep frees by bitmap; growing a butterfly of its own, or reaching for a RareExtras, tells the heap (Heap::note_impure).
+    struct PureTag {};
+    static void* operator new(size_t size, size_t trailing_bytes, PureTag);
+    static void* operator new(size_t size, PureTag);
+    static void  operator delete(void* p, size_t trailing_bytes, PureTag) noexcept;
+    static void  operator delete(void* p, PureTag) noexcept;
     bool butterfly_is_inline() const {
         return butterfly_ && (butterfly_core()->shape_capacity & kInlineButterflyBit);
     }

@@ -55,23 +55,20 @@ bool DOMObject::finalization_pending() {
     return g_finalizable_live > 0 || !weak_slots().empty();
 }
 
-void DOMObject::finalize_dead(const std::vector<Heap::DeadCell>& dead) {
+void DOMObject::clear_dead_weak_handles() {
     auto& slots = weak_slots();
-    if (!slots.empty()) {
-        std::unordered_set<const void*> gone;
-        gone.reserve(dead.size());
-        for (const Heap::DeadCell& d : dead) {
-            if (d.kind == CellKind::Object) gone.insert(d.cell);
-        }
-        size_t kept = 0;
-        for (size_t i = 0; i < slots.size(); i++) {
-            std::shared_ptr<WeakHandleBase::Slot> slot = slots[i].lock();
-            if (!slot) continue;
-            if (slot->target && gone.count(slot->target)) slot->target = nullptr;
-            slots[kept++] = slots[i];
-        }
-        slots.resize(kept);
+    if (slots.empty()) return;
+    size_t kept = 0;
+    for (size_t i = 0; i < slots.size(); i++) {
+        std::shared_ptr<WeakHandleBase::Slot> slot = slots[i].lock();
+        if (!slot) continue;
+        if (slot->target && !Heap::survives_sweep(slot->target)) slot->target = nullptr;
+        slots[kept++] = slots[i];
     }
+    slots.resize(kept);
+}
+
+void DOMObject::finalize_dead(const std::vector<Heap::DeadCell>& dead) {
     if (g_finalizable_live == 0) return;
     for (const Heap::DeadCell& d : dead) {
         if (d.kind != CellKind::Object) continue;

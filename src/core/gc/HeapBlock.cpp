@@ -33,6 +33,8 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
     // A recycled region arrives with whatever the last block left here.
     h.in_dirty_list = false;
     h.no_reuse = false;
+    h.pure_origin = false;
+    h.impure = false;
     std::memset(h.bm, 0, sizeof(h.bm));
     std::memset(h.remembered_bitmap, 0, sizeof(h.remembered_bitmap));
     return block;
@@ -72,6 +74,21 @@ void HeapBlock::free_cell(void* p) {
     h_.remembered_bitmap[idx / 64] &= ~bit;
     if (idx / 64 < h_.scan_word) h_.scan_word = static_cast<uint32_t>(idx / 64);
     h_.free_count++;
+}
+
+uint32_t HeapBlock::free_dead_bits() {
+    const uint32_t words = (h_.bump_cursor + 63) / 64;
+    uint32_t freed = 0;
+    for (uint32_t w = 0; w < words; w++) {
+        const uint64_t dead = h_.bm[w].alloc & ~h_.bm[w].mark;
+        if (!dead) continue;
+        h_.bm[w].alloc &= ~dead;
+        h_.remembered_bitmap[w] &= ~dead;
+        freed += static_cast<uint32_t>(__builtin_popcountll(dead));
+        if (w < h_.scan_word) h_.scan_word = w;
+    }
+    h_.free_count += freed;
+    return freed;
 }
 
 void HeapBlock::retire_cell(void* p) {
