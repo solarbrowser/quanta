@@ -2937,7 +2937,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             evar = -1;
         }
         if (opt::config().log)
-            std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u): %s%s\n", gpc, target,
+            std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u, chunk %p): %s%s\n", gpc, target, static_cast<const void*>(&chunk),
                          known ? std::get<1>(gs[st]) : "?", evar >= 0 ? " (loop-carried value)" : "");
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];

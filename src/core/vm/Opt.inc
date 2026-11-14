@@ -99,6 +99,7 @@ enum class K : uint8_t {
     // Integers: a number that is an int32 for as long as the speculation holds, kept in a general register (see Builder::narrow_integers).
     AddI, SubI, MulI,     // I32 a, b -> I32; deopt when the result leaves the int32 range (MulI: or is a negative zero)
     CheckI32,             // Tagged -> I32, deopt unless a number whose value is an int32 and not a negative zero
+    CmpI,                 // I32 a, I32 b -> Bool; aux: 0 <, 1 >, 2 <=, 3 >=, 4 ==, 5 !=
 };
 
 struct Node {
@@ -228,7 +229,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -570,6 +571,16 @@ private:
     void materialize_mem_operands();
     void remove_trivial_phis();
     void select_representations();
+    // What a register read at the entry of the unit holds now: a loop's entry frame, or -- for a whole function -- the call's arguments, read before anything
+    // in the first block wrote them. Null where nothing is known (the speculation that follows it is checked by the unit).
+    const Value* entry_reg_value(const Node& on) const {
+        if (!g_.frame || (on.op != K::LoadReg && on.op != K::LoadAcc)) return nullptr;
+        const Block& B = g_.b[on.blk];
+        if (g_.fn_entry) {
+            if (on.op != K::LoadReg || B.synthetic || B.start_pc != 0 || on.aux >= 256) return nullptr;
+        } else if (!B.synthetic || B.osr_pc != static_cast<int32_t>(g_.entry_pc)) return nullptr;
+        return on.op == K::LoadAcc ? &g_.frame->acc : &g_.frame->regs[on.aux];
+    }
     void narrow_integers();
     void apply_replacements();
     void lower();
@@ -951,7 +962,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     const uint8_t* code = F().chunk->code.data();
     const Op op = static_cast<Op>(in.op);
     const uint32_t pc = in.pc;
-    if (cf_ == 0 && avoided(pc)) return false;
+    if (cf_ == 0 && avoided(pc)) { if (config().log) std::fprintf(stderr, "[opt] pc %u avoided\n", pc); return false; }
     auto reg = [&](uint32_t at) -> uint32_t { return F().var_base + code[at]; };
     auto ok_reg = [&](uint32_t r) { return r < F().acc_var; };
     // Looks at a node and lets go of it before anything is emitted (emitting can move g_.n).
@@ -1360,8 +1371,8 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             set(acc(), guarded(K::LoadTyped, Rep::F64, obj, idx, static_cast<uint32_t>(kind)));
             return true;
         }
-        if (!dense_array_receiver(rcv)) return false;
-        if (!object_value(value(rcv)) || !numeric_value(value(acc()))) return false;
+        if (!dense_array_receiver(rcv)) { if (config().log) std::fprintf(stderr, "[opt] GetKeyed pc %u: receiver r%u not a dense array\n", in.pc, rcv); return false; }
+        if (!object_value(value(rcv)) || !numeric_value(value(acc()))) { if (config().log) std::fprintf(stderr, "[opt] GetKeyed pc %u: receiver object=%d key numeric=%d\n", in.pc, int(object_value(value(rcv))), int(numeric_value(value(acc())))); return false; }
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(acc())));
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
         guarded(K::CheckDense, Rep::None, obj);
@@ -2641,7 +2652,7 @@ inline void Builder::finalize() {
     if (config().log) {
         for (int32_t blk : g_.rpo)
             for (int32_t id : g_.b[blk].nodes)
-                if (g_.n[id].op == K::Step) std::fprintf(stderr, "[opt] step %s\n", op_name(static_cast<Op>(F().chunk->code[g_.n[id].aux])));
+                if (g_.n[id].op == K::Step) std::fprintf(stderr, "[opt] step %s at pc %u\n", op_name(static_cast<Op>(F().chunk->code[g_.n[id].aux])), g_.n[id].aux);
     }
     if (insns && steps * 100 > static_cast<size_t>(config().max_step_percent) * insns) fail("too many steps");
     {
@@ -2719,11 +2730,10 @@ inline void Builder::select_representations() {
     // A value reloaded from the register bank after a step could be anything; speculating on it makes a
     // guard that fails every other iteration, so such a phi stays tagged and its uses check for themselves.
     auto entry_is_number = [&](const Node& on) {
-        if (!g_.frame || (on.op != K::LoadReg && on.op != K::LoadAcc)) return false;
-        const Block& B = g_.b[on.blk];
-        if (!B.synthetic || B.osr_pc != static_cast<int32_t>(g_.entry_pc)) return false;
-        const Value& v = on.op == K::LoadAcc ? g_.frame->acc : g_.frame->regs[on.aux];
-        return v.is_number();
+        const Value* v = entry_reg_value(on);
+        if (v) return v->is_number();
+        // Another way into a function's unit (the loop's own entry, for a frame the interpreter is in): the check on that edge decides.
+        return g_.fn_entry && on.op == K::LoadReg && g_.b[on.blk].synthetic;
     };
     for (int32_t p : phis) {
         if (avoid_ && avoid_->phis.count({g_.b[g_.n[p].blk].start_pc, g_.n[p].aux})) { disq[p] = 1; continue; }
@@ -2788,16 +2798,50 @@ inline void Builder::narrow_integers() {
     };
     // The entry of a loop: the value the register has now is the one the first iteration starts with.
     auto entry_int = [&](const Node& nd) {
-        if (nd.op != K::CheckNum || !g_.frame || g_.fn_entry) return false;
+        if (nd.op != K::CheckNum) return false;
         if (avoid_ && avoid_->nonarrow.count(g_.entry_pc)) return false;
-        const Node& on = g_.n[resolve(nd.a)];
-        if (on.op != K::LoadReg && on.op != K::LoadAcc) return false;
-        const Block& B = g_.b[on.blk];
-        if (!B.synthetic || B.osr_pc != static_cast<int32_t>(g_.entry_pc)) return false;
-        const Value& v = on.op == K::LoadAcc ? g_.frame->acc : g_.frame->regs[on.aux];
-        if (!v.is_number()) return false;
-        const double d = v.as_number();
+        const Node& src = g_.n[resolve(nd.a)];
+        const Value* v = entry_reg_value(src);
+        if (!v && g_.fn_entry && src.op == K::LoadReg && g_.b[src.blk].synthetic && nd.state >= 0 && !(avoid_ && avoid_->nonarrow.count(g_.states[nd.state].pc))) return true;
+        if (!v || !v->is_number()) return false;
+        const double d = v->as_number();
         return d >= -2147483648.0 && d <= 2147483647.0 && d == std::floor(d) && !(d == 0 && std::signbit(d));
+    };
+    // A number that is only ever used where an integer is wanted -- it reaches a bit operation through sums, differences and products (the digits of a big number,
+    // the halves of a word) -- is read as an int32 where it comes from. A value that turns out not to be one leaves the unit, and the second time that
+    // happens at a site the next build keeps it a double (Avoid::nonarrow, by the pc of the check).
+    std::vector<std::vector<int32_t>> users(nn);
+    for (int32_t blk : g_.rpo)
+        for (int32_t id : g_.b[blk].nodes) {
+            const Node& nd = g_.n[id];
+            if (nd.dead) continue;
+            for (int32_t o : {nd.a, nd.b, nd.c}) if (o >= 0) users[resolve(o)].push_back(id);
+        }
+    auto intish = [&](int32_t id) {
+        const Node& nd = g_.n[id];
+        if (nd.op != K::CheckNum || nd.state < 0) return false;
+        const State& st = g_.states[nd.state];
+        if (st.func == 0 && avoid_ && avoid_->nonarrow.count(st.pc)) return false;
+        // (Only where an arithmetic operation sits between the number and the bit operation: a number that is only ever masked or shifted is converted as it is.)
+        std::vector<int32_t> stack;
+        std::vector<uint8_t> seen(nn, 0);
+        seen[id] = 1;
+        for (int32_t u : users[id]) {
+            const K k = g_.n[u].op;
+            if (!seen[u] && (k == K::AddF || k == K::SubF || k == K::MulF)) { seen[u] = 1; stack.push_back(u); }
+        }
+        while (!stack.empty()) {
+            const int32_t x = stack.back();
+            stack.pop_back();
+            for (int32_t u : users[x]) {
+                if (seen[u]) continue;
+                seen[u] = 1;
+                const K k = g_.n[u].op;
+                if (k == K::ToI32) return true;
+                if (k == K::AddF || k == K::SubF || k == K::MulF) stack.push_back(u);
+            }
+        }
+        return false;
     };
     std::vector<int32_t> work;
     for (int32_t blk : g_.rpo)
@@ -2807,7 +2851,7 @@ inline void Builder::narrow_integers() {
             switch (nd.op) {
             case K::ConstF64: isint[id] = int_const(nd); break;
             case K::I32ToF64: isint[id] = 1; break;
-            case K::CheckNum: isint[id] = entry_int(nd); break;
+            case K::CheckNum: isint[id] = entry_int(nd) || intish(id); break;
             case K::AddF: case K::SubF: case K::MulF: if (nd.state >= 0) { tentative[id] = 1; isint[id] = 1; work.push_back(id); } break;
             case K::Phi: tentative[id] = 1; isint[id] = 1; work.push_back(id); break;
             default: break;
@@ -2866,10 +2910,30 @@ inline void Builder::narrow_integers() {
             if (nd.dead || nd.op != K::ToIndex) continue;
             if (is_int_node(nd.a)) { nd.op = K::NonNegI32; nd.rep = Rep::I32; }
         }
+    // A comparison of two integers is an integer comparison.
+    for (int32_t blk : g_.rpo)
+        for (int32_t id : g_.b[blk].nodes) {
+            Node& nd = g_.n[id];
+            if (nd.dead) continue;
+            uint32_t code;
+            switch (nd.op) {
+            case K::LtF: code = 0; break;
+            case K::GtF: code = 1; break;
+            case K::LeF: code = 2; break;
+            case K::GeF: code = 3; break;
+            case K::EqF: code = 4; break;
+            case K::NeF: code = 5; break;
+            default: continue;
+            }
+            if (!is_int_node(nd.a) || !is_int_node(nd.b)) continue;
+            nd.op = K::CmpI;
+            nd.rep = Rep::Bool;
+            nd.aux = code;
+        }
     // What is left that wants a double gets one.
     auto takes_i32 = [](K k) {
         switch (k) {
-        case K::AddI: case K::SubI: case K::MulI: case K::NonNegI32: case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
+        case K::CmpI: case K::AddI: case K::SubI: case K::MulI: case K::NonNegI32: case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
         case K::I32ToF64: case K::U32ToF64: case K::Phi: return true;
         default: return false;
         }
@@ -3582,6 +3646,19 @@ inline QUANTA_JIT_ABI uint64_t helper_new_literal(const BytecodeChunk::IcFeedbac
     return bits;
 }
 inline QUANTA_JIT_ABI void helper_barrier(Object* obj) noexcept { Collector::write_barrier(obj); }
+// An array the unit meets that nobody has asked about yet (a fresh one: its dense flag is set by the first indexed access of the interpreter, which a unit
+// never makes): asked here, the flag is set, and the unit goes on instead of leaving at every new array.
+inline QUANTA_JIT_ABI uint64_t helper_dense_check(Object* obj) noexcept {
+    if (!obj->has_only_dense_elements()) return 0;
+    // The test the unit makes (the flag and the extras the elements live beside), made again.
+    const uint8_t* bf = *reinterpret_cast<uint8_t* const*>(reinterpret_cast<const uint8_t*>(obj) + JitObjectLayout::butterfly());
+    if (!bf) return 0;
+    uint32_t word;
+    std::memcpy(&word, bf - sizeof(Value), sizeof(word));
+    const uint32_t want = JitObjectLayout::kDenseVerifiedBit | JitObjectLayout::kExtrasBit;
+    return (word & want) == want;
+}
+
 inline QUANTA_JIT_ABI void helper_barrier_value(Object* obj, uint64_t bits) noexcept {
     Value v;
     std::memcpy(&v, &bits, 8);
@@ -4188,7 +4265,9 @@ inline void Emitter::emit_node(int32_t id) {
     case K::BoxF64: {
         const Xmm s = use_x(n.a, XMM0);
         const Reg d = def_g(id, RAX);
-        emit_box_inline(d, s);
+        // The double of an integer is never a NaN or an infinity: its bits are the box.
+        if (const K src = g_.n[n.a].op; src == K::I32ToF64 || src == K::U32ToF64) a_.movq_from_xmm(d, s);
+        else emit_box_inline(d, s);
         commit_g(id, d);
         return;
     }
@@ -4404,6 +4483,18 @@ inline void Emitter::emit_node(int32_t id) {
             a_.or32(RAX, RCX);
             break;
         }
+        if (d != RAX) a_.mov32(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::CmpI: {
+        const Reg a = use_g(n.a, RAX);
+        const Reg b = use_g(n.b, RCX);
+        const Reg d = def_g(id, RDX);
+        static const Cond cc[6] = {CC_L, CC_G, CC_LE, CC_GE, CC_E, CC_NE};
+        a_.cmp32(a, b);
+        a_.mov_imm32(RAX, 0);
+        a_.setcc(cc[n.aux], RAX);
         if (d != RAX) a_.mov32(d, RAX);
         commit_g(id, d);
         return;
@@ -5173,7 +5264,21 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov_load32(RCX, mem(RDX, -static_cast<int32_t>(sizeof(Value))));
         a_.and32_imm(RCX, static_cast<int32_t>(JitObjectLayout::kDenseVerifiedBit | JitObjectLayout::kExtrasBit));
         a_.cmp32_imm(RCX, static_cast<int32_t>(JitObjectLayout::kDenseVerifiedBit | JitObjectLayout::kExtrasBit));
-        a_.jcc(CC_NE, dl);
+        Label& cold = new_label();
+        Label& back = new_label();
+        a_.jcc(CC_NE, cold);
+        a_.bind(back);
+        cold_.push_back([this, o, &cold, &back, &dl]() {
+            a_.bind(cold);
+            int32_t bytes;
+            save_live(bytes);
+            a_.mov(abi::A0, o);
+            call_c(reinterpret_cast<const void*>(&helper_dense_check));
+            restore_live(bytes);
+            a_.test(RAX, RAX);
+            a_.jcc(CC_E, dl);
+            a_.jmp(back);
+        });
         return;
     }
     case K::NonNegI32: {
