@@ -33,7 +33,10 @@ public:
     //   QUANTA_GC_VERIFY=1   after marking, check every marked cell's edges
     //   QUANTA_GC_LOG=1      one summary line per collection to stderr
     //   QUANTA_GC_MARK_ONLY=1  skip the sweep (marking soak-test mode)
-    //   QUANTA_GC_PROFILE=1  per-phase timing breakdown to stderr
+    //   QUANTA_GC_PROFILE=1  per-phase timing breakdown to stderr (and what the marking helper threads did)
+    //   QUANTA_GC_THREADS=n  helper threads that mark with the collecting thread (default: two where the machine has the cores; 0: none)
+    //   QUANTA_GC_PAR_ALWAYS=1  use the helpers whenever there are two cells to trace (testing them on small heaps)
+    //   QUANTA_NO_PURE=1     sweep every block cell by cell (see HeapBlock::set_pure_origin)
 
     // The interpreter's per-back-edge hook: collects when requested/stressed.
     //

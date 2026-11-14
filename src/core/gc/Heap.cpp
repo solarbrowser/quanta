@@ -456,6 +456,47 @@ Heap::ProbeResult Heap::mark_string_edge(const void* p) {
     return r;
 }
 
+Heap::ProbeResult Heap::mark_exact_par(const void* p, CellKind kind) {
+    ProbeResult r;
+    if (!p) return r;
+    if (!any_large_cell().load(std::memory_order_relaxed) || BlockAllocator::owns_address(p)) {
+        HeapBlock* block = HeapBlock::from_cell(p);
+        if (!owned_by_this_thread(block->heap())) return r;
+        if (!block->mark_if_unmarked_atomic(p)) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = kind;
+        return r;
+    }
+    ProbeResult large = probe_pointer(const_cast<void*>(p));
+    if (!large.cell) return r;
+    auto* lc = reinterpret_cast<LargeCell*>(static_cast<char*>(large.cell) - kLargeHeaderSize);
+    if (__atomic_exchange_n(&lc->marked, true, __ATOMIC_RELAXED)) return r;
+    return large;
+}
+
+Heap::ProbeResult Heap::mark_string_edge_par(const void* p) {
+    if (!p) return ProbeResult{};
+    ProbeResult r = mark_exact_par(p, CellKind::String);
+    if (r.cell && !r.is_large) r.kind = HeapBlock::from_cell(r.cell)->cell_kind();
+    return r;
+}
+
+void Heap::clear_remembered_par(const ProbeResult& p) {
+    if (!p.cell) return;
+    if (p.is_large) {
+        reinterpret_cast<LargeCell*>(static_cast<char*>(p.cell) - kLargeHeaderSize)->remembered = false;
+        return;
+    }
+    HeapBlock::from_cell(p.cell)->clear_remembered_atomic(p.cell);
+}
+
+std::vector<Heap*> Heap::heaps_of_this_thread() { return thread_heaps(); }
+
+void Heap::adopt_heaps(const std::vector<Heap*>& heaps, Heap* active) {
+    thread_heaps() = heaps;
+    active_ = active;
+}
+
 bool Heap::large_cell_marked(const void* cell) {
     auto* lc = reinterpret_cast<LargeCell*>(const_cast<char*>(static_cast<const char*>(cell)) - kLargeHeaderSize);
     return lc->marked;

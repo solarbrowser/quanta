@@ -108,6 +108,13 @@ public:
     // an interior pointer or reads the kind back out of the block, neither of
     // which an edge needs.
     static ProbeResult mark_exact(const void* p, CellKind kind);
+    // The same two edges for the collector's helper threads: the mark is set atomically (see HeapBlock::mark_if_unmarked_atomic), and large cells are told by an
+    // atomic exchange. A helper first takes over the heaps of the thread that is collecting (adopt_heaps).
+    static ProbeResult mark_exact_par(const void* p, CellKind kind);
+    static ProbeResult mark_string_edge_par(const void* p);
+    static void clear_remembered_par(const ProbeResult& p);
+    static std::vector<Heap*> heaps_of_this_thread();
+    static void adopt_heaps(const std::vector<Heap*>& heaps, Heap* active);
     // mark_exact for an edge that names a string: the result's kind is the cell's own, because
     // a string may be a leaf (CellKind::FlatString, nothing to trace) or a link (String), and
     // the block header, which marking reads anyway, says which.

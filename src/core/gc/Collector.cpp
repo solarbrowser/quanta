@@ -32,7 +32,11 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -79,12 +83,338 @@ void hunt_check(const Environment* env, const char* who);
 // cleared, so no marked cell is known to point at it -- see
 // run_minor_collection's survivor prune.
 constinit thread_local uint8_t g_major_epoch = 1;
+// What the last minor and the last major marked: the guess of how much work the next one has (see MarkVisitor::should_parallelize).
+constinit thread_local size_t g_expect_minor = 0;
+constinit thread_local size_t g_expect_major = 0;
+// QUANTA_GC_PROFILE: what the helper threads did (rounds, cells each of them marked, cells handed back to the collecting thread, work left when a round ended).
+constinit thread_local size_t g_par_rounds = 0, g_par_left = 0, g_par_deferred = 0;
+constinit thread_local size_t g_par_marked[8] = {};
 
 } // anonymous namespace
 
 uint8_t Collector::current_major_epoch() { return g_major_epoch; }
 
 namespace {
+
+
+// ---- Marking on several threads ----
+//
+// The mutator is stopped for as long as a slice of marking runs (the slice is run by the mutator's own thread, at a safepoint), so what the tracers read does not change
+// under them; what they share is the mark bits (set with an atomic or) and the work. A helper traces the cells whose trace only reads their own storage and names other
+// cells (ordinary objects, arrays, strings): any other cell (a function, a map, a host object...) is marked by the helper that reaches it and handed back to the collecting
+// thread, which traces it itself, since its trace may reach contexts and environments, which are not cells and have no mark bit to be shared.
+class ParMarker final : public Visitor {
+public:
+    std::vector<Heap::ProbeResult> local;     // cells marked, to be traced
+    std::vector<Heap::ProbeResult> deferred;  // cells marked, to be traced by the collecting thread
+    std::vector<Context*> contexts;
+    std::vector<Environment*> environments;
+    std::vector<WeakMap*> weak_maps;
+    std::vector<WeakSet*> weak_sets;
+    std::vector<WeakRef*> weak_refs;
+    std::vector<FinalizationRegistry*> registries;
+    size_t marked = 0;
+    bool clear_remembered = false;
+
+    void reset() {
+        local.clear(); deferred.clear(); contexts.clear(); environments.clear();
+        weak_maps.clear(); weak_sets.clear(); weak_refs.clear(); registries.clear();
+        marked = 0;
+        ring_head = ring_tail = ring_count = 0;
+    }
+
+    [[gnu::always_inline]] void edge_object(Object* o) {
+        Heap::ProbeResult r = Heap::mark_exact_par(o, CellKind::Object);
+        if (!r.cell) return;
+        marked++;
+        local.push_back(r);
+    }
+    [[gnu::always_inline]] void edge_string(String* s) {
+        Heap::ProbeResult r = Heap::mark_string_edge_par(s);
+        if (!r.cell) return;
+        marked++;
+        if (r.kind == CellKind::String) local.push_back(r);
+    }
+    [[gnu::always_inline]] void edge_value(const Value& v) {
+        switch (v.gc_edge_kind()) {
+            case 0: return;
+            case 1: edge_object(v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object()); return;
+            case 2: edge_string(v.as_string()); return;
+            case 3: leaf(v.as_symbol(), CellKind::Symbol); return;
+            default: leaf(v.as_bigint(), CellKind::BigInt); return;
+        }
+    }
+    void visit_object(Object* o) override { edge_object(o); }
+    void visit_string(String* s) override { edge_string(s); }
+    void visit_symbol(Symbol* s) override { leaf(s, CellKind::Symbol); }
+    void visit_bigint(BigInt* b) override { leaf(b, CellKind::BigInt); }
+    void visit_context(Context* ctx) override { if (ctx) contexts.push_back(ctx); }
+    void visit_environment(Environment* env) override { if (env) environments.push_back(env); }
+    void visit_weak_map(WeakMap* w) override { if (w) weak_maps.push_back(w); }
+    void visit_weak_set(WeakSet* w) override { if (w) weak_sets.push_back(w); }
+    void visit_weak_ref(WeakRef* w) override { if (w) weak_refs.push_back(w); }
+    void visit_finalization_registry(FinalizationRegistry* r) override { if (r) registries.push_back(r); }
+
+    // The same two-stage prefetch ring the collecting thread's own marking uses (see MarkVisitor::step): without it every cell is a dependent miss to memory.
+    static constexpr uint32_t kRing = QUANTA_GC_PREFETCH_RING;
+    Heap::ProbeResult ring[kRing];
+    uint32_t ring_head = 0, ring_tail = 0, ring_count = 0;
+
+    bool step() {
+        while (ring_count < kRing && !local.empty()) {
+            Heap::ProbeResult q = local.back();
+            local.pop_back();
+            __builtin_prefetch(q.cell, 0, 3);
+            ring[ring_tail] = q;
+            ring_tail = (ring_tail + 1) & (kRing - 1);
+            ring_count++;
+        }
+        if (ring_count > kRing / 2) {
+            const Heap::ProbeResult& q = ring[(ring_head + kRing / 2) & (kRing - 1)];
+            if (q.kind == CellKind::Object) {
+                const void* storage = static_cast<const Object*>(q.cell)->gc_storage_hint();
+                if (storage) {
+                    __builtin_prefetch(static_cast<const char*>(storage) - 64, 0, 3);
+                    __builtin_prefetch(storage, 0, 3);
+                }
+            }
+        }
+        if (ring_count == 0) return false;
+        const Heap::ProbeResult p = ring[ring_head];
+        ring_head = (ring_head + 1) & (kRing - 1);
+        ring_count--;
+        process(p);
+        return true;
+    }
+    // The cells waiting in the ring are work too: they go back to the list.
+    void flush_ring() {
+        while (ring_count > 0) {
+            local.push_back(ring[ring_head]);
+            ring_head = (ring_head + 1) & (kRing - 1);
+            ring_count--;
+        }
+    }
+
+    void process(const Heap::ProbeResult& p) {
+        if (clear_remembered) Heap::clear_remembered_par(p);
+        if (p.kind == CellKind::Object) {
+            Object* o = static_cast<Object*>(p.cell);
+            if (__builtin_expect(o->traces_by_default(), 1)) o->trace_fast(*this);
+            else deferred.push_back(p);
+        } else {
+            static_cast<String*>(p.cell)->gc_trace(*this);
+        }
+    }
+
+private:
+    void leaf(const void* p, CellKind kind) {
+        if (Heap::mark_exact_par(p, kind).cell) marked++;
+    }
+};
+
+class ParallelMarkPool {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    static ParallelMarkPool& instance() {
+        static ParallelMarkPool* pool = new ParallelMarkPool();  // never destroyed: helper threads outlive static destruction
+        return *pool;
+    }
+
+    // Helper threads besides the collecting one. QUANTA_GC_THREADS=n sets it (0: marking stays on one thread); by default as many as the machine has cores to spare,
+    // at most two (on Splay one helper gives +15%, two +26%, five +29%).
+    int helpers() const { return helpers_; }
+
+    // Traces `work` on the helpers and the calling thread until it is all traced, or until `deadline` (when there is one), and hands back what is left in `work`
+    // and what the helpers have to say in `markers()`. False if the pool was busy (another thread is collecting) and nothing was done.
+    bool run(std::vector<Heap::ProbeResult>& work, bool clear_remembered, bool has_deadline, Clock::time_point deadline) {
+        std::unique_lock<std::mutex> round(round_mutex_, std::try_to_lock);
+        if (!round.owns_lock()) return false;
+        ensure_threads();
+        const int participants = helpers_ + 1;
+        for (auto& m : markers_) { m->reset(); m->clear_remembered = clear_remembered; }
+        main_heaps_ = Heap::heaps_of_this_thread();
+        main_active_ = Heap::active_or_null();
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            shared_.swap(work);
+            work.clear();
+            shared_count_.store(shared_.size(), std::memory_order_relaxed);
+            hungry_.store(0, std::memory_order_relaxed);
+            sleepers_.store(0, std::memory_order_relaxed);
+            has_deadline_ = has_deadline;
+            deadline_ = deadline;
+            stop_ = false;
+            done_ = false;
+            idle_ = 0;
+            stop_flag_.store(false, std::memory_order_relaxed);
+            idle_waiting_.store(0, std::memory_order_relaxed);
+            participants_ = participants;
+            finished_ = 0;
+            generation_++;
+        }
+        cv_work_.notify_all();
+        worker(*markers_[0]);
+        {
+            std::unique_lock<std::mutex> lock(m_);
+            cv_done_.wait(lock, [&] { return finished_ == helpers_; });
+            // What was left when the time was up.
+            work.insert(work.end(), shared_.begin(), shared_.end());
+            shared_.clear();
+            shared_count_.store(0, std::memory_order_relaxed);
+        }
+        for (auto& m : markers_) {
+            work.insert(work.end(), m->local.begin(), m->local.end());
+            m->local.clear();
+        }
+        return true;
+    }
+
+    std::vector<std::unique_ptr<ParMarker>>& markers() { return markers_; }
+
+private:
+    ParallelMarkPool() {
+        const char* env = std::getenv("QUANTA_GC_THREADS");
+        if (env && *env) {
+            helpers_ = std::atoi(env);
+        } else {
+            const unsigned cores = std::thread::hardware_concurrency();
+            helpers_ = cores > 2 ? static_cast<int>(std::min<unsigned>(2, cores - 2)) : 0;
+        }
+        if (helpers_ < 0) helpers_ = 0;
+        if (helpers_ > 15) helpers_ = 15;
+        for (int i = 0; i <= helpers_; i++) markers_.push_back(std::make_unique<ParMarker>());
+    }
+
+    void ensure_threads() {
+        if (started_) return;
+        started_ = true;
+        for (int i = 1; i <= helpers_; i++) {
+            std::thread([this, i] { helper_main(i); }).detach();
+        }
+    }
+
+    void helper_main(int id) {
+        uint64_t seen = 0;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lock(m_);
+                cv_work_.wait(lock, [&] { return generation_ != seen; });
+                seen = generation_;
+            }
+            Heap::adopt_heaps(main_heaps_, main_active_);
+            worker(*markers_[static_cast<size_t>(id)]);
+            {
+                std::lock_guard<std::mutex> lock(m_);
+                finished_++;
+            }
+            cv_done_.notify_all();
+        }
+    }
+
+    // One participant: traces what it holds, shares half of a long list with whoever has run dry, takes from the shared list when it has run dry itself, and stops
+    // when everyone has (or when the time is up, giving back what it still holds).
+    void worker(ParMarker& me) {
+        constexpr size_t kBatch = 256;
+        unsigned counter = 0;
+        for (;;) {
+            while (me.step()) {
+                ++counter;
+                // Someone who has run dry is given the older half of this list (a depth-first list is a stack: its bottom holds the biggest pieces of the graph).
+                if ((counter & 7) == 0 && me.local.size() >= 8 && hungry_.load(std::memory_order_relaxed) > 0) {
+                    const size_t half = me.local.size() / 2;
+                    {
+                        std::lock_guard<std::mutex> lock(m_);
+                        shared_.insert(shared_.end(), me.local.begin(), me.local.begin() + static_cast<long>(half));
+                        shared_count_.store(shared_.size(), std::memory_order_relaxed);
+                    }
+                    me.local.erase(me.local.begin(), me.local.begin() + static_cast<long>(half));
+                    if (sleepers_.load(std::memory_order_relaxed) > 0) cv_work_.notify_all();
+                }
+                if ((counter & 63) != 0) continue;
+                if (stop_flag_.load(std::memory_order_relaxed)) return give_back(me);
+                if (has_deadline_ && Clock::now() >= deadline_) { signal_stop(); return give_back(me); }
+            }
+            // Run dry: look for work for a few microseconds before going to sleep on the lock (waking a sleeper costs more than most of a slice's work).
+            hungry_.fetch_add(1, std::memory_order_relaxed);
+            for (int spin = 0; spin < 20000; spin++) {
+                if (shared_count_.load(std::memory_order_relaxed) > 0 || stop_flag_.load(std::memory_order_relaxed)) break;
+                __builtin_ia32_pause();
+            }
+            hungry_.fetch_sub(1, std::memory_order_relaxed);
+            std::unique_lock<std::mutex> lock(m_);
+            for (;;) {
+                if (stop_) return;
+                if (!shared_.empty()) {
+                    const size_t take = std::min(shared_.size(), std::max<size_t>(kBatch, shared_.size() / static_cast<size_t>(participants_)));
+                    me.local.insert(me.local.end(), shared_.end() - static_cast<long>(take), shared_.end());
+                    shared_.resize(shared_.size() - take);
+                    shared_count_.store(shared_.size(), std::memory_order_relaxed);
+                    break;
+                }
+                idle_++;
+                hungry_.fetch_add(1, std::memory_order_relaxed);
+                idle_waiting_.store(idle_, std::memory_order_relaxed);
+                if (idle_ == participants_) {
+                    done_ = true;
+                    stop_ = true;
+                    idle_--;
+                    hungry_.fetch_sub(1, std::memory_order_relaxed);
+                    idle_waiting_.store(idle_, std::memory_order_relaxed);
+                    cv_work_.notify_all();
+                    return;
+                }
+                sleepers_.fetch_add(1, std::memory_order_relaxed);
+                cv_work_.wait(lock, [&] { return stop_ || !shared_.empty(); });
+                sleepers_.fetch_sub(1, std::memory_order_relaxed);
+                idle_--;
+                hungry_.fetch_sub(1, std::memory_order_relaxed);
+                idle_waiting_.store(idle_, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    void signal_stop() {
+        stop_flag_.store(true, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            stop_ = true;
+        }
+        cv_work_.notify_all();
+    }
+
+    // The time ran out: whatever this participant still holds goes back to the shared list, for the next slice.
+    void give_back(ParMarker& me) {
+        me.flush_ring();
+        std::lock_guard<std::mutex> lock(m_);
+        shared_.insert(shared_.end(), me.local.begin(), me.local.end());
+        shared_count_.store(shared_.size(), std::memory_order_relaxed);
+        me.local.clear();
+    }
+
+    std::mutex round_mutex_;
+    std::mutex m_;
+    std::condition_variable cv_work_, cv_done_;
+    std::vector<std::unique_ptr<ParMarker>> markers_;
+    std::vector<Heap::ProbeResult> shared_;
+    std::vector<Heap*> main_heaps_;
+    Heap* main_active_ = nullptr;
+    Clock::time_point deadline_;
+    bool has_deadline_ = false;
+    bool stop_ = false;
+    bool done_ = false;
+    bool started_ = false;
+    int helpers_ = 0;
+    int idle_ = 0;
+    int participants_ = 1;
+    int finished_ = 0;
+    uint64_t generation_ = 0;
+    std::atomic<int> idle_waiting_{0};
+    std::atomic<int> hungry_{0};          // participants looking for work (spinning or asleep)
+    std::atomic<int> sleepers_{0};        // participants asleep on cv_work_
+    std::atomic<size_t> shared_count_{0};
+    std::atomic<bool> stop_flag_{false};
+};
 
 class MarkVisitor final : public Visitor {
 public:
@@ -293,8 +623,58 @@ public:
     }
 
     void drain() {  // full, uninterruptible drain to quiescence
-        while (step()) {}
+        for (;;) {
+            if (should_parallelize() && !parallel_busy_) parallel_round(false, ParallelMarkPool::Clock::time_point());
+            if (!step()) break;
+        }
     }
+
+    // Marking on the helper threads pays once there is a good deal of it: waking them costs some microseconds.
+    // The list of gray cells is a stack, and a depth-first walk of a tree keeps it short whatever the tree's size, so how much is left cannot be read from its length: it is
+    // guessed from what the last cycle of the same kind marked, and a few cells are enough to start the helpers from (they take the bottom of each other's lists).
+    static constexpr size_t kParallelMinWork = 4096;
+    static constexpr size_t kParallelMinExpected = 30000;
+    bool should_parallelize() const {
+        const size_t have = gray_.size() + pf_count_;
+        // QUANTA_GC_PAR_ALWAYS=1: whenever there are two cells to trace, for testing the helpers on small heaps.
+        static const bool always = std::getenv("QUANTA_GC_PAR_ALWAYS") != nullptr;
+        if (have < (always ? 2u : 8u)) return false;
+        if (ParallelMarkPool::instance().helpers() == 0) return false;
+        if (always) return true;
+        return have >= kParallelMinWork || (Collector::major_in_progress_ ? g_expect_major : g_expect_minor) >= kParallelMinExpected;
+    }
+
+    // Traces the gray cells (and those waiting in the prefetch ring) on the helpers and this thread, until they are all traced or `deadline` has come. What the helpers
+    // could not trace themselves (functions, maps, host objects...) is traced here, and the contexts and environments they met are queued here.
+    void parallel_round(bool has_deadline, ParallelMarkPool::Clock::time_point deadline) {
+        std::vector<Heap::ProbeResult> work = std::move(gray_);
+        gray_.clear();
+        for (uint32_t i = 0; i < pf_count_; i++) work.push_back(pf_[(pf_head_ + i) & (kPrefetchRing - 1)]);
+        pf_head_ = pf_tail_ = pf_count_ = 0;
+        ParallelMarkPool& pool = ParallelMarkPool::instance();
+        if (!pool.run(work, Collector::major_in_progress_, has_deadline, deadline)) {
+            gray_ = std::move(work);  // the pool was busy: this thread goes on alone
+            parallel_busy_ = true;
+            return;
+        }
+        parallel_busy_ = false;
+        gray_.insert(gray_.end(), work.begin(), work.end());
+        g_par_rounds++;
+        g_par_left += work.size();
+        for (size_t mi = 0; mi < pool.markers().size() && mi < 8; mi++) { g_par_marked[mi] += pool.markers()[mi]->marked; g_par_deferred += pool.markers()[mi]->deferred.size(); }
+        for (auto& m : pool.markers()) {
+            marked_cells += m->marked;
+            for (const Heap::ProbeResult& p : m->deferred) trace_cell(p);
+            for (Context* c : m->contexts) visit_context(c);
+            for (Environment* e : m->environments) visit_environment(e);
+            for (WeakMap* w : m->weak_maps) visit_weak_map(w);
+            for (WeakSet* w : m->weak_sets) visit_weak_set(w);
+            for (WeakRef* w : m->weak_refs) visit_weak_ref(w);
+            for (FinalizationRegistry* r : m->registries) visit_finalization_registry(r);
+            m->deferred.clear();
+        }
+    }
+    bool parallel_busy_ = false;
 
     // A cycle is over and the worklists are empty: what capacity a big cycle grew them to is given back. The visitor lives as long as the thread (one per
     // thread, see mark_visitor()), and clear() keeps capacity, so the gray list that held the two million elements of one array while it was marked stayed at
@@ -321,6 +701,7 @@ public:
         if (++cycle_ == 0) ++cycle_;
         seen_contexts_.clear();
         marked_cells = 0;
+        parallel_busy_ = false;
         gray_.clear();
         pf_head_ = pf_tail_ = pf_count_ = 0;
         context_work_.clear();
@@ -1173,6 +1554,7 @@ void run_minor_collection() {
         Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
         v.release_excess_capacity();
     }
+    g_expect_minor = v.marked_cells;
     auto t6 = std::chrono::steady_clock::now();
 
     if (prof) {
@@ -1355,6 +1737,7 @@ void finish_major_cycle(MarkVisitor& v) {
         Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
         Heap::note_major_done(live_after);
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
+        g_expect_major = v.marked_cells;
         v.release_excess_capacity();
         Heap::decommit_idle_memory();
     }
@@ -1364,6 +1747,8 @@ void finish_major_cycle(MarkVisitor& v) {
             std::chrono::steady_clock::now() - g_major_cycle_start).count();
         std::fprintf(stderr, "[gc-prof] major slices=%u total=%ldus marked=%zu\n",
                      g_major_slice_count, total_us, v.marked_cells);
+        std::fprintf(stderr, "[gc-prof] par rounds=%zu left=%zu deferred=%zu marked per thread: %zu %zu %zu %zu\n", g_par_rounds, g_par_left, g_par_deferred,
+                     g_par_marked[0], g_par_marked[1], g_par_marked[2], g_par_marked[3]);
     }
     if (log) {
         std::fprintf(stderr, "[gc] major slices=%u marked=%zu swept=%zu verify_violations=%zu\n",
@@ -1520,7 +1905,16 @@ Collector::SliceResult Collector::mark_step(std::chrono::microseconds budget) {
     // stride, which costs at most a stride's worth of overrun.
     constexpr int kDeadlineStride = 128;
     int until_check = kDeadlineStride;
-    while (v.step()) {
+    for (;;) {
+        if (v.should_parallelize() && !v.parallel_busy_) {
+            v.parallel_round(true, deadline);
+            if (std::chrono::steady_clock::now() >= deadline) {
+                v.drain_contexts_and_environments();
+                return SliceResult::Continuing;
+            }
+            continue;
+        }
+        if (!v.step()) break;
         if (--until_check > 0) continue;
         until_check = kDeadlineStride;
         if (std::chrono::steady_clock::now() >= deadline) {

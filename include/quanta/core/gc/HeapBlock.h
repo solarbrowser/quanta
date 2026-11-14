@@ -98,6 +98,23 @@ public:
         return true;
     }
 
+    // The same, for several threads marking at once (the collector's helper threads, with the mutator stopped): the bit is set with one atomic or, and only the
+    // thread whose or turned it on says it was unmarked. The allocated bits do not change while marking, so they are read as they are.
+    bool mark_if_unmarked_atomic(const void* p) {
+        const size_t idx = slot_index(p);
+        if (idx == SIZE_MAX) return false;
+        const size_t word = idx / 64;
+        const uint64_t bit = static_cast<uint64_t>(1) << (idx % 64);
+        if (!(h_.bm[word].alloc & bit)) return false;
+        if (__atomic_load_n(&h_.bm[word].mark, __ATOMIC_RELAXED) & bit) return false;
+        return !(__atomic_fetch_or(&h_.bm[word].mark, bit, __ATOMIC_RELAXED) & bit);
+    }
+    void clear_remembered_atomic(const void* p) {
+        const size_t idx = slot_index(p);
+        if (idx == SIZE_MAX) return;
+        __atomic_fetch_and(&h_.remembered_bitmap[idx / 64], ~(1ULL << (idx % 64)), __ATOMIC_RELAXED);
+    }
+
     bool test_mark(const void* p) const {
         const size_t idx = slot_index(p);
         if (idx == SIZE_MAX) return false;
