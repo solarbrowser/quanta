@@ -36,7 +36,8 @@
 // mimalloc, and mi_free crashes on the foreign pointer. strip -x / -S leave the
 // exports alone and were fine; a plain strip crashed the GC script on macOS
 // arm64. ELF and Windows resolve operator new program-wide.
-#ifndef __APPLE__
+// QUANTA_APPLE_MIMALLOC (a compile flag, off by default) turns it on there anyway, for a build that is not stripped (the Homebrew-LLVM bench workflow measures it).
+#if !defined(__APPLE__) || defined(QUANTA_APPLE_MIMALLOC)
 #include <mimalloc-new-delete.h>
 #endif
 

@@ -22,7 +22,17 @@ on:
 
 jobs:
   bench:
-    name: macOS (Apple Silicon, Homebrew LLVM)
+    # Two builds side by side on the same kind of runner: Homebrew's LLVM alone, and with C++ allocation sent to mimalloc as it is on
+    # Linux (QUANTA_APPLE_MIMALLOC; the executable must not be stripped: see src/core/runtime/MiMalloc.cpp).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: llvm
+            extra_flags: ''
+          - variant: llvm-mimalloc
+            extra_flags: '-DQUANTA_APPLE_MIMALLOC'
+    name: macOS (Apple Silicon, Homebrew LLVM, ${{ matrix.variant }})
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +58,7 @@ jobs:
       - name: Build engine
         env:
           QUANTA_ARCH_FLAGS: '-mcpu=apple-m1'
+          QUANTA_EXTRA_CXXFLAGS: ${{ matrix.extra_flags }}
         run: |
           chmod +x build.sh
           ./build.sh 2>&1 | tee build-output.txt
@@ -55,7 +66,7 @@ jobs:
       - name: What the build used
         run: |
           {
-            echo '## Build'
+            echo '## Build (${{ matrix.variant }})'
             echo '```'
             clang++ --version | head -2
             grep -E "pgo|PGO|profdata|LTO|lld" build-output.txt | head -10 || true
@@ -70,18 +81,28 @@ jobs:
           echo 'console.log(1 + 2)' > /tmp/smoke.js
           build/bin/quanta /tmp/smoke.js
           otool -L build/bin/quanta
+          # The executable has to export operator new for libc++.dylib's own allocations to land in the same allocator as ours.
+          nm -gU build/bin/quanta | grep -E "_Znwm|_ZdlPv" || echo "(operator new is not exported)"
+          # An allocation-heavy script that crashed a stripped build: strings, arrays, objects and the GC between them.
+          cat > /tmp/alloc.js <<'JS'
+          let keep = [];
+          for (let i = 0; i < 400000; i++) { keep.push({ i, s: "k" + i, a: [i, i + 1] }); if (keep.length > 5000) keep = keep.slice(2500); }
+          let t = 0; for (const o of keep) t += o.a[1] + o.s.length;
+          console.log("alloc ok", t);
+          JS
+          build/bin/quanta /tmp/alloc.js
 
       - name: Package
         run: |
           mkdir -p dist
           cp build/bin/quanta dist/
           cp LICENSE dist/
-          cd dist && zip -j ../quanta-macos-arm64-homebrew-llvm.zip quanta LICENSE
+          cd dist && zip -j ../quanta-macos-arm64-${{ matrix.variant }}.zip quanta LICENSE
 
       - uses: actions/upload-artifact@v4
         with:
-          name: quanta-macos-arm64-homebrew-llvm
-          path: quanta-macos-arm64-homebrew-llvm.zip
+          name: quanta-macos-arm64-${{ matrix.variant }}
+          path: quanta-macos-arm64-${{ matrix.variant }}.zip
 
       - uses: actions/checkout@v4
         with:
@@ -100,17 +121,17 @@ jobs:
 
       - name: Run benchmark
         run: |
-          build/bin/quanta bench/dist/run.js 2>&1 | tee benchmark-macos-arm64-homebrew-llvm.txt
+          build/bin/quanta bench/dist/run.js 2>&1 | tee benchmark-macos-arm64-${{ matrix.variant }}.txt
           {
-            echo '## macOS (Apple Silicon), Homebrew LLVM'
+            echo '## macOS (Apple Silicon), Homebrew LLVM, ${{ matrix.variant }}'
             echo '```'
-            cat benchmark-macos-arm64-homebrew-llvm.txt
+            cat benchmark-macos-arm64-${{ matrix.variant }}.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: benchmark-macos-arm64-homebrew-llvm
+          name: benchmark-macos-arm64-${{ matrix.variant }}
           path: |
-            benchmark-macos-arm64-homebrew-llvm.txt
+            benchmark-macos-arm64-${{ matrix.variant }}.txt
             build-output.txt
