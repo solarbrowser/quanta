@@ -62,6 +62,16 @@
 // for more than the core can track.
 #define QUANTA_GC_PREFETCH_RING 16u
 
+// The pause of a spin-wait, for the architecture the collector is built for.
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64)
+#define QUANTA_CPU_RELAX() __builtin_ia32_pause()
+#elif defined(__aarch64__) || defined(__arm__)
+#define QUANTA_CPU_RELAX() __asm__ __volatile__("yield" ::: "memory")
+#else
+#define QUANTA_CPU_RELAX() std::this_thread::yield()
+#endif
+static inline void cpu_relax() { QUANTA_CPU_RELAX(); }
+
 namespace Quanta {
 
 constinit thread_local bool Collector::major_in_progress_ = false;
@@ -380,7 +390,7 @@ private:
             hungry_.fetch_add(1, std::memory_order_relaxed);
             for (int spin = 0; spin < 20000; spin++) {
                 if (shared_count_.load(std::memory_order_relaxed) > 0 || stop_flag_.load(std::memory_order_relaxed)) break;
-                __builtin_ia32_pause();
+                cpu_relax();
             }
             hungry_.fetch_sub(1, std::memory_order_relaxed);
             std::unique_lock<std::mutex> lock(m_);
