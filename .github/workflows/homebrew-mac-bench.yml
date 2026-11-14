@@ -1,0 +1,116 @@
+name: Homebrew LLVM (macOS bench)
+
+# Run by hand only (Actions tab -> "Homebrew LLVM (macOS bench)" -> Run workflow).
+#
+# Builds the engine on Apple Silicon with Homebrew's LLVM instead of Apple's clang, to see what the two things
+# Apple's toolchain leaves out are worth: build.sh's profile-guided optimisation (tools/pgo/quanta.profdata is
+# written by a newer LLVM than Apple clang ships, which then says "not readable by this clang" and builds without
+# it) and ThinLTO (build.sh asks for ld.lld, which the runner does not have). Then it runs the same v8-v7 suite as
+# the Benchmark workflow, so the two summaries can be set side by side, and keeps the executable as a zip like
+# Build (macOS) does.
+#
+# The executable links against the system libc++ (the Homebrew clang uses the SDK's headers and library by
+# default), so it runs on a Mac without Homebrew's LLVM.
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark_ref:
+        description: 'Branch, tag or commit of ahaoboy/js-engine-benchmark'
+        required: false
+        default: 'main'
+
+jobs:
+  bench:
+    name: macOS (Apple Silicon, Homebrew LLVM)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Homebrew LLVM and lld
+        run: |
+          brew install llvm lld
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LLD_PREFIX="$(brew --prefix lld)"
+          echo "LLVM_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "$LLD_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Toolchain
+        run: |
+          which clang++ ld.lld llvm-ar || true
+          clang++ --version
+          ld.lld --version || true
+
+      - name: Build engine
+        env:
+          QUANTA_ARCH_FLAGS: '-mcpu=apple-m1'
+        run: |
+          chmod +x build.sh
+          ./build.sh 2>&1 | tee build-output.txt
+
+      - name: What the build used
+        run: |
+          {
+            echo '## Build'
+            echo '```'
+            clang++ --version | head -2
+            grep -E "pgo|PGO|profdata|LTO|lld" build-output.txt | head -10 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q "not readable by this clang" build-output.txt; then
+            echo "::warning::the profile was still not readable: this build has no PGO"
+          fi
+
+      - name: Smoke test
+        run: |
+          echo 'console.log(1 + 2)' > /tmp/smoke.js
+          build/bin/quanta /tmp/smoke.js
+          otool -L build/bin/quanta
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/bin/quanta dist/
+          cp LICENSE dist/
+          cd dist && zip -j ../quanta-macos-arm64-homebrew-llvm.zip quanta LICENSE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quanta-macos-arm64-homebrew-llvm
+          path: quanta-macos-arm64-homebrew-llvm.zip
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ahaoboy/js-engine-benchmark
+          ref: ${{ inputs.benchmark_ref }}
+          path: bench
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build benchmark (dist/run.js)
+        working-directory: bench
+        run: |
+          bun install
+          bun run build
+          ls -l dist/run.js
+
+      - name: Run benchmark
+        run: |
+          build/bin/quanta bench/dist/run.js 2>&1 | tee benchmark-macos-arm64-homebrew-llvm.txt
+          {
+            echo '## macOS (Apple Silicon), Homebrew LLVM'
+            echo '```'
+            cat benchmark-macos-arm64-homebrew-llvm.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-macos-arm64-homebrew-llvm
+          path: |
+            benchmark-macos-arm64-homebrew-llvm.txt
+            build-output.txt
