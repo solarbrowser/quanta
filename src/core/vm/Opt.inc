@@ -173,6 +173,7 @@ struct Func {
     int32_t entry_block = -1;
     const void* exe = nullptr;           // the executable the call site was seen to reach (guarded on entry)
     bool no_light = false;               // the function makes an arguments object, which can alias its registers: its steps write everything back
+    Function* gbody = nullptr;           // (a forwarding constructor) the method whose body is inlined
     bool gctor = false;                  // a constructor of no plan: the object is made plain and the body is inlined as a function's
     bool ctor = false;                   // a constructor run for `new`: private to the new object, so a deoptimization leaves through the `new` itself
     int32_t plan = -1;                   // its entry in Graph::ctors
@@ -524,7 +525,8 @@ private:
     bool expand_inline(int32_t blk, std::vector<int32_t>& added);
     bool inline_enter(const Insn& in, int32_t callee, bool& ended);
     bool inline_define(const Insn& in, int32_t ci, int32_t fv, bool guard);
-    bool ctor_generic_ok(Function* fn, uint32_t& insns);
+    bool ctor_generic_ok(Function* fn, uint32_t& insns, Graph::CtorPlan* out = nullptr);
+    bool resolve_forwarder(Function* fn, Object* proto, Graph::CtorPlan& plan);
     bool poly_dispatch(int32_t site, int32_t t, bool& ended);
     int32_t make_instance(int32_t fi, const Insn& call, Function* target, std::vector<int32_t>& added);
     int32_t poly_of(int32_t fi, uint32_t pc) const {
@@ -2206,17 +2208,23 @@ inline bool apply_forwarder(const BytecodeChunk& c, uint32_t& name_index) {
 // Whether a constructor that has no plan (its body calls, or does more than store) can be inlined all the same: a plain function (not a class or a derived
 // class) whose body is loop-free and small, runs in this realm and strictness (so a deoptimization can rebuild its frame, as a stackless `new` makes it), does not
 // read new.target or use super, and returns nothing (the object is the result). The object is made plain; the body's stores are ordinary ones.
-inline bool Builder::ctor_generic_ok(Function* fn, uint32_t& insns) {
+inline bool Builder::ctor_generic_ok(Function* fn, uint32_t& insns, Graph::CtorPlan* out) {
     if (!config().gctor || !g_.frame || fn->is_class_constructor() || fn->is_arrow()) return false;
-    const FunctionExecutable* exe = fn->get_executable().get();
+    const Value pv = fn->constructor_prototype();
+    Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
+    if (!proto) return false;
+    Graph::CtorPlan plan;
+    if (!resolve_forwarder(fn, proto, plan)) return false;
+    Function* body = plan.inner ? plan.inner : fn;
+    const FunctionExecutable* exe = body->get_executable().get();
     if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm || exe->fast_uses_super) return false;
     const BytecodeChunk& c = *exe->bytecode_chunk;
     uint8_t v = c.inline_state;
     if (v & kInlineNever) return false;
-    if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
+    if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, body);
     if (!(v & kInlineOk) || (v & kInlineEnv) || (v & kInlineNever)) return false;
     if (g_.frame->ctx->is_strict_mode() != ((v & kInlineStrict) != 0)) return false;
-    if (!inline_scan(fn, c, insns) || insns > config().inline_insns) return false;
+    if (!inline_scan(body, c, insns) || insns > config().inline_insns) return false;
     const uint8_t* code = c.code.data();
     const uint32_t size = static_cast<uint32_t>(c.code.size());
     for (uint32_t pc = 0; pc < size;) {
@@ -2225,14 +2233,14 @@ inline bool Builder::ctor_generic_ok(Function* fn, uint32_t& insns) {
         if (op == Op::Return && (pc == 0 || static_cast<Op>(code[pc - 1]) != Op::LdaUndefined)) return false;
         pc += 1 + static_cast<uint32_t>(op_operand_bytes(op));
     }
+    if (out) *out = plan;
     return true;
 }
 
-inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc) {
+// A constructor that is exactly `function () { this.<name>.apply(this, arguments); }` forwards to a method: plan.inner is that method (as a plain data property of the
+// prototype chain, with the epoch that says `apply` is still the real one). Nothing is set for any other constructor. False when it is a forwarder that cannot be followed.
+inline bool Builder::resolve_forwarder(Function* fn, Object* proto, Graph::CtorPlan& plan) {
     const FunctionExecutable* exe = fn->get_executable().get();
-    const Value pv = fn->constructor_prototype();
-    Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
-    if (!proto) return fail_plan(2);
     plan.inner = nullptr;
     uint32_t name_index = 0;
     if (apply_forwarder(*exe->bytecode_chunk, name_index)) {
@@ -2259,6 +2267,15 @@ inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& in
         if (!ap.is_function() || !ap.as_function()->is_native() || ap.as_function()->get_name() != "apply") return fail_plan(25);
         plan.desc_epoch = Object::descriptor_epoch();
     }
+    return true;
+}
+
+inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& insns, bool make_desc) {
+    const FunctionExecutable* exe = fn->get_executable().get();
+    const Value pv = fn->constructor_prototype();
+    Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
+    if (!proto) return fail_plan(2);
+    if (!resolve_forwarder(fn, proto, plan)) return false;
     const BytecodeChunk& c = plan.inner ? *plan.inner->get_executable()->bytecode_chunk : *exe->bytecode_chunk;
     if ((c.handlers && !c.handlers->empty()) || c.register_count > kInlineMaxRegs) return fail_plan(1);
     const uint8_t* code = c.code.data();
@@ -2339,9 +2356,9 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
     Graph::CtorPlan plan;
     bool generic = false;
     if (is_ctor && !ctor_plan(target, plan, n, true)) {
-        if (!ctor_generic_ok(target, n)) return -1;
-        generic = true;
         plan = Graph::CtorPlan();
+        if (!ctor_generic_ok(target, n, &plan)) return -1;
+        generic = true;
     }
     // The function whose body is inlined: the callee, or the method a forwarding constructor calls.
     Function* body = plan.inner ? plan.inner : target;
@@ -2377,6 +2394,11 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
     }
     f.sloppy_this = !strict && c.uses_this && !is_ctor;
     f.gctor = generic;
+    f.gbody = generic && plan.inner ? body : nullptr;
+    if (generic) {
+        f.plan = static_cast<int32_t>(g_.ctors.size());
+        g_.ctors.push_back(plan);
+    }
     if (is_ctor && !generic) {
         f.ctor = true;
         f.plan = static_cast<int32_t>(g_.ctors.size());
@@ -2555,6 +2577,13 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
     int32_t thisv;
     if (construct && C.gctor) {
         thisv = guarded(K::NewObject, Rep::Tagged, fv, -1, 0, 0);
+        if (C.gbody) {
+            // The forwarded-to method is still what the prototype holds, and `apply` is still the real one.
+            const Graph::CtorPlan& plan = g_.ctors[C.plan];
+            epoch_guard(1, plan.desc_epoch);
+            const int32_t held = emit(K::LoadHolder, Rep::Tagged, -1, -1, plan.holder_slot, reinterpret_cast<uint64_t>(plan.holder));
+            guarded(K::CheckBits, Rep::None, held, -1, 0, plan.inner_bits);
+        }
     } else if (construct) {
         // The constructor's object: made with the shape the stores will give it, so they are plain slot writes.
         const Graph::CtorPlan& plan = g_.ctors[C.plan];
@@ -6526,7 +6555,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         unit.inl.resize(g.funcs.size());
         for (size_t k = 1; k < g.funcs.size(); k++) {
             const Func& fn = g.funcs[k];
-            unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len, fn.gctor};
+            unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len, fn.gctor, fn.gbody};
         }
         unit.inl_states.resize(g.states.size());
         for (size_t k = 0; k < g.states.size(); k++) {

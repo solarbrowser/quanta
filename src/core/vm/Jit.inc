@@ -2832,7 +2832,7 @@ Frame* opt_materialize(Frame& root, const JitCode::OptUnit& u, const JitRt* rt, 
     Frame* parent = &root;
     for (int i = n - 1; i >= 0; i--) {
         const JitCode::OptUnit::InlFrame& fr = u.inl[chain[i]];
-        const Value fnv = at(fr.var_base + fr.nregs + 2);
+        const Value fnv = fr.body ? Value(fr.body) : at(fr.var_base + fr.nregs + 2);
         Frame* cf = nullptr;
         parent->instr_pc = fr.call_pc;
         if (!fnv.is_function() || !inline_call_enter(*parent, fnv.as_function(), nullptr, 0, at(fr.var_base + fr.nregs + 1),
@@ -2855,7 +2855,7 @@ Frame* opt_materialize(Frame& root, const JitCode::OptUnit& u, const JitRt* rt, 
             st.construct_explicit_return = ctx.last_construct_explicit_return();
             ctx.set_in_constructor_call(true);
             ctx.set_super_called(false);
-            ctx.set_new_target(fnv);
+            ctx.set_new_target(at(fr.var_base + fr.nregs + 2));
             ctx.set_last_super_override(nullptr);
             ctx.set_last_super_override_needs_reparent(false);
             cf->construct_call = true;
@@ -3004,10 +3004,20 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         if (opt::config().log)
             std::fprintf(stderr, "[opt] deoptimized at pc %u [%s] (entered at %u, chunk %p): %s%s\n", gpc, gpc < chunk.code.size() ? op_name(static_cast<Op>(chunk.code[gpc])) : "?", target, static_cast<const void*>(&chunk),
                          gkind ? gkind : "?", evar >= 0 ? " (loop-carried value)" : evar == -3 ? " (check taken out of a loop)" : "");
+        if (opt::config().log && gkind && !inlined && (!std::strcmp(gkind, "CheckFn") || !std::strcmp(gkind, "CallNative")) && raw_pc < chunk.code.size()) {
+            // What the call's operands held when the guard failed.
+            const uint8_t* cc = chunk.code.data();
+            const Op o = static_cast<Op>(cc[raw_pc]);
+            if (o == Op::Call || o == Op::CallResolved) {
+                const Value cv = f.regs[cc[raw_pc + 1]];
+                std::fprintf(stderr, "[opt]   %s: callee is %s (native=%d)\n", gkind, cv.is_function() ? (cv.as_function()->get_name().empty() ? "(anonymous)" : cv.as_function()->get_name().c_str()) : "not a function", cv.is_function() ? cv.as_function()->is_native() : -1);
+            }
+        }
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
         // (Counted per kind of guard: a second kind of guard failing at a site that was already learned from is learned from too.)
         const uint64_t site = (static_cast<uint64_t>(gpc) << 32) | (static_cast<uint64_t>(static_cast<uint16_t>(evar + 1)) << 16) | (lg & 0xFFFFu);
+        if (opt::config().log) std::fprintf(stderr, "[opt]   learning: fails so far %u, recompiles %u of %u, epoch rebuilds %u, evar %d\n", av.fails.count(site) ? av.fails[site] : 0u, av.recompiles, opt::config().max_recompiles, av.epoch_rebuilds, evar);
         if (!opt::config().stress && hoisted_fail && av.recompiles < opt::config().max_recompiles) {
             // A check taken out of a loop failed before the loop was entered: the next build leaves that loop's checks where they are.
             av.recompiles++;
@@ -3043,6 +3053,9 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             jc->opt_units[ui].entries.clear();         // the unit is dead; the next offer compiles it again
             chunk.direct = nullptr;
             refused.erase({&chunk, target});
+        } else if (jc->opt_units[ui].entries.empty()) {
+            // A unit that was given up on or replaced while it still ran (a recursive function has many activations of it on the stack, and each one deoptimizes when it
+            // reaches its guard): what it does now says nothing of the unit that is built next.
         } else if (++jc->opt_units[ui].deopts > opt::config().max_deopts && static_cast<uint64_t>(jc->opt_units[ui].deopts) * opt::config().deopt_ratio > rt->opt_runs) {
             // A unit whose guards keep failing costs more than it saves: stop entering it (a unit that has run a million times and left forty is not that one).
             if (opt::config().log) std::fprintf(stderr, "[opt] giving up on the loop at pc %u\n", target);
