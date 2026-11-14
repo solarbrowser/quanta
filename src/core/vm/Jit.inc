@@ -2961,9 +2961,11 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         const bool inlined = st < cu.inl_states.size() && cu.inl_states[st].func != 0;
         const bool known = st < gs.size() && std::get<1>(gs[st]);
         uint32_t gpc = known ? std::get<0>(gs[st]) : f.pc;
+        const uint32_t raw_pc = gpc;     // (the state's own pc: for an inlined callee's state, a pc of the callee)
         int32_t evar = known ? std::get<2>(gs[st]) : -1;
         uint32_t site_pc = 0;
-        if (inlined) {
+        const bool hoisted_fail = evar == -3;
+        if (inlined && !hoisted_fail) {
             // Names the call in the root that the failing callee is (part of): the site to stop inlining.
             int32_t k = cu.inl_states[st].func;
             while (cu.inl[k].parent > 0) k = cu.inl[k].parent;
@@ -2973,11 +2975,18 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         }
         if (opt::config().log)
             std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u, chunk %p): %s%s\n", gpc, target, static_cast<const void*>(&chunk),
-                         known ? std::get<1>(gs[st]) : "?", evar >= 0 ? " (loop-carried value)" : "");
+                         known ? std::get<1>(gs[st]) : "?", evar >= 0 ? " (loop-carried value)" : evar == -3 ? " (check taken out of a loop)" : "");
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
         const uint64_t site = (static_cast<uint64_t>(gpc) << 16) | static_cast<uint16_t>(evar + 1);
-        if (!opt::config().stress && evar == -2 && av.recompiles < opt::config().max_recompiles) {
+        if (!opt::config().stress && hoisted_fail && av.recompiles < opt::config().max_recompiles) {
+            // A check taken out of a loop failed before the loop was entered: the next build leaves that loop's checks where they are.
+            av.recompiles++;
+            av.nohoist.insert(raw_pc);
+            jc->opt_units[ui].entries.clear();
+            chunk.direct = nullptr;
+            refused.erase({&chunk, target});
+        } else if (!opt::config().stress && evar == -2 && av.recompiles < opt::config().max_recompiles) {
             // A global epoch moved: the next build reads the new one.
             av.recompiles++;
             jc->opt_units[ui].entries.clear();

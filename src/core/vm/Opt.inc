@@ -270,6 +270,7 @@ struct Avoid {
     std::map<uint64_t, uint32_t> fails;               // site -> failures so far
     std::set<std::pair<const BytecodeChunk*, uint32_t>> no_inline;   // call sites (chunk, pc) that are not worth inlining
     std::set<std::pair<const BytecodeChunk*, uint32_t>> fallback;    // inlined call sites whose callee check failed: what matches none of the callees is called through the runtime
+    std::set<uint32_t> nohoist;                                      // pcs of loop headers whose hoisted checks failed before entering the loop: nothing is hoisted out of those
     bool fallback_all = false;                                       // one did: every inlined call of this chunk's units is built that way (the profile was too short for this chunk's callees)
     uint32_t recompiles = 0;
 };
@@ -309,6 +310,9 @@ struct Config {
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 250;      // largest callee (decoded instructions)
     uint32_t inline_total = 1500;      // all the callees of one unit together
+    uint32_t hoist_mask = 15;         // QUANTA_OPT_HOIST_MASK: which kinds are moved out of loops (1 object and array checks, 2 number checks and index conversions, 4 loads of variables, 8 arithmetic)
+    bool hoist_every = false;         // QUANTA_OPT_HOIST=2: from every loop, not only a hot one or one inside another (a test mode)
+    bool hoist = true;                // QUANTA_OPT_HOIST=0: what a loop checks and loads again and again that cannot change in it is not moved before it
     bool fallback_every = false;      // QUANTA_OPT_FALLBACK=2: every inlined call is built so (a test mode)
     bool fallback = true;             // QUANTA_OPT_FALLBACK=0: an inlined call whose callee is none of those inlined leaves the unit
     bool proto_poly = true;           // QUANTA_OPT_PROTOPOLY=0: a method read of several receiver shapes goes through the runtime
@@ -363,6 +367,8 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_HOIST")) { c.hoist = e[0] && e[0] != '0'; c.hoist_every = e[0] == '2'; }
+        if (const char* e = std::getenv("QUANTA_OPT_HOIST_MASK")) c.hoist_mask = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_FALLBACK")) { c.fallback = e[0] && e[0] != '0'; c.fallback_every = e[0] == '2'; }
         if (const char* e = std::getenv("QUANTA_OPT_PROTOPOLY")) c.proto_poly = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_SETRT")) c.set_transition_rt = e[0] && e[0] != '0';
@@ -605,6 +611,7 @@ private:
         return on.op == K::LoadAcc ? &g_.frame->acc : &g_.frame->regs[on.aux];
     }
     void narrow_integers();
+    void hoist_invariants();
     void apply_replacements();
     void lower();
     void eliminate_dead();
@@ -2825,6 +2832,7 @@ inline void Builder::finalize() {
     lower();
     optimize();
     narrow_integers();
+    hoist_invariants();
     eliminate_dead();
     // A region that spends its time in steps is slower than the interpreter (every step writes the whole
     // register file back and reads it again), so it is not worth having.
@@ -2960,6 +2968,233 @@ inline void Builder::apply_replacements() {
             if (r >= 0) keep.push_back({v, r});
         }
         st.defs = std::move(keep);
+    }
+}
+
+// What a loop checks and loads again on every turn though nothing in it can change -- that a value is an object, that the object is a dense array, a closure's
+// variable and the number check of it -- is done once, before the loop: on each edge that enters it (a block of its own), with the frame state the loop's first
+// instruction has, so a check that fails there leaves to the interpreter at the loop's header with nothing done. A guard is taken out only when its block is passed by
+// every turn of the loop and by every way out but the header's, and only from a loop in which nothing runs script (no step, call or generic helper) and no variable is
+// stored; its value, if it has one, comes into the loop as a phi of the values the edges make (nothing if there is one edge). A loop whose hoisted checks fail is
+// learned (Avoid::nohoist) and built again without them: they can fail for a loop that would have run no turn at all.
+inline void Builder::hoist_invariants() {
+    if (!config().hoist) return;
+    const size_t nb0 = g_.b.size();
+    std::vector<int32_t> rpo_num(nb0, -1);
+    for (size_t i = 0; i < g_.rpo.size(); i++) rpo_num[g_.rpo[i]] = static_cast<int32_t>(i);
+    const int32_t kRoot = -2;
+    std::vector<int32_t> idom(nb0, -1);
+    for (int32_t e : g_.entries) idom[e] = kRoot;
+    auto num = [&](int32_t b) { return b == kRoot ? -1 : rpo_num[b]; };
+    auto intersect = [&](int32_t a, int32_t b) {
+        while (a != b) {
+            while (num(a) > num(b)) a = idom[a];
+            while (num(b) > num(a)) b = idom[b];
+        }
+        return a;
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int32_t blk : g_.rpo) {
+            if (g_.b[blk].preds.empty()) continue;
+            int32_t nd = -1;
+            for (int32_t p : g_.b[blk].preds) {
+                if (idom[p] == -1) continue;
+                nd = nd == -1 ? p : intersect(p, nd);
+            }
+            if (nd != -1 && idom[blk] != nd) { idom[blk] = nd; changed = true; }
+        }
+    }
+    auto dominates = [&](int32_t a, int32_t b) {
+        while (b >= 0 && b != a) b = idom[b];
+        return b == a;
+    };
+    // The loops: a header, the blocks that reach a back edge without passing it.
+    struct Loop { int32_t header; std::vector<int32_t> latches; std::set<int32_t> body; };
+    std::vector<Loop> loops;
+    for (int32_t h : g_.rpo) {
+        Loop L{h, {}, {}};
+        for (int32_t p : g_.b[h].preds) if (p >= 0 && rpo_num[p] >= 0 && dominates(h, p)) L.latches.push_back(p);
+        if (L.latches.empty()) continue;
+        L.body.insert(h);
+        std::vector<int32_t> work(L.latches.begin(), L.latches.end());
+        while (!work.empty()) {
+            const int32_t x = work.back();
+            work.pop_back();
+            if (!L.body.insert(x).second) continue;
+            for (int32_t p : g_.b[x].preds) if (!L.body.count(p)) work.push_back(p);
+        }
+        loops.push_back(std::move(L));
+    }
+    uint32_t hoisted_total = 0;
+    std::sort(loops.begin(), loops.end(), [](const Loop& a, const Loop& b) { return a.body.size() < b.body.size(); });
+    // A loop is worth it when it has been seen to run long: the unit has an entry for it (its back edge got hot), or it lies in another loop. What is moved is
+    // done once however few turns there are, and once for a loop that turns none.
+    std::vector<uint8_t> hot(loops.size(), 0);
+    for (size_t li = 0; li < loops.size(); li++)
+        for (int32_t p : g_.b[loops[li].header].preds)
+            if (g_.b[p].synthetic && g_.b[p].osr_pc == static_cast<int32_t>(g_.b[loops[li].header].start_pc)) hot[li] = 1;
+    for (size_t li = 0; li < loops.size(); li++)
+        for (size_t lj = 0; lj < loops.size(); lj++)
+            if (lj != li && loops[lj].body.count(loops[li].header)) { hot[li] = hot[li] ? hot[li] : 2; break; }      // (a loop inside another repeats what it holds)
+    for (size_t li = 0; li < loops.size(); li++) {
+        Loop& L = loops[li];
+        const int32_t H = L.header;
+        if (!hot[li] && !config().hoist_every) continue;
+        if (g_.b[H].synthetic) continue;
+        if (avoid_ && avoid_->nohoist.count(g_.b[H].start_pc)) continue;
+        // Nothing may run script, and nothing may store a variable, in the loop.
+        bool opaque = false, env_store = false, reg_store = false;
+        for (int32_t b : L.body) {
+            if (g_.b[b].term.kind == T::StepBranch) opaque = true;
+            for (int32_t id : g_.b[b].nodes) {
+                const Node& nd = g_.n[id];
+                if (nd.dead) continue;
+                switch (nd.op) {
+                case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
+                case K::StoreEnv: env_store = true; break;
+                case K::StoreReg: case K::StoreAcc: reg_store = true; break;
+                default: break;
+                }
+            }
+        }
+        if (opaque) continue;
+        // The ways into the loop, and the edge blocks that will hold what is moved.
+        std::vector<size_t> fwd;                       // indices into the header's preds
+        for (size_t i = 0; i < g_.b[H].preds.size(); i++) if (!L.body.count(g_.b[H].preds[i])) fwd.push_back(i);
+        if (fwd.empty()) continue;
+        // The exits other than the header's own: every one of them must be passed by the block a guard is taken from.
+        std::vector<int32_t> exits;
+        for (int32_t b : L.body) {
+            if (b == H) continue;
+            bool leaves = g_.b[b].term.kind == T::Bail || g_.b[b].term.kind == T::Return || g_.b[b].term.kind == T::Exit;
+            for (int32_t sct : g_.b[b].succs) if (!L.body.count(sct)) leaves = true;
+            if (leaves) exits.push_back(b);
+        }
+        auto always_run = [&](int32_t b) {
+            for (int32_t lt : L.latches) if (!dominates(b, lt)) return false;
+            for (int32_t ex : exits) if (!dominates(b, ex)) return false;
+            return true;
+        };
+        std::vector<int32_t> edge_blk(fwd.size(), -1);
+        std::vector<int32_t> edge_state(fwd.size(), -1);
+        auto make_edges = [&]() {
+            for (size_t k = 0; k < fwd.size(); k++) {
+                const int32_t p = g_.b[H].preds[fwd[k]];
+                const int32_t E = new_block(0, 0);
+                Block& EB = g_.b[E];
+                EB.func = g_.b[H].func;
+                EB.preds = {p};
+                EB.succs = {H};
+                EB.term.kind = T::Jump;
+                EB.term.t = H;
+                EB.def = g_.b[p].def;                  // what the edge's frame state is read from
+                EB.sealed = EB.built = EB.reachable = true;
+                Block& PB = g_.b[p];
+                for (int32_t& sc : PB.succs) if (sc == H) sc = E;
+                if (PB.term.t == H) PB.term.t = E;
+                if (PB.term.f == H) PB.term.f = E;
+                g_.b[H].preds[fwd[k]] = E;
+                idom.push_back(p);
+                rpo_num.push_back(rpo_num[H]);
+                g_.rpo.insert(std::find(g_.rpo.begin(), g_.rpo.end(), H), E);
+                for (Loop& O : loops) if (O.body.count(H) && &O != &L) O.body.insert(E);
+                edge_blk[k] = E;
+            }
+            if (fwd.size() == 1) idom[H] = edge_blk[0];
+        };
+        // Is the value (in the loop's terms) the same on every turn: defined outside it, or a phi of the header that comes back to itself.
+        auto outside = [&](int32_t x) { return x < 0 || !L.body.count(g_.n[x].blk); };
+        auto self_phi = [&](int32_t x) {
+            const Node& ph = g_.n[x];
+            if (ph.op != K::Phi || ph.blk != H || ph.dead) return false;
+            for (size_t i = 0; i < ph.ins.size(); i++) {
+                if (std::find(fwd.begin(), fwd.end(), i) != fwd.end()) continue;
+                if (resolve(ph.ins[i]) != x) return false;
+            }
+            return true;
+        };
+        auto invariant = [&](int32_t x) { x = resolve(x); return x < 0 || outside(x) || self_phi(x); };
+        auto on_edge = [&](int32_t x, size_t k) {       // the operand's value as it enters the loop by edge k
+            x = resolve(x);
+            if (x >= 0 && g_.n[x].op == K::Phi && g_.n[x].blk == H && self_phi(x)) return resolve(g_.n[x].ins[fwd[k]]);
+            return x;
+        };
+        bool edges_made = false;
+        // Candidates, in the order the blocks come, so that what one takes from another has been moved already.
+        std::vector<int32_t> order(g_.rpo.begin(), g_.rpo.end());
+        for (int32_t b : order) {
+            if (!L.body.count(b) || (b != H && !always_run(b))) continue;
+            const std::vector<int32_t> nodes = g_.b[b].nodes;
+            for (int32_t id : nodes) {
+                const Node nd = g_.n[id];             // (a copy: the clones below grow the node list)
+                if (nd.dead) continue;
+                bool movable;
+                bool guard = false;
+                uint32_t cls = 0;
+                switch (nd.op) {
+                case K::CheckObj: case K::CheckDense: case K::CheckDenseSt: case K::CheckShape: case K::CheckProto: case K::CheckNotNullish: case K::CheckBits:
+                    movable = true; guard = true; cls = 1; break;
+                case K::CheckNum: case K::CheckI32: case K::NonNegI32: case K::ToIndex: case K::ToI32:
+                    movable = true; guard = true; cls = 2; break;
+                case K::LoadEnv: movable = !env_store; cls = 4; break;
+                case K::LoadReg: movable = !reg_store; cls = 4; break;
+                case K::LoadThis: movable = true; guard = true; cls = 4; break;
+                case K::I32ToF64: case K::U32ToF64: case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI:
+                case K::ShrI: case K::NotI: movable = true; cls = 8; break;
+                default: movable = false; break;
+                }
+                if (movable && !(config().hoist_mask & cls)) movable = false;
+                if (!movable || (nd.op == K::LoadEnv && nd.a >= 0)) continue;
+                guard = guard || nd.state >= 0;       // (a load of an environment variable leaves when there is no such slot)
+                if (guard && nd.state < 0) continue;
+                if (!invariant(nd.a) || !invariant(nd.b) || !invariant(nd.c)) continue;
+                // A frame state is the loop's own: nothing the loop wrote is in it.
+                if (!edges_made) { make_edges(); edges_made = true; }
+                if (guard) {
+                    for (size_t k = 0; k < fwd.size(); k++)
+                        if (edge_state[k] < 0) {
+                            edge_state[k] = snapshot_at(edge_blk[k], g_.b[H].func, g_.b[H].start_pc, -3);
+                        }
+                }
+                std::vector<int32_t> clones(fwd.size(), -1);
+                for (size_t k = 0; k < fwd.size(); k++) {
+                    const int32_t E = edge_blk[k];
+                    const int32_t a = nd.a >= 0 ? on_edge(nd.a, k) : -1, bb = nd.b >= 0 ? on_edge(nd.b, k) : -1, c = nd.c >= 0 ? on_edge(nd.c, k) : -1;
+                    const int32_t cl = emit_in(E, nd.op, nd.rep, a, bb, nd.aux, nd.imm, c);
+                    g_.n[cl].state = guard ? edge_state[k] : -1;
+                    clones[k] = cl;
+                }
+                int32_t result = -1;
+                if (nd.rep != Rep::None) {
+                    if (fwd.size() == 1) result = clones[0];
+                    else {
+                        // A phi of the header: the clone of each edge, itself on the way round.
+                        result = add_node(H, K::Phi, nd.rep);
+                        Node& ph = g_.n[result];
+                        ph.aux = 0xFFFFFFFFu;
+                        ph.ins.assign(g_.b[H].preds.size(), result);
+                        for (size_t k = 0; k < fwd.size(); k++) ph.ins[fwd[k]] = clones[k];
+                        g_.b[H].nodes.insert(g_.b[H].nodes.begin(), result);
+                    }
+                    g_.repl[id] = result;
+                }
+                g_.n[id].dead = true;
+                hoisted_total++;
+            }
+        }
+    }
+    if (config().log && hoisted_total) std::fprintf(stderr, "[opt] hoisted %u nodes out of loops\n", hoisted_total);
+    apply_replacements();
+    if (config().log) {
+        std::set<int32_t> in_rpo(g_.rpo.begin(), g_.rpo.end());
+        for (int32_t b : g_.rpo) {
+            const Term& t = g_.b[b].term;
+            if ((t.kind == T::Jump && !in_rpo.count(t.t)) || ((t.kind == T::Branch || t.kind == T::StepBranch) && (!in_rpo.count(t.t) || !in_rpo.count(t.f))))
+                std::fprintf(stderr, "[opt] hoist: block b%d has a terminator target outside the graph (t=%d f=%d)\n", b, t.t, t.f);
+            for (int32_t sc : g_.b[b].succs) if (!in_rpo.count(sc)) std::fprintf(stderr, "[opt] hoist: block b%d has succ b%d outside the graph\n", b, sc);
+            for (int32_t pr : g_.b[b].preds) if (!in_rpo.count(pr)) std::fprintf(stderr, "[opt] hoist: block b%d has pred b%d outside the graph\n", b, pr);
+        }
     }
 }
 
