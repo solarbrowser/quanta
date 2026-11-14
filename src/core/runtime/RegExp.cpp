@@ -2974,6 +2974,47 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     return true;
 }
 
+bool RegExp::match_all_texts(const std::string& str, std::vector<std::string>& texts) {
+    if (!global_ || sticky_) return false;
+    if (backtrack_engine_) return false;
+    if (!code_) return false;
+    resource_exhausted_ = false;
+
+    SubjectBuffer decode_buffer;
+    std::u16string& decode_scratch = decode_buffer.get();
+    uint64_t subject_id = 0;
+    std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id);
+    std::u16string sanitized;
+    if (unicode_ && has_lone_surrogate(orig)) {
+        sanitized = std::u16string(orig);
+        sanitize_utf16_surrogates(sanitized);
+    }
+    std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
+    const bool bytes_are_units = sanitized.empty() && str.size() == orig.size();
+
+    pcre2_code* re = static_cast<pcre2_code*>(code_);
+    pcre2_match_data* md = static_cast<pcre2_match_data*>(ensure_match_data());
+    if (!md) return false;
+
+    texts.clear();
+    std::vector<size_t> last_pairs;   // the last match with its captures, for the legacy statics
+    size_t pos = 0;
+    while (pos <= subject.size()) {
+        int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(), pos, kSubjectAlreadyChecked, md, resource_exhausted_);
+        if (rc < 0) break;
+        PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+        const size_t ms = ov[0], me = ov[1];
+        texts.push_back(bytes_are_units ? str.substr(ms, me - ms) : utf16_to_wtf8(orig.data() + ms, me - ms));
+        last_pairs.assign(ov, ov + pcre2_get_ovector_count(md) * 2);
+        if (me != ms) { pos = me; continue; }
+        pos = ms + 1;
+        if (unicode_ && pos < subject.size() && subject[ms] >= 0xD800 && subject[ms] <= 0xDBFF && subject[pos] >= 0xDC00 && subject[pos] <= 0xDFFF) pos++;
+    }
+    if (!last_pairs.empty()) note_legacy_match(str, nullptr, last_pairs.data(), last_pairs.size() / 2);
+    last_index_ = 0;
+    return true;
+}
+
 bool RegExp::split_all(const std::string& str, uint32_t lim, std::vector<SplitPiece>& pieces) {
     if (backtrack_engine_ || !code_ || lim == 0) return false;
     resource_exhausted_ = false;

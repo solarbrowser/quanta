@@ -106,6 +106,7 @@ public:
     // check which realm an object came from.
     Object* watched_array_iterator_proto = nullptr;
     Object* watched_regexp_proto = nullptr;
+    Object* watched_regexp_ctor = nullptr;      // %RegExp%: its Symbol.species is read by split (and watched with the prototype)
     // What the watched prototype holds under Symbol.match, matchAll, replace, search and split while regexp_proto_intact: a String method given a pattern reads these
     // from the realm instead of by name.
     Object* regexp_symbol_methods[5] = {};

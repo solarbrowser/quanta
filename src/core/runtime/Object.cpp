@@ -1429,12 +1429,14 @@ void note_watched_write(const Object* target, const std::string& key) {
             static const char* const kWatched[] = {
                 "exec", "flags", "hasIndices", "global", "ignoreCase",
                 "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
-                "Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split",
+                "Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split", "constructor",
             };
             for (const char* w : kWatched) {
                 if (key == w) { realm->regexp_proto_intact = false; break; }
             }
         }
+        // %RegExp%[Symbol.species]: what split's SpeciesConstructor reads.
+        if (realm->regexp_proto_intact && realm->watched_regexp_ctor && target == realm->watched_regexp_ctor && key == "Symbol.species") realm->regexp_proto_intact = false;
         // Promise.prototype.constructor (species_constructor's first read) or
         // Promise[Symbol.species] (its second, an accessor call) redefined.
         if (realm->promise_species_intact &&
@@ -1471,9 +1473,11 @@ Object::ProtectorInitScope::~ProtectorInitScope() {
 bool Object::array_iterator_protector_intact() { return g_array_iterator_intact; }
 bool Object::regexp_proto_protector_intact() { return current_realm().regexp_proto_intact; }
 Object* Object::watched_regexp_prototype() { return current_realm().watched_regexp_proto; }
-void Object::watch_regexp_prototype(Object* proto) {
+void Object::watch_regexp_prototype(Object* proto, Object* ctor) {
     Realm& realm = current_realm();
     realm.watched_regexp_proto = proto;
+    realm.watched_regexp_ctor = ctor;
+    if (ctor) watch_filter_add(ctor);
     realm.regexp_proto_intact = proto != nullptr;
     watch_filter_add(proto);
     static const char* const kSymbols[5] = {"Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split"};
@@ -2720,7 +2724,20 @@ bool Object::add_default_data_property(const std::string& key, const Value& valu
 
 void Object::init_regexp_last_index(const Value& value) {
     Collector::write_barrier(this);
+    // Every fresh RegExp goes through the same transition (from the shape a new one starts with to the one that holds lastIndex): remembered once, so the
+    // later ones skip the hashed lookup of the key and the building of its name.
+    static thread_local Shape* from = nullptr;
+    static thread_local Shape* after = nullptr;
+    if (from && after && shape_ == from) {
+        add_shape_property_cached("lastIndex", value, after);
+        return;
+    }
+    Shape* before = shape_;
     store_in_overflow("lastIndex", value);
+    if (before && shape_ && shape_ != before && has_shape_slot("lastIndex") && !descriptors()) {
+        from = before;
+        after = shape_;
+    }
 }
 
 void Object::materialize_regexp_last_index() const {

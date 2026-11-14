@@ -368,7 +368,7 @@ static bool regexp_has_shortcut_override(Object* r) {
     static const char* const kNames[] = {
         "exec", "flags", "hasIndices", "global", "ignoreCase",
         "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
-        "Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split",
+        "Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split", "constructor",
     };
     for (const char* n : kNames) {
         if (r->has_own_property(n)) return true;
@@ -907,6 +907,24 @@ void register_regexp_builtins(Context& ctx) {
             if (arg0_m.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
             else if (arg0_m.is_object() || arg0_m.is_function()) { str = arg0_m.to_property_key(); if (ctx.has_exception()) return Value(); }
             else { str = arg0_m.to_string(); }
+            // An ordinary global pattern: the matches are the pattern's own, and nothing in between can be observed (no exec to replace, no flags to read).
+            if (Object::regexp_proto_protector_intact() && this_obj->get_prototype() == Object::watched_regexp_prototype() && !regexp_has_shortcut_override(this_obj)) {
+                if (RegExpObject* reo = RegExpObject::from(this_obj); reo && reo->impl() && reo->impl()->get_global() && !reo->impl()->get_sticky()) {
+                    bool li_ok = regexp_set_last_index(this_obj, 0.0);
+                    if (ctx.has_exception()) return Value();
+                    if (!li_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
+                    std::vector<std::string> texts;
+                    if (reo->impl()->match_all_texts(str, texts)) {
+                        if (texts.empty()) return Value::null();
+                        auto fast_array = ObjectFactory::create_array();
+                        Engine::fixup_new_array_realm(fast_array.get(), regexp_realm_hint(this_obj));
+                        uint32_t n = 0;
+                        for (const std::string& t : texts) fast_array->set_element(n++, Value(t));
+                        fast_array->set_length(n);
+                        return Value(fast_array.release());
+                    }
+                }
+            }
             // Spec step 4: Let flags = ToString(Get(rx, "flags"))
             Value flags_v = this_obj->get_property("flags");
             if (ctx.has_exception()) return Value();
@@ -1404,6 +1422,32 @@ void register_regexp_builtins(Context& ctx) {
             if (arg0_sp.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
             else if (arg0_sp.is_object() || arg0_sp.is_function()) { str = arg0_sp.to_property_key(); if (ctx.has_exception()) return Value(); }
             else { str = arg0_sp.to_string(); }
+            // An ordinary pattern (the prototype the engine's, none of the watched entries shadowed, %RegExp%[Symbol.species] and RegExp.prototype.constructor as they were made):
+            // flags, the species constructor and the splitter it would build say nothing the pattern itself does not, and the pieces are the ones the pattern's own split makes.
+            if (!str.empty() && Object::regexp_proto_protector_intact() && this_obj->get_prototype() == Object::watched_regexp_prototype() &&
+                !regexp_has_shortcut_override(this_obj)) {
+                RegExpObject* reo = RegExpObject::from(this_obj);
+                const Value limit_fast = args.size() > 1 ? args[1] : Value();
+                if (reo && reo->impl() && (limit_fast.is_undefined() || limit_fast.is_number())) {      // (a limit with a valueOf is read once, by the general path)
+                    uint32_t lim_fast;
+                    if (limit_fast.is_undefined()) lim_fast = 0xFFFFFFFFu;
+                    else {
+                        double lim_d = limit_fast.to_number();
+                        if (ctx.has_exception()) return Value();
+                        if (std::isnan(lim_d) || std::isinf(lim_d)) lim_fast = 0;
+                        else { double m = std::fmod(std::trunc(lim_d), 4294967296.0); if (m < 0) m += 4294967296.0; lim_fast = static_cast<uint32_t>(m); }
+                    }
+                    std::vector<RegExp::SplitPiece> pieces;
+                    if (lim_fast != 0 && reo->impl()->split_all(str, lim_fast, pieces)) {
+                        auto result_fast = ObjectFactory::create_array();
+                        Engine::fixup_new_array_realm(result_fast.get(), regexp_realm_hint(this_obj));
+                        uint32_t n = 0;
+                        for (const RegExp::SplitPiece& piece : pieces) result_fast->set_element(n++, piece.undefined ? Value() : Value(piece.text));
+                        result_fast->set_length(n);
+                        return Value(result_fast.release());
+                    }
+                }
+            }
             // Step 5: flags = ToString(Get(rx, "flags"))
             Value flags_v = this_obj->get_property("flags");
             if (ctx.has_exception()) return Value();
@@ -1746,7 +1790,7 @@ void register_regexp_builtins(Context& ctx) {
 
     // Armed only now: every set_property above would otherwise have cleared it
     // on the way in. See Object::regexp_proto_protector_intact.
-    Object::watch_regexp_prototype(regexp_prototype.get());
+    Object::watch_regexp_prototype(regexp_prototype.get(), regexp_constructor.get());
     *regexp_constructor_slot = regexp_constructor.get();
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()), PropertyAttributes::None);
 

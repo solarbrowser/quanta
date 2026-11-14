@@ -148,7 +148,7 @@ public:
     // to watch, since only that one's entries matter.
     static bool regexp_proto_protector_intact();
     static Object* watched_regexp_prototype();
-    static void watch_regexp_prototype(Object* proto);
+    static void watch_regexp_prototype(Object* proto, Object* ctor = nullptr);
     // The method the watched prototype holds under Symbol.match (0), matchAll (1), replace (2), search (3) or split (4) -- valid while the protector holds; null if none.
     static Object* watched_regexp_symbol_method(int which);
     // Same idea for SpeciesConstructor(promise, %Promise%): true while

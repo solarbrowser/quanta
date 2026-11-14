@@ -42,6 +42,7 @@ void Realm::trace(Visitor& v) const {
     v.visit_object(finalization_registry_proto);
     v.visit_object(watched_array_iterator_proto);
     v.visit_object(watched_regexp_proto);
+    v.visit_object(watched_regexp_ctor);
     for (Object* m : regexp_symbol_methods) v.visit_object(m);
     v.visit_object(watched_promise_proto);
     v.visit_object(watched_promise_ctor);
