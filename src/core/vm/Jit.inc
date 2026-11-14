@@ -285,8 +285,9 @@ inline void print() {
     std::fprintf(stderr, "[prof] samples=%u in generated code=%u (%.1f%%) idle=%u\n", g_total, g_total_jit, g_total ? 100.0 * g_total_jit / g_total : 0.0, g_idle);
     for (size_t i = 0; i < order.size() && i < 30; i++) {
         const Slot& sl = *order[i];
-        std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
-                     sl.jit, sl.interp, sl.bytes, sl.entry, sl.name);
+        const FunctionExecutable* pe = sl.fn->get_executable().get();
+        std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  chunk=%p  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
+                     sl.jit, sl.interp, sl.bytes, sl.entry, pe ? static_cast<const void*>(pe->bytecode_chunk.get()) : nullptr, sl.name);
     }
 }
 }  // namespace prof

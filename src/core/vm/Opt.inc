@@ -100,6 +100,8 @@ enum class K : uint8_t {
     AddI, SubI, MulI,     // I32 a, b -> I32; deopt when the result leaves the int32 range (MulI: or is a negative zero)
     CheckI32,             // Tagged -> I32, deopt unless a number whose value is an int32 and not a negative zero
     CmpI,                 // I32 a, I32 b -> Bool; aux: 0 <, 1 >, 2 <=, 3 >=, 4 ==, 5 !=
+    NewArray,             // Tagged: a fresh array with room for aux elements (an array literal), or deopt
+    DefineElem,           // Tagged a, Tagged b: the element of index aux of the array literal a, appended; deopt (before doing anything) when it is not the next one
 };
 
 struct Node {
@@ -229,7 +231,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "DefineElem"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -242,7 +244,7 @@ inline bool is_pure_removable(K k) {
     case K::CheckNum: case K::ToI32: case K::NotTdz:      // guards stay even when their value is unused
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
-    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32:
+    case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem:
         return false;
     default: return true;
     }
@@ -1268,6 +1270,12 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
                 (pe.from_descriptor ? pe.desc_epoch == Object::descriptor_epoch() : pe.holder != nullptr))
                 inh = &pe;
         }
+        // A property the receiver and its chain do not have (reading it is undefined): the same facts as an inherited one, without a holder.
+        const FeedbackBody::ProtoEntry* absent = nullptr;
+        if (!own && !array_len && !inh && fb.count == 0 && !fb.mega && !fb.proto_mega && fb.proto_count == 1) {
+            const FeedbackBody::ProtoEntry& pe = fb.proto_entries[0];
+            if (pe.absent && !pe.is_getter && !pe.is_setter && pe.receiver_word && pe.prototype && pe.proto_epoch == Object::proto_epoch()) absent = &pe;
+        }
         if (config().log && !own && !array_len && !inh && fb.count == 0 && fb.proto_count >= 1) {
             const FeedbackBody::ProtoEntry& pe = fb.proto_entries[0];
             std::fprintf(stderr, "[opt]   proto entry: getter=%d absent=%d setter=%d recv=%d proto=%d epoch_ok=%d (entry %llu now %llu) desc=%d holder=%d mega=%d\n", pe.is_getter, pe.absent, pe.is_setter,
@@ -1297,6 +1305,17 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             const int32_t v = const_of(fb.prim_value);
             set(acc(), v);
             if (fused) set(dst, v);
+            return true;
+        }
+        if (absent) {
+            if (!object_value(value(rcv))) return false;
+            const int32_t aobj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, (absent->receiver_word & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function) ? 3 : 0);
+            guarded(K::CheckShape, Rep::None, aobj, -1, 0, absent->receiver_word);
+            guarded(K::CheckProto, Rep::None, aobj, -1, 0, reinterpret_cast<uint64_t>(absent->prototype));
+            epoch_guard(0, absent->proto_epoch);
+            const int32_t av = const_of(Value());
+            set(acc(), av);
+            if (fused) set(dst, av);
             return true;
         }
         if (!own && !array_len && !inh) return false;
@@ -1453,6 +1472,26 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         const auto* ic = F().chunk->ic_feedback.get();
         if (!ic || ti >= ic->literal_templates.size() || !ic->literal_templates[ti].shape) return false;
         set(acc(), guarded(K::NewLiteral, Rep::Tagged, -1, -1, 0, reinterpret_cast<uint64_t>(&ic->literal_templates[ti])));
+        return true;
+    }
+    case Op::CreateArray: {
+        const uint32_t n = u16(pc + 1);
+        if (n > 64) return false;
+        set(acc(), guarded(K::NewArray, Rep::Tagged, -1, -1, n));
+        return true;
+    }
+    case Op::DefineElement: {
+        // An element of an array literal, at an index the code made out of a constant: appended where the array stands.
+        const uint32_t rcv = reg(pc + 1), kreg = reg(pc + 2);
+        if (!ok_reg(rcv) || !ok_reg(kreg) || !object_value(value(rcv))) return false;
+        const Node& kn = g_.n[resolve(value(kreg))];
+        if (kn.op != K::ConstF64) return false;
+        double d;
+        std::memcpy(&d, &kn.imm, 8);
+        if (!(d >= 0 && d < 65536 && d == std::floor(d))) return false;
+        const int32_t obj = tagged(value(rcv));
+        const int32_t val = tagged(value(acc()));
+        guarded(K::DefineElem, Rep::None, obj, val, static_cast<uint32_t>(d));
         return true;
     }
     case Op::DefineOwn: {
@@ -3303,7 +3342,7 @@ inline void Builder::cse() {
     };
     auto breaks_memory = [](K op) {
         return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreReg || op == K::StoreAcc ||
-               op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::StoreTyped;
+               op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::StoreTyped || op == K::DefineElem;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
     std::vector<Frame2> stack;
@@ -3698,6 +3737,29 @@ inline QUANTA_JIT_ABI uint64_t helper_new_literal(const BytecodeChunk::IcFeedbac
     uint64_t bits;
     std::memcpy(&bits, &r, 8);
     return bits;
+}
+// An array literal's array, as Op::CreateArray makes it.
+inline QUANTA_JIT_ABI uint64_t helper_new_array(uint64_t n, Context* ctx) noexcept {
+    auto arr = ObjectFactory::create_array_with_room(static_cast<uint32_t>(n));
+    if (n) {
+        arr->set_length(static_cast<uint32_t>(n));
+        arr->reserve_elements(static_cast<uint32_t>(n));
+    }
+    Engine::fixup_new_array_realm(arr.get(), ctx);
+    const Value r(arr.release());
+    uint64_t bits;
+    std::memcpy(&bits, &r, 8);
+    return bits;
+}
+// Op::DefineElement's fast case: the next element of an array that is plain. 0, with nothing done, for anything else.
+inline QUANTA_JIT_ABI uint64_t helper_define_elem(uint64_t obj_bits, uint64_t index, uint64_t val_bits) noexcept {
+    Value ov, v;
+    std::memcpy(&ov, &obj_bits, 8);
+    std::memcpy(&v, &val_bits, 8);
+    if (!ov.is_object()) return 0;
+    Object* obj = ov.as_object();
+    if (obj->get_type() != Object::ObjectType::Array || !obj->is_extensible() || obj->has_index_descriptor() || index != obj->element_count()) return 0;
+    return obj->store_dense_element(static_cast<uint32_t>(index), v) ? 1 : 0;
 }
 inline QUANTA_JIT_ABI void helper_barrier(Object* obj) noexcept { Collector::write_barrier(obj); }
 // An array the unit meets that nobody has asked about yet (a fresh one: its dense flag is set by the first indexed access of the interpreter, which a unit
@@ -4840,6 +4902,38 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg d = def_g(id, RAX);
         if (d != RAX) a_.mov(d, RAX);
         commit_g(id, d);
+        return;
+    }
+    case K::NewArray: {
+        Label& dl = deopt_label(n.state);
+        int32_t bytes;
+        save_live(bytes);
+        a_.mov_imm64(abi::A0, n.aux);
+        a_.mov_load(abi::A1, mem(RBX, static_cast<int32_t>(kOffCtx)));
+        call_c(reinterpret_cast<const void*>(&helper_new_array));
+        restore_live(bytes);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::DefineElem: {
+        Label& dl = deopt_label(n.state);
+        const Reg o = use_g(n.a, RAX);
+        const Reg v = use_g(n.b, RDX);
+        int32_t bytes;
+        save_live(bytes);
+        a_.push(o);
+        a_.push(v);
+        a_.pop(abi::A2);
+        a_.pop(abi::A0);
+        a_.mov_imm64(abi::A1, n.aux);
+        call_c(reinterpret_cast<const void*>(&helper_define_elem));
+        restore_live(bytes);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
         return;
     }
     case K::CheckNotNullish: {
