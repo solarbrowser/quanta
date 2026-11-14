@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/RegExp.h"
+#include "quanta/core/engine/builtins/RegExpBuiltin.h"
 #include "quanta/core/runtime/String.h"
 #include <cmath>
 #include <limits>
@@ -487,7 +488,7 @@ void register_string_builtins(Context& ctx) {
                 Object* arg_obj = args[0].is_function()
                     ? static_cast<Object*>(args[0].as_function())
                     : args[0].as_object();
-                Value sym_match = arg_obj->get_property("Symbol.match");
+                Value sym_match = regexp_symbol_method(arg_obj, 0, "Symbol.match");
                 if (ctx.has_exception()) return Value();
                 if (sym_match.is_undefined()) {
                     // No Symbol.match property - check if it's a RegExp
@@ -545,7 +546,7 @@ void register_string_builtins(Context& ctx) {
                 Object* arg_obj = args[0].is_function()
                     ? static_cast<Object*>(args[0].as_function())
                     : args[0].as_object();
-                Value sym_match = arg_obj->get_property("Symbol.match");
+                Value sym_match = regexp_symbol_method(arg_obj, 0, "Symbol.match");
                 if (ctx.has_exception()) return Value();
                 if (sym_match.is_undefined()) {
                     if (arg_obj->get_type() == Object::ObjectType::RegExp) {
@@ -609,7 +610,7 @@ void register_string_builtins(Context& ctx) {
                 Object* arg_obj = args[0].is_function()
                     ? static_cast<Object*>(args[0].as_function())
                     : args[0].as_object();
-                Value sym_match = arg_obj->get_property("Symbol.match");
+                Value sym_match = regexp_symbol_method(arg_obj, 0, "Symbol.match");
                 if (ctx.has_exception()) return Value();
                 if (sym_match.is_undefined()) {
                     if (arg_obj->get_type() == Object::ObjectType::RegExp) {
@@ -668,7 +669,7 @@ void register_string_builtins(Context& ctx) {
                 Object* regexp_obj = regexp.is_function() ? static_cast<Object*>(regexp.as_function())
                     : (regexp.is_object() ? regexp.as_object() : nullptr);
                 if (regexp_obj) {
-                    Value matcher = regexp_obj->get_property("Symbol.match");
+                    Value matcher = regexp_symbol_method(regexp_obj, 0, "Symbol.match");
                     if (ctx.has_exception()) return Value();
                     if (!matcher.is_null() && !matcher.is_undefined()) {
                         if (!matcher.is_function()) { ctx.throw_type_error("Symbol.match is not a function"); return Value(); }
@@ -690,7 +691,7 @@ void register_string_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
             Object* rx_obj = rx.is_function() ? static_cast<Object*>(rx.as_function()) : (rx.is_object() ? rx.as_object() : nullptr);
             if (!rx_obj) { ctx.throw_type_error("RegExpCreate did not return an object"); return Value(); }
-            Value match_method = rx_obj->get_property("Symbol.match");
+            Value match_method = regexp_symbol_method(rx_obj, 0, "Symbol.match");
             if (ctx.has_exception()) return Value();
             if (!match_method.is_function()) { ctx.throw_type_error("RegExp.prototype[Symbol.match] is not a function"); return Value(); }
             return match_method.as_function()->call(ctx, {Value(str)}, rx);
@@ -761,7 +762,7 @@ void register_string_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
             Object* rx_obj = rx.is_function() ? static_cast<Object*>(rx.as_function()) : (rx.is_object() ? rx.as_object() : nullptr);
             if (!rx_obj) { ctx.throw_type_error("RegExpCreate did not return an object"); return Value(); }
-            Value rx_matchAll = rx_obj->get_property("Symbol.matchAll");
+            Value rx_matchAll = regexp_symbol_method(rx_obj, 1, "Symbol.matchAll");
             if (ctx.has_exception()) return Value();
             if (rx_matchAll.is_function()) {
                 return rx_matchAll.as_function()->call(ctx, {Value(str)}, rx);
@@ -791,7 +792,7 @@ void register_string_builtins(Context& ctx) {
                 Object* regexp_obj = regexp.is_function() ? static_cast<Object*>(regexp.as_function())
                     : (regexp.is_object() ? regexp.as_object() : nullptr);
                 if (regexp_obj) {
-                    Value searcher = regexp_obj->get_property("Symbol.search");
+                    Value searcher = regexp_symbol_method(regexp_obj, 3, "Symbol.search");
                     if (ctx.has_exception()) return Value();
                     if (searcher.is_function()) {
                         return searcher.as_function()->call(ctx, {this_value}, regexp);
@@ -810,7 +811,7 @@ void register_string_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
             Object* rx_obj = rx.is_function() ? static_cast<Object*>(rx.as_function()) : (rx.is_object() ? rx.as_object() : nullptr);
             if (!rx_obj) { ctx.throw_type_error("RegExpCreate did not return an object"); return Value(); }
-            Value search_method = rx_obj->get_property("Symbol.search");
+            Value search_method = regexp_symbol_method(rx_obj, 3, "Symbol.search");
             if (ctx.has_exception()) return Value();
             if (!search_method.is_function()) { ctx.throw_type_error("RegExp.prototype[Symbol.search] is not a function"); return Value(); }
             return search_method.as_function()->call(ctx, {Value(str)}, rx);
@@ -832,7 +833,7 @@ void register_string_builtins(Context& ctx) {
                 Object* sv_obj = search_value.is_function() ? static_cast<Object*>(search_value.as_function())
                     : (search_value.is_object() ? search_value.as_object() : nullptr);
                 if (sv_obj) {
-                    Value replacer = sv_obj->get_property("Symbol.replace");
+                    Value replacer = regexp_symbol_method(sv_obj, 2, "Symbol.replace");
                     if (ctx.has_exception()) return Value();
                     if (!replacer.is_null() && !replacer.is_undefined()) {
                         if (!replacer.is_function()) { ctx.throw_type_error("Symbol.replace is not a function"); return Value(); }
@@ -930,7 +931,7 @@ void register_string_builtins(Context& ctx) {
                     // Object.cpp's own-undefined-property fix ensures explicit Symbol.replace=undefined
                     // won't find the prototype method, so this correctly skips delegation for those.
                     Value this_raw = receiver;
-                    Value replacer = sv_obj->get_property("Symbol.replace");
+                    Value replacer = regexp_symbol_method(sv_obj, 2, "Symbol.replace");
                     if (ctx.has_exception()) return Value();
                     if (!replacer.is_null() && !replacer.is_undefined()) {
                         if (!replacer.is_function()) { ctx.throw_type_error("Symbol.replace is not a function"); return Value(); }
@@ -1271,7 +1272,7 @@ void register_string_builtins(Context& ctx) {
                 Object* sep_obj = separator.is_function() ? static_cast<Object*>(separator.as_function())
                     : (separator.is_object() ? separator.as_object() : nullptr);
                 if (sep_obj) {
-                    Value splitter = sep_obj->get_property("Symbol.split");
+                    Value splitter = regexp_symbol_method(sep_obj, 4, "Symbol.split");
                     if (ctx.has_exception()) return Value();
                     if (!splitter.is_null() && !splitter.is_undefined()) {
                         if (!splitter.is_function()) { ctx.throw_type_error("Symbol.split is not a function"); return Value(); }
@@ -1308,7 +1309,7 @@ void register_string_builtins(Context& ctx) {
             // delegate to RegExp.prototype[Symbol.split] to get correct Unicode/flag handling.
             if (separator.is_object() || separator.is_function()) {
                 Object* sep_obj = separator.is_function() ? static_cast<Object*>(separator.as_function()) : separator.as_object();
-                Value split_method = sep_obj->get_property("Symbol.split");
+                Value split_method = regexp_symbol_method(sep_obj, 4, "Symbol.split");
                 if (ctx.has_exception()) return Value();
                 if (split_method.is_function()) {
                     return split_method.as_function()->call(ctx, {this_value, limit_val}, separator);
@@ -2183,7 +2184,7 @@ void register_string_builtins(Context& ctx) {
                         Object* arg_obj = args[0].is_function()
                             ? static_cast<Object*>(args[0].as_function())
                             : args[0].as_object();
-                        Value sym_match = arg_obj->get_property("Symbol.match");
+                        Value sym_match = regexp_symbol_method(arg_obj, 0, "Symbol.match");
                         if (ctx.has_exception()) return Value();
                         if (sym_match.is_undefined()) {
                             if (arg_obj->get_type() == Object::ObjectType::RegExp) {

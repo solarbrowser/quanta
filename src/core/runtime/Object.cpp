@@ -1429,6 +1429,7 @@ void note_watched_write(const Object* target, const std::string& key) {
             static const char* const kWatched[] = {
                 "exec", "flags", "hasIndices", "global", "ignoreCase",
                 "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
+                "Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split",
             };
             for (const char* w : kWatched) {
                 if (key == w) { realm->regexp_proto_intact = false; break; }
@@ -1475,7 +1476,17 @@ void Object::watch_regexp_prototype(Object* proto) {
     realm.watched_regexp_proto = proto;
     realm.regexp_proto_intact = proto != nullptr;
     watch_filter_add(proto);
+    static const char* const kSymbols[5] = {"Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split"};
+    for (int i = 0; i < 5; i++) {
+        Object* m = nullptr;
+        if (proto) {
+            const Value v = proto->get_property(kSymbols[i]);
+            if (v.is_function()) m = v.as_function();
+        }
+        realm.regexp_symbol_methods[i] = m;
+    }
 }
+Object* Object::watched_regexp_symbol_method(int which) { return current_realm().regexp_symbol_methods[which]; }
 void Object::watch_array_iterator_prototype(Object* proto) {
     current_realm().watched_array_iterator_proto = proto;
     watch_filter_add(proto);

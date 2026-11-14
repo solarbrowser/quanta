@@ -368,12 +368,22 @@ static bool regexp_has_shortcut_override(Object* r) {
     static const char* const kNames[] = {
         "exec", "flags", "hasIndices", "global", "ignoreCase",
         "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
+        "Symbol.match", "Symbol.matchAll", "Symbol.replace", "Symbol.search", "Symbol.split",
     };
     for (const char* n : kNames) {
         if (r->has_own_property(n)) return true;
     }
     if (s) g_regexp_no_override_shape = s;
     return false;
+}
+
+// `obj[Symbol.<name>]` as a String method reads it: for a pattern whose prototype is the engine's, with none of the watched entries shadowed anywhere reachable, the
+// method is the one the prototype was armed with (no lookup by name); anything else is read as before. `which`: 0 match, 1 matchAll, 2 replace, 3 search, 4 split.
+Value regexp_symbol_method(Object* obj, int which, const char* key) {
+    if (Object::regexp_proto_protector_intact() && obj->get_prototype() == Object::watched_regexp_prototype() && !regexp_has_shortcut_override(obj)) {
+        if (Object* m = Object::watched_regexp_symbol_method(which)) return Value(static_cast<Function*>(static_cast<Object*>(m)));
+    }
+    return obj->get_property(key);
 }
 
 // A match result RegExp::exec built (index, then input, then groups added
@@ -848,7 +858,11 @@ void register_regexp_builtins(Context& ctx) {
             }
             if (arg0_t.is_object() || arg0_t.is_function()) { owned_t = arg0_t.to_property_key(); if (ctx.has_exception()) return Value(); }
             else if (!cell_t) { owned_t = arg0_t.to_string(); }
-            Value exec_fn = this_obj->get_property("exec");
+            // A real RegExp whose prototype is the engine's, with none of exec/flags/the flag accessors shadowed anywhere reachable, finds the built-in exec:
+            // the property is not read (a prototype-chain walk by name, once per call).
+            const bool pristine = Object::regexp_proto_protector_intact() && this_obj->get_prototype() == Object::watched_regexp_prototype() &&
+                                  !regexp_has_shortcut_override(this_obj);
+            Value exec_fn = pristine ? Value(static_cast<Function*>(builtin_regexp_exec)) : this_obj->get_property("exec");
             // Whitelist: a real RegExp still carrying the built-in exec. A
             // replaced exec has to be CALLED, and its result is observable, so
             // everything else keeps the path it always had.

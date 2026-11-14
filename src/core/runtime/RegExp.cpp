@@ -2774,7 +2774,10 @@ constexpr uint32_t kSubjectAlreadyChecked = PCRE2_NO_UTF_CHECK;
 int run_match(pcre2_code* re, PCRE2_SPTR subject, size_t length, size_t start,
               uint32_t options, pcre2_match_data* md, bool& exhausted) {
     pcre2_match_context* mc = match_context();
-    int rc = pcre2_match(re, subject, length, static_cast<PCRE2_SIZE>(start), options, md, mc);
+    // The JIT's own entry, which pcre2_match reaches after its checks of the options and the subject (the subject here has been checked already): a program that was
+    // not JIT-compiled says so (BADOPTION) and goes the ordinary way.
+    int rc = pcre2_jit_match(re, subject, length, static_cast<PCRE2_SIZE>(start), options & ~PCRE2_NO_JIT, md, mc);
+    if (rc == PCRE2_ERROR_JIT_BADOPTION) rc = pcre2_match(re, subject, length, static_cast<PCRE2_SIZE>(start), options, md, mc);
     if (rc == PCRE2_ERROR_JIT_STACKLIMIT) {
         // The interpreter has no fixed stack to run out of.
         rc = pcre2_match(re, subject, length, static_cast<PCRE2_SIZE>(start),
@@ -2925,6 +2928,12 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
         sanitize_utf16_surrogates(sanitized);
     }
     std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
+    // One byte to a unit (an ASCII subject): the pieces between the matches are copied from the bytes, not through UTF-16.
+    const bool bytes_are_units = sanitized.empty() && str.size() == orig.size();
+    auto append_piece = [&](size_t from, size_t to) {
+        if (bytes_are_units) out.append(str, from, to - from);
+        else out += utf16_to_wtf8(orig.data() + from, to - from);
+    };
 
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = static_cast<pcre2_match_data*>(ensure_match_data());
@@ -2941,7 +2950,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
         PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
         const size_t ms = ov[0], me = ov[1];
         last_match_pairs.assign(ov, ov + pcre2_get_ovector_count(md) * 2);
-        out += utf16_to_wtf8(orig.data() + copied, ms - copied);
+        append_piece(copied, ms);
         out += replacement;
         copied = me;
         if (me != ms) {
@@ -2958,7 +2967,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
             pos++;
         }
     }
-    out += utf16_to_wtf8(orig.data() + copied, orig.size() - copied);
+    append_piece(copied, orig.size());
     if (!last_match_pairs.empty()) note_legacy_match(str, nullptr, last_match_pairs.data(), last_match_pairs.size() / 2);
     // The general path leaves it here too: the exec that finally fails resets it.
     last_index_ = 0;
@@ -2978,6 +2987,8 @@ bool RegExp::split_all(const std::string& str, uint32_t lim, std::vector<SplitPi
         sanitize_utf16_surrogates(sanitized);
     }
     std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
+    const bool bytes_are_units = sanitized.empty() && str.size() == orig.size();      // (an ASCII subject: the pieces are cut from the bytes)
+    auto cut = [&](size_t from, size_t to) -> std::string { return bytes_are_units ? str.substr(from, to - from) : utf16_to_wtf8(orig.data() + from, to - from); };
     const size_t size = subject.size();
     if (size == 0) return false;
     pcre2_code* re = static_cast<pcre2_code*>(code_);
@@ -3006,19 +3017,19 @@ bool RegExp::split_all(const std::string& str, uint32_t lim, std::vector<SplitPi
         const size_t e = std::min<size_t>(ov[1], size);
         last_match_pairs.assign(ov, ov + pcre2_get_ovector_count(md) * 2);
         if (e == p) { q = advance(ms); continue; }  // an empty match where the last piece ended
-        pieces.push_back({utf16_to_wtf8(orig.data() + p, ms - p), false});
+        pieces.push_back({cut(p, ms), false});
         if (pieces.size() == lim) { last_index_ = 0; record(); return true; }
         p = e;
         const uint32_t ncap = pcre2_get_ovector_count(md) - 1;
         for (uint32_t ci = 1; ci <= ncap; ci++) {
             const size_t cs = ov[2 * ci], ce = ov[2 * ci + 1];
             if (cs == PCRE2_UNSET || ce == PCRE2_UNSET) pieces.push_back({std::string(), true});
-            else pieces.push_back({utf16_to_wtf8(orig.data() + cs, ce - cs), false});
+            else pieces.push_back({cut(cs, ce), false});
             if (pieces.size() == lim) { last_index_ = 0; record(); return true; }
         }
         q = p;
     }
-    pieces.push_back({utf16_to_wtf8(orig.data() + p, size - p), false});
+    pieces.push_back({cut(p, size), false});
     last_index_ = 0;
     record();
     return true;
@@ -3118,12 +3129,38 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
     auto slice = [&](size_t from, size_t to) -> std::string {
         return utf16_to_wtf8(orig.data() + from, to - from);
     };
+    // The text of a capture as a string value. An ASCII subject's code units are its bytes, so the piece is made from them directly, without going through UTF-16
+    // and a temporary std::string.
+    const bool ascii_subject = cell && !subject_is_sanitized && cell->is_ascii() && cell->str().size() == orig.size();
+    auto piece = [&](size_t from, size_t to) -> Value {
+        if (ascii_subject) {
+            if (String* flat = String::make_flat(cell->str().data() + from, to - from)) return Value(flat);
+            return Value(String::make_slice(const_cast<String*>(cell), from, to - from));
+        }
+        return Value(slice(from, to));
+    };
 
     // ArrayCreate(n): the match result is a genuine Array (RegExpBuiltinExec step 24), not a plain object.
-    auto result_owner = ObjectFactory::create_array(capture_count + 1);
+    // The elements are made first and put in all at once (the array is new: nothing about it needs asking per element); on the native stack, where the collector
+    // sees them while the others are made.
+    constexpr uint32_t kMaxBulk = 24;
+    const bool bulk = capture_count < kMaxBulk;
+    Value bulk_values[kMaxBulk];
+    std::unique_ptr<Object> result_owner;
+    if (bulk) {
+        bulk_values[0] = piece(match_start, match_end);
+        for (uint32_t i = 1; i <= capture_count; ++i)
+            bulk_values[i] = saved[2 * i] == PCRE2_UNSET ? Value() : piece(saved[2 * i], saved[2 * i + 1]);
+        result_owner = ObjectFactory::create_array_with_room(capture_count + 1);
+        result_owner->set_length(capture_count + 1);
+        result_owner->reserve_elements(capture_count + 1);
+        result_owner->fill_new_array(bulk_values, capture_count + 1);
+    } else {
+        result_owner = ObjectFactory::create_array(capture_count + 1);
+    }
     Engine::fixup_new_array_realm(result_owner.get(), realm_hint);
     Object* result = result_owner.get();
-    result->set_element(0, Value(slice(match_start, match_end)));
+    if (!bulk) result->set_element(0, Value(slice(match_start, match_end)));
     // RegExpBuiltinExec steps 25-26 are CreateDataProperty, not Set: an own data
     // property outright, with no walk up the prototype chain looking for a setter.
     // "index" then "input" transition through the same two shapes on every
@@ -3153,11 +3190,13 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
         mr_after_input = result->get_shape();
     }
 
-    for (uint32_t i = 1; i <= capture_count; ++i) {
-        if (saved[2 * i] == PCRE2_UNSET)
-            result->set_element(i, Value());
-        else
-            result->set_element(i, Value(slice(saved[2*i], saved[2*i+1])));
+    if (!bulk) {
+        for (uint32_t i = 1; i <= capture_count; ++i) {
+            if (saved[2 * i] == PCRE2_UNSET)
+                result->set_element(i, Value());
+            else
+                result->set_element(i, Value(slice(saved[2*i], saved[2*i+1])));
+        }
     }
 
     // Resolve the matched capture number for a named group (duplicates share a name).

@@ -106,6 +106,9 @@ public:
     // check which realm an object came from.
     Object* watched_array_iterator_proto = nullptr;
     Object* watched_regexp_proto = nullptr;
+    // What the watched prototype holds under Symbol.match, matchAll, replace, search and split while regexp_proto_intact: a String method given a pattern reads these
+    // from the realm instead of by name.
+    Object* regexp_symbol_methods[5] = {};
     bool regexp_proto_intact = false;
     Object* watched_promise_proto = nullptr;
     Object* watched_promise_ctor = nullptr;

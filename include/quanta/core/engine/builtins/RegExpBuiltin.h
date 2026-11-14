@@ -10,4 +10,7 @@ namespace Quanta {
 
 void register_regexp_builtins(Context& ctx);
 
+// obj[Symbol.match|matchAll|replace|search|split] (which: 0..4) without a lookup by name when obj is an ordinary pattern.
+Value regexp_symbol_method(Object* obj, int which, const char* key);
+
 } // namespace Quanta
