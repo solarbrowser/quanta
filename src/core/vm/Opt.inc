@@ -274,6 +274,7 @@ struct Avoid {
     std::set<uint32_t> nohoist;                                      // pcs of loop headers whose hoisted checks failed before entering the loop: nothing is hoisted out of those
     bool fallback_all = false;                                       // one did: every inlined call of this chunk's units is built that way (the profile was too short for this chunk's callees)
     uint32_t recompiles = 0;
+    uint32_t epoch_rebuilds = 0;                        // builds made again for a moved epoch (they do not use up the budget of those made for a failing site)
 };
 inline std::map<const BytecodeChunk*, Avoid>& avoid_table() { static std::map<const BytecodeChunk*, Avoid> t; return t; }
 
@@ -320,6 +321,7 @@ struct Config {
     bool set_transition_rt = true;    // QUANTA_OPT_SETRT=0: a store site that adds and overwrites is compiled on its first entry
     bool leaf = true;                 // QUANTA_OPT_LEAF=0: a unit that only reads is entered like any other
     bool gctor = true;                // QUANTA_OPT_GCTOR=0: a constructor of no plan is not inlined
+    uint32_t deopt_ratio = 16;        // QUANTA_OPT_DEOPT_RATIO=n: a unit is given up on once it has left more than max_deopts times AND more than one run in n
     uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
     uint32_t inline_depth = 3;
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
@@ -375,6 +377,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_PROTOPOLY")) c.proto_poly = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_SETRT")) c.set_transition_rt = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_LEAF")) c.leaf = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_DEOPT_RATIO")) c.deopt_ratio = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_GCTOR")) c.gctor = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLYINSNS")) c.poly_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INSNS")) c.inline_insns = static_cast<uint32_t>(std::atoi(e));
@@ -1882,7 +1885,7 @@ constexpr struct { const char* name; uint8_t recv; bool any_arg; uint8_t max_arg
     {"lastIndexOf", 1, false, 2}, {"slice", 3, false, 2}, {"substring", 1, false, 2}, {"substr", 1, false, 2},
     {"toLowerCase", 1, false, 0}, {"toUpperCase", 1, false, 0}, {"trim", 1, false, 0}, {"startsWith", 1, false, 2},
     {"endsWith", 1, false, 2}, {"includes", 1, false, 2}, {"fromCharCode", 8, false, 2}, {"isArray", 8, true, 1},
-    {"hasOwnProperty", 4, false, 1}, {"push", 2, false, 1}, {"pop", 2, false, 0}, {"sin", 8, false, 1}, {"cos", 8, false, 1},
+    {"hasOwnProperty", 4, false, 1}, {"push", 2, true, 1}, {"pop", 2, false, 0}, {"sin", 8, false, 1}, {"cos", 8, false, 1},
     {"tan", 8, false, 1}, {"atan", 8, false, 1}, {"atan2", 8, false, 2}, {"exp", 8, false, 1}, {"log", 8, false, 1}};
 
 inline bool Builder::generic_op(const Insn& in) {
@@ -2566,7 +2569,7 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
     } else {
         thisv = resolved ? tagged(value(this_r)) : const_of(Value());
     }
-    if (C.sloppy_this) guarded(K::CheckObj, Rep::Ptr, thisv);
+    if (C.sloppy_this) guarded(K::CheckObj, Rep::Ptr, thisv, -1, 4);      // (an object or a function: a method of a constructor's own statics is called on it)
     const int32_t undef = const_of(Value());
     const uint32_t copy = std::min<uint32_t>(C.params, argc);
     for (uint32_t i = 0; i < C.nregs; i++) set(C.var_base + i, i < copy ? value(start + i) : undef);
@@ -4005,6 +4008,8 @@ inline QUANTA_JIT_ABI uint64_t helper_call_native(VM::Frame* f, const JitCode::O
             }
         }
     }
+    // (A push that the dense case did not take is the interpreter's: its argument may be anything, and the call is not made twice.)
+    if (d->special == 2) return kNo;
     Context& ctx = *f->ctx;
     const Value r = d->fn->call_register_args(ctx, std::span<const Value>(args, d->argc), th);
     if (ctx.has_exception()) { ctx.clear_exception(); return kNo; }
@@ -6024,8 +6029,18 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg d = def_g(id, RAX);
         a_.mov(RCX, s);
         a_.shr_imm(RCX, 48);
-        a_.cmp32_imm(RCX, n.aux == 2 ? 0x7FF4 : n.aux == 3 ? 0x7FF9 : 0x7FF7);      // aux 2: a string, 3: a function
-        a_.jcc(CC_NE, deopt_label(n.state));
+        if (n.aux == 4) {
+            // An object or a function.
+            Label& ok = new_label();
+            a_.cmp32_imm(RCX, 0x7FF7);
+            a_.jcc(CC_E, ok);
+            a_.cmp32_imm(RCX, 0x7FF9);
+            a_.jcc(CC_NE, deopt_label(n.state));
+            a_.bind(ok);
+        } else {
+            a_.cmp32_imm(RCX, n.aux == 2 ? 0x7FF4 : n.aux == 3 ? 0x7FF9 : 0x7FF7);      // aux 2: a string, 3: a function
+            a_.jcc(CC_NE, deopt_label(n.state));
+        }
         if (d != s) a_.mov(d, s);
         a_.shl_imm(d, 16);
         a_.shr_imm(d, 16);

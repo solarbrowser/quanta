@@ -228,6 +228,8 @@ bool selfcheck() {
 #if defined(__linux__) && defined(__x86_64__)
 // QUANTA_PROF=1: a sampling profile of which JS functions the time goes to, and whether it was spent in generated code.
 // A debugging aid (the profile prints at exit); samples attribute to the function at the top of the call stack.
+struct FnEnterStat { uint64_t calls = 0, st3 = 0, st1 = 0, other = 0, r0 = 0, r1 = 0, r3 = 0, deep = 0; };
+inline std::unordered_map<const BytecodeChunk*, FnEnterStat>& fn_enter_stats() { static auto* m = new std::unordered_map<const BytecodeChunk*, FnEnterStat>(); return *m; }
 namespace prof {
 // Everything the report needs is copied when a function is first sampled: the collector may free it before
 // the report prints, and a signal handler can read the executable but not allocate.
@@ -288,6 +290,7 @@ inline void print() {
         const FunctionExecutable* pe = sl.fn->get_executable().get();
         std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  chunk=%p  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
                      sl.jit, sl.interp, sl.bytes, sl.entry, pe ? static_cast<const void*>(pe->bytecode_chunk.get()) : nullptr, sl.name);
+        if (pe && pe->bytecode_chunk) { auto it = fn_enter_stats().find(pe->bytecode_chunk.get()); if (it != fn_enter_stats().end()) { const FnEnterStat& q = it->second; std::fprintf(stderr, "[prof]      fn_enter: calls=%llu st3=%llu st1=%llu other=%llu deep=%llu -> r0=%llu r1=%llu r3=%llu opt_entry_now=%d\n", (unsigned long long)q.calls, (unsigned long long)q.st3, (unsigned long long)q.st1, (unsigned long long)q.other, (unsigned long long)q.deep, (unsigned long long)q.r0, (unsigned long long)q.r1, (unsigned long long)q.r3, pe->bytecode_chunk->opt_entry); } }
     }
 }
 }  // namespace prof
@@ -2999,11 +3002,12 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             if (evar != -2) evar = -1;       // (a moved epoch is no reason to stop inlining the callee: the next build reads the new one)
         }
         if (opt::config().log)
-            std::fprintf(stderr, "[opt] deoptimized at pc %u (entered at %u, chunk %p): %s%s\n", gpc, target, static_cast<const void*>(&chunk),
+            std::fprintf(stderr, "[opt] deoptimized at pc %u [%s] (entered at %u, chunk %p): %s%s\n", gpc, gpc < chunk.code.size() ? op_name(static_cast<Op>(chunk.code[gpc])) : "?", target, static_cast<const void*>(&chunk),
                          gkind ? gkind : "?", evar >= 0 ? " (loop-carried value)" : evar == -3 ? " (check taken out of a loop)" : "");
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
-        const uint64_t site = (static_cast<uint64_t>(gpc) << 16) | static_cast<uint16_t>(evar + 1);
+        // (Counted per kind of guard: a second kind of guard failing at a site that was already learned from is learned from too.)
+        const uint64_t site = (static_cast<uint64_t>(gpc) << 32) | (static_cast<uint64_t>(static_cast<uint16_t>(evar + 1)) << 16) | (lg & 0xFFFFu);
         if (!opt::config().stress && hoisted_fail && av.recompiles < opt::config().max_recompiles) {
             // A check taken out of a loop failed before the loop was entered: the next build leaves that loop's checks where they are.
             av.recompiles++;
@@ -3011,9 +3015,9 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             jc->opt_units[ui].entries.clear();
             chunk.direct = nullptr;
             refused.erase({&chunk, target});
-        } else if (!opt::config().stress && evar == -2 && av.recompiles < opt::config().max_recompiles) {
+        } else if (!opt::config().stress && evar == -2 && av.epoch_rebuilds < 4 * opt::config().max_recompiles) {
             // A global epoch moved: the next build reads the new one.
-            av.recompiles++;
+            av.epoch_rebuilds++;
             jc->opt_units[ui].entries.clear();
             chunk.direct = nullptr;
             refused.erase({&chunk, target});
@@ -3039,8 +3043,8 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             jc->opt_units[ui].entries.clear();         // the unit is dead; the next offer compiles it again
             chunk.direct = nullptr;
             refused.erase({&chunk, target});
-        } else if (++jc->opt_units[ui].deopts > opt::config().max_deopts) {
-            // A unit whose guards keep failing costs more than it saves: stop entering it.
+        } else if (++jc->opt_units[ui].deopts > opt::config().max_deopts && static_cast<uint64_t>(jc->opt_units[ui].deopts) * opt::config().deopt_ratio > rt->opt_runs) {
+            // A unit whose guards keep failing costs more than it saves: stop entering it (a unit that has run a million times and left forty is not that one).
             if (opt::config().log) std::fprintf(stderr, "[opt] giving up on the loop at pc %u\n", target);
             jc->opt_units[ui].entries.clear();
             chunk.direct = nullptr;
@@ -3232,7 +3236,17 @@ void note_unit_callee(const BytecodeChunk& chunk) {
     chunk.inline_state |= kInlineHasOpt;
 }
 
+int opt_fn_enter_inner(Frame& f);
 int opt_fn_enter(Frame& f) {
+    FnEnterStat& st = fn_enter_stats()[f.chunk];
+    st.calls++;
+    if (f.chunk->opt_entry == 3) st.st3++; else if (f.chunk->opt_entry == 1) st.st1++; else st.other++;
+    if (CallStack::established().depth() > kEntryMaxDepth) st.deep++;
+    const int r = opt_fn_enter_inner(f);
+    if (r == 0) st.r0++; else if (r == 1) st.r1++; else st.r3++;
+    return r;
+}
+int opt_fn_enter_inner(Frame& f) {
     const BytecodeChunk& chunk = *f.chunk;
     if (chunk.opt_entry == 3) {
         if (CallStack::established().depth() > kEntryMaxDepth) return 0;
