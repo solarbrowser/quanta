@@ -1172,6 +1172,12 @@ public:
     void create_import_binding(const std::string& name, const Value& target);
     void force_set_binding(const std::string& name, const Value& value);
     bool delete_binding(const std::string& name);
+    // Every binding of this scope, for the scope of a page that was left.
+    void drop_all_bindings() {
+        std::vector<std::string> names;
+        slots_.for_each([&names](const std::string& name, const BindingSlot&) { names.push_back(name); });
+        for (const std::string& name : names) slots_.erase(name);
+    }
 
     bool is_mutable_binding(const std::string& name) const;
     bool has_mutable_flag(const std::string& name) const;

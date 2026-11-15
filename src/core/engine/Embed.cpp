@@ -638,6 +638,13 @@ Context& Realm::GetContext() {
     return *engine_->get_global_context();
 }
 
+void Realm::DropGlobalState() {
+    Context& ctx = GetContext();
+    RealmScope realm_scope(ctx.realm());
+    if (Object* global = ctx.get_global_object()) global->clear_properties();
+    if (Environment* lexical = ctx.get_script_global_lexical_env()) lexical->drop_all_bindings();
+}
+
 void Realm::Run(const std::function<void()>& body) {
     HeapScope heap_scope(engine_->get_heap());
     RealmScope realm_scope(engine_->realm());
