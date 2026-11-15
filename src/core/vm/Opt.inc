@@ -1308,7 +1308,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         const bool array_len = !own && fb.array_length && fb.count == 0;
         // A property in the receiver's own descriptor map (every builtin namespace function): the receiver is known by
         // identity and the value by the descriptor epoch.
-        const bool own_desc = !own && !array_len && fb.count == 0 && fb.own_desc_receiver && fb.own_desc_epoch == Object::descriptor_epoch();
+        const bool own_desc = !own && !array_len && fb.count == 0 && fb.own_desc_receiver() && fb.own_desc_epoch() == Object::descriptor_epoch();
         // A method (or other data property) found on a prototype: the receiver's shape and prototype and the global
         // epochs are what the interpreter's entry is valid under.
         const FeedbackBody::ProtoEntry* inh = nullptr;
@@ -1369,24 +1369,24 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         if (config().log) std::fprintf(stderr, "[opt] GetNamed pc=%u fb: count=%u mega=%d accessor=%d array_length=%d proto_count=%u\n", pc, fb.count, fb.mega, fb.count ? fb.entries[0].is_accessor : -1, fb.array_length, fb.proto_count);
         if (own_desc) {
             if (!object_value(value(rcv))) return false;
-            Object* r = fb.own_desc_receiver;
+            Object* r = fb.own_desc_receiver();
             const Value rv = r->get_type() == Object::ObjectType::Function ? Value(static_cast<Function*>(r)) : Value(r);
             uint64_t rbits;
             std::memcpy(&rbits, &rv, 8);
             guarded(K::CheckBits, Rep::None, tagged(value(rcv)), -1, 0, rbits);
-            epoch_guard(1, fb.own_desc_epoch);
-            const int32_t v = const_of(fb.own_desc_value);
+            epoch_guard(1, fb.own_desc_epoch());
+            const int32_t v = const_of(fb.own_desc_value());
             set(acc(), v);
             if (fused) set(dst, v);
             return true;
         }
         // A method of String.prototype read from a string: the site has the function, valid while the descriptor epoch stands.
-        if (!own && !array_len && !inh && fb.prim_valid && !fb.prim_is_getter && fb.prim_value.is_function() &&
-            fb.prim_proto == Context::primitive_prototype(Context::PrimitiveKind::String) && fb.prim_desc_epoch == Object::descriptor_epoch()) {
+        if (!own && !array_len && !inh && fb.prim_valid() && !fb.prim_is_getter() && fb.prim_value().is_function() &&
+            fb.prim_proto() == Context::primitive_prototype(Context::PrimitiveKind::String) && fb.prim_desc_epoch() == Object::descriptor_epoch()) {
             if (!object_value(value(rcv))) return false;
             guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, 2);
-            epoch_guard(1, fb.prim_desc_epoch);
-            const int32_t v = const_of(fb.prim_value);
+            epoch_guard(1, fb.prim_desc_epoch());
+            const int32_t v = const_of(fb.prim_value());
             set(acc(), v);
             if (fused) set(dst, v);
             return true;
@@ -1598,10 +1598,10 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         const uint32_t rcv = reg(pc + 1), fbi = u16(pc + 4);
         if (!ok_reg(rcv) || fbi >= F().chunk->feedback.size()) return false;
         const FeedbackBody* fb = F().chunk->feedback[fbi].peek();
-        if (!fb || !fb->lit_shape || !object_value(value(rcv))) return false;
+        if (!fb || !fb->lit_shape() || !object_value(value(rcv))) return false;
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
-        guarded(K::CheckShape, Rep::None, obj, -1, 0, reinterpret_cast<uint64_t>(fb->lit_shape) | JitObjectLayout::kOrdinaryType);
-        emit(K::StoreSlot, Rep::None, obj, tagged(value(acc())), fb->lit_slot);
+        guarded(K::CheckShape, Rep::None, obj, -1, 0, reinterpret_cast<uint64_t>(fb->lit_shape()) | JitObjectLayout::kOrdinaryType);
+        emit(K::StoreSlot, Rep::None, obj, tagged(value(acc())), fb->lit_slot());
         return true;
     }
     case Op::JumpIfTrue: case Op::JumpIfFalse: {
@@ -2180,7 +2180,7 @@ inline bool Builder::block_is_cold(int32_t fi, int32_t blk) const {
         if (fbi >= c.feedback.size()) continue;
         const FeedbackBody* fb = c.feedback[fbi].peek();
         if (!fb) return true;
-        if (fb->count == 0 && fb->proto_count == 0 && !fb->array_length && !fb->prim_valid && !fb->own_desc_receiver &&
+        if (fb->count == 0 && fb->proto_count == 0 && !fb->array_length && !fb->prim_valid() && !fb->own_desc_receiver() &&
             !fb->mega && !fb->proto_mega && fb->transition_count == 0 && !fb->transition_mega)
             return true;
     }

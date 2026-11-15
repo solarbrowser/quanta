@@ -389,10 +389,10 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     // change and erase all move it -- so the site can point straight at it.
     // Only the lookups are skipped, not the prototype resolution above: nothing
     // guards `String.prototype` itself being reassigned.
-    if (fb && fb->prim_valid && fb->prim_proto == proto_obj &&
-        fb->prim_desc_epoch == Object::descriptor_epoch()) {
-        if (!fb->prim_is_getter) return fb->prim_value;
-        Function* getter = as_function(as_object_like(fb->prim_value));
+    if (fb && fb->prim_valid() && fb->prim_proto() == proto_obj &&
+        fb->prim_desc_epoch() == Object::descriptor_epoch()) {
+        if (!fb->prim_is_getter()) return fb->prim_value();
+        Function* getter = as_function(as_object_like(fb->prim_value()));
         return getter ? getter->call_register_args(ctx, {}, prim) : Value();
     }
 
@@ -427,11 +427,11 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
         Collector::write_barrier(owner);
         mark_owner_feedback_dirty(owner);
         if (!desc.is_accessor_descriptor()) proto_obj->note_descriptor_value_cached(name);
-        fb->prim_proto = proto_obj;
-        fb->prim_is_getter = desc.is_accessor_descriptor();
-        fb->prim_value = fb->prim_is_getter ? Value(desc.get_getter()) : desc.get_value();
-        fb->prim_desc_epoch = Object::descriptor_epoch();
-        fb->prim_valid = true;
+        fb->rare().prim_proto = proto_obj;
+        fb->rare().prim_is_getter = desc.is_accessor_descriptor();
+        fb->rare().prim_value = fb->prim_is_getter() ? Value(desc.get_getter()) : desc.get_value();
+        fb->rare().prim_desc_epoch = Object::descriptor_epoch();
+        fb->rare().prim_valid = true;
     }
     if (desc.is_accessor_descriptor()) {
         if (!desc.has_getter()) return Value();
@@ -510,6 +510,7 @@ void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bo
         }
     }
     if (fb.count < FeedbackSlot::kMaxEntries) {
+        fb.entries.ensure(fb.count);
         FeedbackBody::Entry& e = fb.entries[fb.count++];
         e.slot_index = slot_index;
         e.is_accessor = is_accessor;
@@ -969,8 +970,8 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // An own property answered out of the receiver's descriptor map, learned
     // below. Keyed on the receiver itself because that map is its own; the
     // epoch is what says the value in it has not moved since.
-    if (fb && obj == fb->own_desc_receiver && fb->own_desc_epoch == cur_epoch) {
-        return fb->own_desc_value;
+    if (fb && obj == fb->own_desc_receiver() && fb->own_desc_epoch() == cur_epoch) {
+        return fb->own_desc_value();
     }
 
     // Asked before the receiver's own descriptor is built, not after: that
@@ -1200,9 +1201,9 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 // heard: this marks the descriptor (and refreshes its copy from
                 // the slot, which the store paths skip) before the value is read.
                 obj->note_descriptor_value_cached(name);
-                learned.own_desc_receiver = obj;
-                learned.own_desc_value = obj->find_descriptor_override(name)->get_value();
-                learned.own_desc_epoch = Object::descriptor_epoch();
+                learned.rare().own_desc_receiver = obj;
+                learned.rare().own_desc_value = obj->find_descriptor_override(name)->get_value();
+                learned.rare().own_desc_epoch = Object::descriptor_epoch();
             }
             return desc.get_value();
         }
@@ -1361,9 +1362,9 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         mark_owner_feedback_dirty(owner);
         FeedbackBody& learned = fb_slot->ensure();
         obj->note_descriptor_value_cached(name);
-        learned.own_desc_receiver = obj;
-        learned.own_desc_value = result;
-        learned.own_desc_epoch = Object::descriptor_epoch();
+        learned.rare().own_desc_receiver = obj;
+        learned.rare().own_desc_value = result;
+        learned.rare().own_desc_epoch = Object::descriptor_epoch();
     }
     return result;
 }
@@ -8194,10 +8195,10 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
     // is a function object, and those never reach that gate at all.
     {
         const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
-        if (fb.own_desc_receiver != nullptr &&
-            fb.own_desc_epoch == Object::descriptor_epoch() &&
-            as_object_like(receiver) == fb.own_desc_receiver) {
-            acc = fb.own_desc_value;
+        if (fb.own_desc_receiver() != nullptr &&
+            fb.own_desc_epoch() == Object::descriptor_epoch() &&
+            as_object_like(receiver) == fb.own_desc_receiver()) {
+            acc = fb.own_desc_value();
             FUSED_TAIL(6);
         }
     }
@@ -8209,9 +8210,9 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
             acc = Value(static_cast<double>(receiver.as_string()->utf16_length()));
             FUSED_TAIL(6);
         }
-        if (sfb.prim_valid && !sfb.prim_is_getter && sfb.prim_desc_epoch == Object::descriptor_epoch() &&
-            sfb.prim_proto == Context::primitive_prototype(Context::PrimitiveKind::String)) {
-            acc = sfb.prim_value;
+        if (sfb.prim_valid() && !sfb.prim_is_getter() && sfb.prim_desc_epoch() == Object::descriptor_epoch() &&
+            sfb.prim_proto() == Context::primitive_prototype(Context::PrimitiveKind::String)) {
+            acc = sfb.prim_value();
             FUSED_TAIL(6);
         }
     }
@@ -8500,8 +8501,8 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
         // of them can only carry a prim entry learned from a DIFFERENT kind --
         // whose prototype then fails the identity check below.
         const FeedbackBody& fb = f.chunk->feedback[read_u16(code, pc + 4)].read();
-        if (LIKELY(fb.prim_valid && !fb.prim_is_getter &&
-                   fb.prim_desc_epoch == Object::descriptor_epoch())) {
+        if (LIKELY(fb.prim_valid() && !fb.prim_is_getter() &&
+                   fb.prim_desc_epoch() == Object::descriptor_epoch())) {
             using PK = Context::PrimitiveKind;
             PK kind = receiver.is_string()  ? PK::String
                     : receiver.is_number()  ? PK::Number
@@ -8509,8 +8510,8 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
                     : receiver.is_bigint()  ? PK::BigInt
                     : receiver.is_symbol()  ? PK::Symbol
                                             : PK::Count;
-            if (LIKELY(kind != PK::Count && Context::primitive_prototype(kind) == fb.prim_proto)) {
-                acc = fb.prim_value;
+            if (LIKELY(kind != PK::Count && Context::primitive_prototype(kind) == fb.prim_proto())) {
+                acc = fb.prim_value();
                 FUSED_TAIL(6);
             }
         }
@@ -9410,8 +9411,8 @@ QUANTA_HANDLER Value h_DefineOwnFast(HANDLER_PARAMS) {
             const FeedbackBody* fb = f.chunk->feedback[read_u16(code, pc + 4)].peek();
             // An object that already has the literal's final shape (Op::CreateObjectT made it so):
             // this property is in its slot, and the value goes there.
-            if (fb && fb->lit_shape && fb->lit_shape == obj->get_shape()) {
-                *obj->shape_slot_for_cached_index(fb->lit_slot) = acc;
+            if (fb && fb->lit_shape() && fb->lit_shape() == obj->get_shape()) {
+                *obj->shape_slot_for_cached_index(fb->lit_slot()) = acc;
                 if (UNLIKELY(store_needs_barrier(acc))) [[clang::musttail]] return h_SetNamedBarrier(f, pc, acc, regs, code);
                 pc += 6;
                 DISPATCH();
@@ -10196,8 +10197,8 @@ int learn_literal_template(const BytecodeChunk& chunk, BytecodeChunk::IcFeedback
     t.shape = prev;
     for (uint32_t i = 0; i < t.count; i++) {
         FeedbackBody* fb = chunk.feedback[t.sites[i]].peek();
-        fb->lit_shape = prev;
-        fb->lit_slot = i;
+        fb->rare().lit_shape = prev;
+        fb->rare().lit_slot = i;
     }
     return 1;
 }

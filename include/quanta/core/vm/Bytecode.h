@@ -549,7 +549,30 @@ struct FeedbackBody {
         void clear() { word = kSlow; }
     };
     static constexpr uint8_t kMaxEntries = 8;
-    std::array<Entry, kMaxEntries> entries{};
+    // The entries of a site. Nearly every site that learns anything sees one shape, a few see two, and the table that held all eight was over half of the body
+    // (128 of 240 bytes); the first two are inline, the other six are made when a third shape arrives. Indexed as the array was, below `count`.
+    class EntryTable {
+    public:
+        static constexpr uint8_t kInline = 2;
+        Entry& operator[](size_t i) { return i < kInline ? inline_[i] : more_[i - kInline]; }
+        const Entry& operator[](size_t i) const { return i < kInline ? inline_[i] : more_[i - kInline]; }
+        // Room for entry `i`: the entries past the inline pair are made two at first, and six when a fifth shape arrives.
+        void ensure(size_t i) {
+            if (i < kInline) return;
+            const size_t needed = i - kInline + 1;
+            if (needed <= more_cap_) return;
+            const uint8_t grown = needed <= 2 ? 2 : static_cast<uint8_t>(kMaxEntries - kInline);
+            auto bigger = std::make_unique<Entry[]>(grown);
+            for (uint8_t k = 0; k < more_cap_; k++) bigger[k] = more_[k];
+            more_ = std::move(bigger);
+            more_cap_ = grown;
+        }
+    private:
+        Entry inline_[kInline];
+        std::unique_ptr<Entry[]> more_;
+        uint8_t more_cap_ = 0;
+    };
+    EntryTable entries;
     uint8_t count = 0;
     bool mega = false;
     // Set the first time this site turns out to be reading an Array's length.
@@ -602,8 +625,6 @@ struct FeedbackBody {
     // DefineOwn only: set when this site is one property of an object literal whose objects are
     // made with their final shape (Op::CreateObjectT). An object that already has that shape
     // takes the value in `lit_slot` with no transition.
-    Shape* lit_shape = nullptr;
-    uint32_t lit_slot = 0;
 
     // GetNamed-only: caches reading an INHERITED (not own) data property.
     // `prototype` is the receiver's immediate get_prototype() at learn time
@@ -699,11 +720,6 @@ struct FeedbackBody {
     // way to the same value, and the result was heap corruption that ASan's
     // allocator did not reproduce. This learns from what that call returned.
     // `prim_value` and `prim_proto` are real GC cells -- see BytecodeChunk::trace.
-    Object* prim_proto = nullptr;
-    Value prim_value;
-    bool prim_is_getter = false;
-    bool prim_valid = false;
-    uint64_t prim_desc_epoch = 0;
 
     // GetNamed on an OWN property that lives in the receiver's descriptor map
     // rather than in a shape slot. Every namespace builtin is one of these --
@@ -719,9 +735,34 @@ struct FeedbackBody {
     // the value, a plain assignment included, moves that epoch.
     // `own_desc_receiver` and `own_desc_value` are real GC cells -- see
     // BytecodeChunk::trace and the barrier where this is learned.
-    Object* own_desc_receiver = nullptr;
-    Value own_desc_value;
-    uint64_t own_desc_epoch = 0;
+
+    // What only one kind of site learns and nearly no site does: the literal's final shape of a DefineOwn site, a read of a primitive's method, a read of an own property that
+    // lives in a descriptor map. The fields were in every body (72 of its 160 bytes); they are made by the first site that learns one, and read as empty until then.
+    struct Rare {
+        Shape* lit_shape = nullptr;
+        uint32_t lit_slot = 0;
+        Object* prim_proto = nullptr;
+        Value prim_value;
+        bool prim_is_getter = false;
+        bool prim_valid = false;
+        uint64_t prim_desc_epoch = 0;
+        Object* own_desc_receiver = nullptr;
+        Value own_desc_value;
+        uint64_t own_desc_epoch = 0;
+    };
+    std::unique_ptr<Rare> rare_;
+    Rare& rare() { if (!rare_) rare_ = std::make_unique<Rare>(); return *rare_; }
+    static inline const Value kNoValue{};
+    Shape* lit_shape() const { return rare_ ? rare_->lit_shape : nullptr; }
+    uint32_t lit_slot() const { return rare_ ? rare_->lit_slot : 0; }
+    Object* prim_proto() const { return rare_ ? rare_->prim_proto : nullptr; }
+    const Value& prim_value() const { return rare_ ? rare_->prim_value : kNoValue; }
+    bool prim_is_getter() const { return rare_ && rare_->prim_is_getter; }
+    bool prim_valid() const { return rare_ && rare_->prim_valid; }
+    uint64_t prim_desc_epoch() const { return rare_ ? rare_->prim_desc_epoch : 0; }
+    Object* own_desc_receiver() const { return rare_ ? rare_->own_desc_receiver : nullptr; }
+    const Value& own_desc_value() const { return rare_ ? rare_->own_desc_value : kNoValue; }
+    uint64_t own_desc_epoch() const { return rare_ ? rare_->own_desc_epoch : 0; }
 };
 
 // One cache site. Empty until the site learns something; see FeedbackBody.

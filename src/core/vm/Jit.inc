@@ -650,9 +650,9 @@ int fast_get_named_impl(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
     const uint8_t* code = f->chunk->code.data();
     const Value& receiver = f->regs[code[pc + 1]];
     const FeedbackBody& fb = f->chunk->feedback[read_u16(code, pc + 4)].read();
-    if (fb.own_desc_receiver != nullptr && fb.own_desc_epoch == Object::descriptor_epoch() &&
-        as_object_like(receiver) == fb.own_desc_receiver) {
-        f->acc = fb.own_desc_value;
+    if (fb.own_desc_receiver() != nullptr && fb.own_desc_epoch() == Object::descriptor_epoch() &&
+        as_object_like(receiver) == fb.own_desc_receiver()) {
+        f->acc = fb.own_desc_value();
         return 1;
     }
     if (receiver.is_object()) {
@@ -726,7 +726,7 @@ int fast_get_named_impl(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
             }
         }
     } else {
-        if (fb.prim_valid && !fb.prim_is_getter && fb.prim_desc_epoch == Object::descriptor_epoch()) {
+        if (fb.prim_valid() && !fb.prim_is_getter() && fb.prim_desc_epoch() == Object::descriptor_epoch()) {
             using PK = Context::PrimitiveKind;
             PK kind = receiver.is_string()  ? PK::String
                     : receiver.is_number()  ? PK::Number
@@ -734,8 +734,8 @@ int fast_get_named_impl(Frame* f, uint32_t pc, uint32_t ic_index) noexcept {
                     : receiver.is_bigint()  ? PK::BigInt
                     : receiver.is_symbol()  ? PK::Symbol
                                             : PK::Count;
-            if (kind != PK::Count && Context::primitive_prototype(kind) == fb.prim_proto) {
-                f->acc = fb.prim_value;
+            if (kind != PK::Count && Context::primitive_prototype(kind) == fb.prim_proto()) {
+                f->acc = fb.prim_value();
                 return 1;
             }
         }
@@ -880,8 +880,8 @@ QUANTA_JIT_ABI int fast_define_own(Frame* f, uint32_t pc, uint32_t) noexcept {
     const FeedbackBody* fb = f->chunk->feedback[read_u16(code, pc + 4)].peek();
     if (!fb) return 0;
     const Value& acc = f->acc;
-    if (fb->lit_shape && fb->lit_shape == obj->get_shape()) {
-        *obj->shape_slot_for_cached_index(fb->lit_slot) = acc;
+    if (fb->lit_shape() && fb->lit_shape() == obj->get_shape()) {
+        *obj->shape_slot_for_cached_index(fb->lit_slot()) = acc;
         if (store_needs_barrier(acc)) Collector::write_barrier(obj);
         return 1;
     }

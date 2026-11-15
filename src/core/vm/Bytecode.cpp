@@ -144,12 +144,12 @@ void BytecodeChunk::trace(Visitor& v) const {
         // The primitive-prototype entry holds no Value, but its descriptor
         // lives inside the prototype's own map, so the prototype has to stay
         // alive for the pointer to mean anything.
-        v.visit_object(fb.prim_proto);
-        v.visit(fb.prim_value);
+        v.visit_object(fb.prim_proto());
+        v.visit(fb.prim_value());
         // The own-descriptor entry names the receiver it was learned from and
         // caches the value out of that receiver's map, so both are references.
-        v.visit_object(fb.own_desc_receiver);
-        v.visit(fb.own_desc_value);
+        v.visit_object(fb.own_desc_receiver());
+        v.visit(fb.own_desc_value());
     }
     if (ic_feedback) {
         for (const auto& cs : ic_feedback->call_sites)
