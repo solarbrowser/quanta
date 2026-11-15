@@ -61,13 +61,13 @@ private:
     // (and several of them are saved and restored around each call), a byte is
     // one instruction -- and the exception test after every call is one compare
     // instead of a load and a bit test. Nine bytes the packing used to save.
-    bool has_exception_ = false;
+    bool has_exception_ : 1 = false;
     bool has_return_value_ : 1 = false;
     bool has_break_ : 1 = false;
     bool has_continue_ : 1 = false;
-    bool is_in_constructor_call_ = false;
-    bool super_called_ = false;
-    bool this_needs_super_ = false;  // derived class ctor: accessing 'this' before super() throws
+    bool is_in_constructor_call_ : 1 = false;
+    bool super_called_ : 1 = false;
+    bool this_needs_super_ : 1 = false;  // derived class ctor: accessing 'this' before super() throws
     // Set when a native call reused this exact context (Function.cpp's
     // is_native_ branch), or when this context was captured as a Generator's
     // outer_context_ / an AsyncFunction's Promise::context_ -- both bypass
@@ -82,15 +82,15 @@ private:
     // Set by Function::construct() right before it calls Function::call() on the same
     // function, so call() can tell "I'm the construct invocation" apart from a plain call
     // made from inside that constructor's body (which must see new.target == undefined).
-    bool pending_construct_call_ = false;
-    bool strict_mode_ = false;
+    bool pending_construct_call_ : 1 = false;
+    bool strict_mode_ : 1 = false;
     bool in_param_eval_ : 1 = false;
     bool is_direct_eval_call_ : 1 = false;
     bool eval_arguments_conflict_ : 1 = false;
-    bool is_arrow_function_context_ = false;
+    bool is_arrow_function_context_ : 1 = false;
     bool in_class_field_init_ : 1 = false;
-    bool last_construct_explicit_return_ = false;  // see last_construct_explicit_return()
-    bool last_super_override_needs_reparent_ = false;  // see last_super_override_needs_reparent()
+    bool last_construct_explicit_return_ : 1 = false;  // see last_construct_explicit_return()
+    bool last_super_override_needs_reparent_ : 1 = false;  // see last_super_override_needs_reparent()
     // Owned by the Collector: which major epoch last reached this context
     // through a real edge (not through the survivor pool, which roots its
     // entries unconditionally). A stamp rather than a flag so that opening a
@@ -99,6 +99,9 @@ private:
     // only ever read as "reached", which keeps a context that could have been
     // freed and never frees one that is still held.
     uint8_t gc_major_epoch_ = 0;
+    // The collection (minor or major) that last queued this context for tracing, which is what tells a repeat visit from a first one: the same stamp an environment carries. A set keyed
+    // by the address of each context cost an insert, a node and a free for every one of the nineteen thousand survivors of a page, in every minor.
+    mutable uint32_t gc_seen_cycle_ = 0;
 
     Environment* lexical_environment_;
     Environment* variable_environment_;
@@ -358,6 +361,8 @@ public:
 
     // See gc_major_epoch_'s declaration.
     void gc_stamp_major_epoch(uint8_t epoch) { gc_major_epoch_ = epoch; }
+    uint32_t gc_seen_cycle() const { return gc_seen_cycle_; }
+    void gc_set_seen_cycle(uint32_t cycle) const { gc_seen_cycle_ = cycle; }
     bool gc_reached_since_major(uint8_t epoch) const { return gc_major_epoch_ == epoch; }
     Environment* get_variable_environment() const { return variable_environment_; }
     void set_lexical_environment(Environment* env) { lexical_environment_ = env; }

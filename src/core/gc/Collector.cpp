@@ -534,15 +534,17 @@ public:
         }
     }
 
-    // Contexts keep the set: there are few of them, and Context has no room
-    // for a stamp without growing (its size is asserted).
+    // Contexts carry the same stamp an environment does (gc_seen_cycle_): the set that used to answer a repeat visit cost an insert and a node for each survivor in each minor.
     void visit_context(Context* ctx) override {
         if (!ctx) return;
         // Stamped by every real edge, not only the first: a survivor the pool has already
         // queued (root_survivor_context) is in the set without a stamp, and a live closure
         // reaching it afterwards is exactly the edge the prune asks about.
         ctx->gc_stamp_major_epoch(g_major_epoch);
-        if (seen_contexts_.insert(ctx).second) context_work_.push_back(ctx);
+        if (ctx->gc_seen_cycle() != cycle_) {
+            ctx->gc_set_seen_cycle(cycle_);
+            context_work_.push_back(ctx);
+        }
     }
     void visit_environment(Environment* env) override {
         if (env && env->gc_seen_cycle_ != cycle_) {
@@ -556,13 +558,16 @@ public:
     // "can anything other than the pool still reach this?" with a permanent
     // yes for every entry -- see run_minor_collection.
     void root_survivor_context(Context* ctx) {
-        if (ctx && seen_contexts_.insert(ctx).second) context_work_.push_back(ctx);
+        if (ctx && ctx->gc_seen_cycle() != cycle_) {
+            ctx->gc_set_seen_cycle(cycle_);
+            context_work_.push_back(ctx);
+        }
     }
 
     // True once `ctx` has been visited this cycle, as a root or via tracing
     // (e.g. a live Function's closure_context_) -- see finish_major_cycle's
     // survivor-pruning step.
-    bool context_seen(Context* ctx) const { return seen_contexts_.count(ctx) > 0; }
+    bool context_seen(Context* ctx) const { return ctx && ctx->gc_seen_cycle() == cycle_; }
 
     // Same as context_seen, but for Environment survivors (see
     // finish_major_cycle's environment-survivor prune loop).
@@ -575,7 +580,7 @@ public:
     // into them since the previous one.
     void revisit_context(Context* ctx) {
         if (!ctx) return;
-        seen_contexts_.erase(ctx);
+        ctx->gc_set_seen_cycle(0);
         visit_context(ctx);
     }
 
@@ -774,7 +779,6 @@ public:
     void reset_for_new_cycle() {
         // Zero means "never queued", so it is skipped on wrap.
         if (++cycle_ == 0) ++cycle_;
-        seen_contexts_.clear();
         marked_cells = 0;
         parallel_busy_ = false;
         gray_.clear();
@@ -925,8 +929,6 @@ private:
     // set that used to answer it cost an insert per environment per cycle,
     // plus a rehash whenever a cycle's working set outgrew it.
     uint32_t cycle_ = 0;
-    std::unordered_set<const void*, std::hash<const void*>, std::equal_to<const void*>,
-                       SmallMapAllocator<const void*>> seen_contexts_;
 
     std::vector<WeakMap*> pending_weak_maps_;
     std::vector<WeakSet*> pending_weak_sets_;
