@@ -12,7 +12,7 @@ There's no separate nursery region behind this generational split. A mark bit su
 
 ## Marking on Helper Threads
 
-While a slice (or a minor's or a major's final drain) has enough to trace, helper threads mark with the collecting thread (`ParallelMarkPool`; two helpers where the machine has the cores, `QUANTA_GC_THREADS` changes it). Whether to start them is guessed from what the last cycle of the same kind marked, since the gray list is a stack and its length says little about how much is left. What a helper cannot trace itself (maps, host objects, typed arrays, promises, proxies...) and the contexts and environments it meets are handed back to the collecting thread, which is why a minor whose cost is mostly context work gains nothing from them.
+While a slice (or a minor's or a major's final drain) has enough to trace, helper threads mark with the collecting thread (`ParallelMarkPool`; two helpers where the machine has the cores, `QUANTA_GC_THREADS` changes it). Whether to start them is guessed from what the last cycle of the same kind marked, since the gray list is a stack and its length says little about how much is left. What a helper cannot trace itself (maps, typed arrays, promises, proxies, the other kinds of custom objects...) and the contexts and environments it meets are handed back to the collecting thread, which is why a minor whose cost is mostly context work gains nothing from them.
 
 ## Survivor Contexts
 

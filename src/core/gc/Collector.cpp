@@ -103,6 +103,7 @@ constinit thread_local size_t g_expect_major = 0;
 // QUANTA_GC_PROFILE: what the helper threads did (rounds, cells each of them marked, cells handed back to the collecting thread, work left when a round ended).
 constinit thread_local size_t g_par_rounds = 0, g_par_left = 0, g_par_deferred = 0, g_par_maxfront = 0;
 constinit thread_local size_t g_par_marked[8] = {};
+constinit thread_local size_t g_par_deferred_type[48] = {};
 
 } // anonymous namespace
 
@@ -223,11 +224,14 @@ public:
             if (__builtin_expect(o->traces_by_default(), 1)) o->trace_fast(*this);
             // A function names its closure's context and environment (queued here for the collecting thread, like any other) and its executable's chunks, which are only read.
             else if (o->get_type() == Object::ObjectType::Function) static_cast<Function*>(o)->trace(*this);
-            else deferred.push_back(p);
+            // A host object's own Visit() only reads its members and marks what they name (that is its contract), so a helper runs it like any other trace.
+            else if (o->get_type() == Object::ObjectType::Custom && static_cast<CustomObjectBase*>(o)->get_custom_kind() == CustomObjectBase::CustomKind::Host) static_cast<DOMObject*>(o)->trace(*this);
+            else { deferred.push_back(p); deferred_by_type[o->get_type() == Object::ObjectType::Custom ? 32 + (static_cast<size_t>(static_cast<CustomObjectBase*>(o)->get_custom_kind()) & 15) : (static_cast<size_t>(o->get_type()) & 31)]++; }
         } else {
             static_cast<String*>(p.cell)->gc_trace(*this);
         }
     }
+    size_t deferred_by_type[48] = {};
 
 private:
     void leaf(const void* p, CellKind kind) {
@@ -743,6 +747,7 @@ public:
         g_par_rounds++;
         g_par_left += gray_.size();
         if (gray_.size() > g_par_maxfront) g_par_maxfront = gray_.size();
+        for (auto& m : pool.markers()) for (size_t t = 0; t < 48; t++) { g_par_deferred_type[t] += m->deferred_by_type[t]; m->deferred_by_type[t] = 0; }
         for (size_t mi = 0; mi < pool.markers().size() && mi < 8; mi++) { g_par_marked[mi] += pool.markers()[mi]->marked; g_par_deferred += pool.markers()[mi]->deferred.size(); }
         for (auto& m : pool.markers()) {
             marked_cells += m->marked;
@@ -1925,6 +1930,9 @@ void finish_major_cycle(MarkVisitor& v) {
                      g_major_slice_count, total_us, v.marked_cells);
         std::fprintf(stderr, "[gc-prof] par maxfrontier=%zu rounds=%zu left=%zu deferred=%zu marked per thread: %zu %zu %zu %zu\n", g_par_maxfront, g_par_rounds, g_par_left, g_par_deferred,
                      g_par_marked[0], g_par_marked[1], g_par_marked[2], g_par_marked[3]);
+        std::fprintf(stderr, "[gc-prof] par deferred by type:");
+        for (size_t t = 0; t < 48; t++) if (g_par_deferred_type[t]) std::fprintf(stderr, " type%zu=%zu", t, g_par_deferred_type[t]);
+        std::fprintf(stderr, "\n");
         if (Heap::active_or_null()) Heap::active().print_block_profile();
     }
     if (log) {
