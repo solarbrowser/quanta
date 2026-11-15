@@ -278,6 +278,9 @@ public:
     void* find_cell(const void* p) const;
 
     Stats stats() const;
+    // QUANTA_GC_PROFILE: what the blocks of the active heap hold, by kind and by size class (blocks, slots, live cells), and what of their bytes the headers, the slack at the end of a block and the
+    // free slots take, one line each on stderr. Walks every block.
+    void print_block_profile() const;
 
     struct LargeCell {
         uint64_t   magic;

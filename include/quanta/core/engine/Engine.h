@@ -97,6 +97,10 @@ private:
     // Survivor pool: function contexts kept alive until after microtask drain,
     // so Promise callbacks can use context_ (creation context) for closure lookups
     std::vector<Context*> survivor_contexts_;
+    // How many of the survivors, from the front, a collection has traced since they were added. A survivor is a context whose call has ended and which a closure may still name: nothing
+    // changes in it any more (what its environments hold has the write barrier of environments), so a minor roots only the ones added since, which are the nineteen thousand
+    // of a page less the few that the last collection did not see.
+    size_t survivor_traced_ = 0;
     // Same pattern for escaped Environments whose owning Context/block scope
     // already exited (see Collector::finish_major_cycle's environment-survivor
     // prune loop) -- without this, an escaped Environment (any closure that
@@ -165,6 +169,8 @@ public:
     // (a major cycle rewrites this in place once it knows which survivors
     // are still actually reachable -- see its doc comment).
     std::vector<Context*>& mutable_survivor_contexts() { return survivor_contexts_; }
+    size_t survivor_traced() const { return survivor_traced_ < survivor_contexts_.size() ? survivor_traced_ : survivor_contexts_.size(); }
+    void set_survivor_traced(size_t count) { survivor_traced_ = count; }
     // Every live engine on this thread, for GC root enumeration (a
     // collection only ever scans the calling thread's own engines/heaps).
     static const std::vector<Engine*>& all_engines();

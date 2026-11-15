@@ -216,6 +216,8 @@ void Engine::retire_into(Engine& heir) {
                                        survivor_environments_.begin(), survivor_environments_.end());
     survivor_contexts_.clear();
     survivor_environments_.clear();
+    survivor_traced_ = 0;
+    heir.survivor_traced_ = 0;  // (what it was given has not been traced by it)
 
     // A module a live realm can still reach (through a closure, or a namespace object) is not freed with the
     // loader that made it: the loader and its modules are left, as the heap's cells are, to the process.

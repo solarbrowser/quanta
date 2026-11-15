@@ -1340,7 +1340,21 @@ size_t run_sweep(bool minor) {
     static thread_local std::vector<HeapBlock*> pure_blocks;
     dead.clear();
     pure_blocks.clear();
+    static const bool prof_sweep = env_flag("QUANTA_GC_PROFILE");
+    const auto sweep_t0 = std::chrono::steady_clock::now();
     Heap::collect_dead_cells(dead, pure_blocks, minor);
+    const auto sweep_t1 = std::chrono::steady_clock::now();
+    size_t dead_by_type[32] = {};
+    size_t dead_by_kind[kNumCellKinds] = {};
+    if (prof_sweep) {
+        for (const Heap::DeadCell& d : dead) {
+            dead_by_kind[static_cast<size_t>(d.kind)]++;
+            if (d.kind == CellKind::Object) {
+                const size_t t = static_cast<size_t>(static_cast<Object*>(d.cell)->get_type());
+                dead_by_type[t < 32 ? t : 31]++;
+            }
+        }
+    }
     // QUANTA_GC_POISON=1: fill freed cells with a recognizable pattern and
     // leak the slot instead of reusing it -- any use-after-free then crashes
     // deterministically on the poison instead of silently reading a
@@ -1438,8 +1452,20 @@ size_t run_sweep(bool minor) {
         }
         Heap::cell_free(d.cell);
     }
-    const size_t swept = dead.size() + Heap::free_pure_dead(pure_blocks);
+    const auto sweep_t2 = std::chrono::steady_clock::now();
+    const size_t pure_blocks_count = pure_blocks.size();
+    const size_t pure_freed = Heap::free_pure_dead(pure_blocks);
+    const size_t swept = dead.size() + pure_freed;
     pure_blocks.clear();
+    if (prof_sweep) {
+        const auto sweep_t3 = std::chrono::steady_clock::now();
+        auto us = [](auto a, auto b) { return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count(); };
+        std::fprintf(stderr, "[gc-prof] %s sweep find_dead=%ldus destructors+free=%ldus pure_free=%ldus: cells needing a destructor %zu (objects %zu, strings %zu, flat %zu), pure cells freed by bitmap %zu in %zu blocks\n",
+                     minor ? "minor" : "major", us(sweep_t0, sweep_t1), us(sweep_t1, sweep_t2), us(sweep_t2, sweep_t3), dead.size(), dead_by_kind[0], dead_by_kind[1], dead_by_kind[4], pure_freed, pure_blocks_count);
+        std::fprintf(stderr, "[gc-prof] %s sweep object types:", minor ? "minor" : "major");
+        for (size_t t = 0; t < 32; t++) if (dead_by_type[t]) std::fprintf(stderr, " type%zu=%zu", t, dead_by_type[t]);
+        std::fprintf(stderr, "\n");
+    }
     // One major can hand over hundreds of thousands of cells, and a list that
     // keeps that capacity holds it for the rest of the run (4MB on a 1.4M-cell
     // heap) although every sweep after it is small. Minors and ordinary majors
@@ -1466,6 +1492,9 @@ void run_verify(Collector::CycleStats& stats) {
 }
 
 namespace {
+
+// QUANTA_GC_ROOT_ALL_SURVIVORS=1: every survivor context is rooted in every minor, as it was (for finding out whether a bug is in skipping them).
+const bool g_survivors_always_rooted = env_flag("QUANTA_GC_ROOT_ALL_SURVIVORS");
 
 void run_minor_collection() {
     ++Collector::sweep_generation_;
@@ -1555,8 +1584,20 @@ void run_minor_collection() {
     // minor: one is reached only through a real edge or through
     // Collector::write_barrier_env (remembered_envs above), and its pool stays
     // small enough that the major's own prune keeps up with it.
-    for (Engine* engine : Engine::all_engines())
-        for (Context* ctx : engine->get_survivor_contexts()) v.root_survivor_context(ctx);
+    // Only the survivors a collection has not traced yet, and the ones that only a pending job keeps (no edge has reached those since the last major): a survivor that was traced
+    // and that a real edge reached has nothing in it that changed (its call is over; what its environments hold is told by the barrier of environments), so rooting it again was
+    // nineteen thousand contexts and their environments walked in every minor of a page.
+    size_t rooted_survivors = 0, skipped_survivors = 0;
+    for (Engine* engine : Engine::all_engines()) {
+        const std::vector<Context*>& pool = engine->get_survivor_contexts();
+        const size_t traced = engine->survivor_traced();
+        for (size_t i = 0; i < pool.size(); ++i) {
+            Context* ctx = pool[i];
+            if (i < traced && !g_survivors_always_rooted && ctx->gc_reached_since_major(g_major_epoch)) { ++skipped_survivors; continue; }
+            ++rooted_survivors;
+            v.root_survivor_context(ctx);
+        }
+    }
     Collector::mark_step(std::chrono::microseconds(-1));
     // (before the prune: what a WeakMap's live key holds is reached only here, and may name a Context)
     v.drain_ephemerons();
@@ -1580,6 +1621,7 @@ void run_minor_collection() {
             }
         }
         survivors = std::move(kept);
+        engine->set_survivor_traced(survivors.size());
         // Deleted only once the pool no longer refers to them: ~Context hands
         // an escaped owned_env_ back to the Environment survivor pool and
         // routes the rest through Collector::release_env, so it can append
@@ -1636,6 +1678,7 @@ void run_minor_collection() {
 
     if (prof) {
         auto us = [](auto a, auto b) { return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count(); };
+        std::fprintf(stderr, "[gc-prof] minor survivors rooted=%zu skipped=%zu\n", rooted_survivors, skipped_survivors);
         std::fprintf(stderr, "[gc-prof] minor scan_stacks=%ldus roots=%ldus drain=%ldus ephemeron=%ldus verify=%ldus sweep+rebuild=%ldus marked=%zu\n",
                      us(t0,t1), us(t1,t2), us(t2,t3), us(t3,t4), us(t4,t5), us(t5,t6), v.marked_cells);
     }
@@ -1646,7 +1689,11 @@ void run_minor_collection() {
 }
 
 void scan_major_roots(MarkVisitor& v) {
+    static const bool prof_roots = env_flag("QUANTA_GC_PROFILE");
+    auto pr0 = std::chrono::steady_clock::now();
+    auto pr_us = [](auto a, auto b) { return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count(); };
     scan_stacks(v);
+    auto pr1 = std::chrono::steady_clock::now();
     // See FiberRegistry::Record::owner_cell for why these are roots here too.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
         if (rec.owner_cell && !Heap::is_retiring()) v.visit_object(rec.owner_cell);
@@ -1676,13 +1723,20 @@ void scan_major_roots(MarkVisitor& v) {
         for (const Value& val : *arr) v.visit(val);
     if (g_value_stack.base)
         for (const Value* p = g_value_stack.base; p < *g_value_stack.top; ++p) v.visit(*p);
+    auto pr2 = std::chrono::steady_clock::now();
     for (const BytecodeChunk* chunk : chunk_roots()) chunk->trace(v);
     Symbol::gc_trace_roots(v);
     String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
+    auto pr3 = std::chrono::steady_clock::now();
     FunctionExecutable::gc_trace_roots(v);
+    auto pr4 = std::chrono::steady_clock::now();
     // The shared job queue -- one instance for the whole thread, not per-engine.
     EventLoop::instance().gc_trace(v);
+    if (prof_roots) {
+        auto pr5 = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "[gc-prof] major roots stacks=%ldus contexts+envs=%ldus chunks+symbols+strings=%ldus executables=%ldus eventloop=%ldus\n", pr_us(pr0, pr1), pr_us(pr1, pr2), pr_us(pr2, pr3), pr_us(pr3, pr4), pr_us(pr4, pr5));
+    }
 }
 
 thread_local std::chrono::steady_clock::time_point g_major_cycle_start;
@@ -1692,6 +1746,14 @@ constinit thread_local uint32_t g_major_slice_count = 0;
 // gray_/context_work_/environment_work_ are all genuinely empty -- the one
 // point where "not yet reached" and "unreachable" can't be confused.
 void finish_major_cycle(MarkVisitor& v) {
+    const auto finish_t0 = std::chrono::steady_clock::now();
+    struct FinishTimer {
+        std::chrono::steady_clock::time_point t0;
+        ~FinishTimer() {
+            static const bool p = env_flag("QUANTA_GC_PROFILE");
+            if (p) std::fprintf(stderr, "[gc-prof] major finish_major_cycle=%ldus\n", static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count()));
+        }
+    } finish_timer{finish_t0};
     ++Collector::sweep_generation_;
     static const bool verify = env_flag("QUANTA_GC_VERIFY");
     static const bool log = env_flag("QUANTA_GC_LOG");
@@ -1748,8 +1810,9 @@ void finish_major_cycle(MarkVisitor& v) {
         }
     }
     for (auto& [engine, candidates] : doomed) {
-        (void)engine;
         for (Context* ctx : candidates) delete ctx;
+        // What is left was reached or was in use, and this cycle traced it.
+        engine->set_survivor_traced(engine->mutable_survivor_contexts().size());
     }
 
     v.drain_ephemerons();
@@ -1827,6 +1890,7 @@ void finish_major_cycle(MarkVisitor& v) {
                      g_major_slice_count, total_us, v.marked_cells);
         std::fprintf(stderr, "[gc-prof] par maxfrontier=%zu rounds=%zu left=%zu deferred=%zu marked per thread: %zu %zu %zu %zu\n", g_par_maxfront, g_par_rounds, g_par_left, g_par_deferred,
                      g_par_marked[0], g_par_marked[1], g_par_marked[2], g_par_marked[3]);
+        if (Heap::active_or_null()) Heap::active().print_block_profile();
     }
     if (log) {
         std::fprintf(stderr, "[gc] major slices=%u marked=%zu swept=%zu verify_violations=%zu\n",
@@ -1864,7 +1928,9 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
     bool cycle_opened = false;
     if (!Collector::major_in_progress_) {
         Heap::clear_gc_request();
+        auto clear_t0 = std::chrono::steady_clock::now();
         Heap::clear_all_marks();
+        if (prof) std::fprintf(stderr, "[gc-prof] major clear_all_marks=%ldus\n", static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - clear_t0).count()));
         v.reset_for_new_cycle();
         // Symmetric with clear_all_marks: this cycle re-derives reachability
         // from scratch, so every Context's "a real edge reached me" stamp goes

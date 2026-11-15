@@ -715,6 +715,46 @@ void Heap::reset_dirty_blocks() {
     }
 }
 
+void Heap::print_block_profile() const {
+    static const char* const kKindNames[] = {"Object", "String", "Symbol", "BigInt", "FlatString"};
+    size_t total_blocks = 0, total_slots = 0, total_live = 0, slack_bytes = 0, live_bytes = 0, free_bytes = 0, empty_blocks = 0, pure_blocks = 0;
+    struct Row { size_t blocks = 0, slots = 0, live = 0; };
+    Row by_class[kNumSizeClasses];
+    for (size_t k = 0; k < kNumCellKinds; k++) {
+        Row kind_row;
+        for (size_t c = 0; c < kLanes; c++) {
+            for (HeapBlock* b = all_blocks_[k][c]; b; b = b->next()) {
+                kind_row.blocks++;
+                kind_row.slots += b->capacity();
+                kind_row.live += b->live_count();
+                total_blocks++;
+                total_slots += b->capacity();
+                total_live += b->live_count();
+                live_bytes += static_cast<size_t>(b->live_count()) * b->cell_size();
+                free_bytes += static_cast<size_t>(b->capacity() - b->live_count()) * b->cell_size();
+                slack_bytes += HeapBlock::kPayloadSize - static_cast<size_t>(b->capacity()) * b->cell_size();
+                if (b->is_empty()) empty_blocks++;
+                if (b->pure_origin()) pure_blocks++;
+                Row& r = by_class[c % kNumSizeClasses];
+                r.blocks++; r.slots += b->capacity(); r.live += b->live_count();
+            }
+        }
+        if (kind_row.blocks) std::fprintf(stderr, "[gc-prof] heap kind=%s blocks=%zu (%zu KB) slots=%zu live=%zu fill=%zu%%\n", kKindNames[k], kind_row.blocks, kind_row.blocks * HeapBlock::kBlockSize / 1024,
+                                          kind_row.slots, kind_row.live, kind_row.slots ? kind_row.live * 100 / kind_row.slots : 0);
+    }
+    const size_t header_bytes = total_blocks * HeapBlock::kHeaderSize;
+    size_t large_bytes = 0, large_count = 0;
+    for (LargeCell* lc = large_cells_; lc; lc = lc->next) { large_count++; large_bytes += lc->size; }
+    std::fprintf(stderr, "[gc-prof] heap blocks=%zu (%zu KB) = headers %zu KB + live %zu KB + free slots %zu KB + end-of-block slack %zu KB; empty blocks %zu, pure blocks %zu; large cells %zu (%zu KB)\n",
+                 total_blocks, total_blocks * HeapBlock::kBlockSize / 1024, header_bytes / 1024, live_bytes / 1024, free_bytes / 1024, slack_bytes / 1024, empty_blocks, pure_blocks, large_count, large_bytes / 1024);
+    for (size_t c = 0; c < kNumSizeClasses; c++) {
+        if (by_class[c].blocks * HeapBlock::kBlockSize < 1024 * 1024) continue;
+        std::fprintf(stderr, "[gc-prof] heap class=%u blocks=%zu (%zu KB) live=%zu/%zu fill=%zu%%\n", kSizeClasses[c], by_class[c].blocks, by_class[c].blocks * HeapBlock::kBlockSize / 1024, by_class[c].live,
+                     by_class[c].slots, by_class[c].slots ? by_class[c].live * 100 / by_class[c].slots : 0);
+    }
+    (void)total_slots; (void)total_live;
+}
+
 Heap::Stats Heap::stats() const {
     Stats s;
     s.chunk_count = block_allocator_.chunk_count();
