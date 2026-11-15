@@ -165,15 +165,23 @@ void BlockAllocator::release_block_region(void* region) {
 }
 
 void BlockAllocator::decommit_idle_chunks() const {
-    for (void* chunk : chunks_) {
-        uintptr_t base = reinterpret_cast<uintptr_t>(chunk);
-        uintptr_t end = base + kChunkSize;
-        size_t free_in_chunk = 0;
-        for (void* r : free_regions_) {
-            uintptr_t a = reinterpret_cast<uintptr_t>(r);
-            if (a >= base && a < end) free_in_chunk++;
-        }
-        if (free_in_chunk < kBlocksPerChunk) continue;
+    // One pass over the free regions, not one per chunk (that was chunks x regions): each region is counted into the chunk that holds it, found by a search
+    // among the chunk addresses in order.
+    std::vector<uintptr_t> bases;
+    bases.reserve(chunks_.size());
+    for (void* chunk : chunks_) bases.push_back(reinterpret_cast<uintptr_t>(chunk));
+    std::sort(bases.begin(), bases.end());
+    std::vector<uint32_t> free_in(bases.size(), 0);
+    for (void* r : free_regions_) {
+        const uintptr_t a = reinterpret_cast<uintptr_t>(r);
+        auto it = std::upper_bound(bases.begin(), bases.end(), a);
+        if (it == bases.begin()) continue;
+        const size_t i = static_cast<size_t>(it - bases.begin()) - 1;
+        if (a < bases[i] + kChunkSize) free_in[i]++;
+    }
+    for (size_t i = 0; i < bases.size(); i++) {
+        if (free_in[i] < kBlocksPerChunk) continue;
+        void* chunk = reinterpret_cast<void*>(bases[i]);
         // Every block in this chunk is free: hand its physical pages back to
         // the OS without unmapping the virtual range. The chunk stays a
         // known-valid address for the registry and its thread-local MRU
