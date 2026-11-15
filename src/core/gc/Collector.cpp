@@ -221,6 +221,8 @@ public:
         if (p.kind == CellKind::Object) {
             Object* o = static_cast<Object*>(p.cell);
             if (__builtin_expect(o->traces_by_default(), 1)) o->trace_fast(*this);
+            // A function names its closure's context and environment (queued here for the collecting thread, like any other) and its executable's chunks, which are only read.
+            else if (o->get_type() == Object::ObjectType::Function) static_cast<Function*>(o)->trace(*this);
             else deferred.push_back(p);
         } else {
             static_cast<String*>(p.cell)->gc_trace(*this);
