@@ -1338,6 +1338,9 @@ size_t run_sweep(bool minor) {
     static thread_local std::vector<Heap::DeadCell> dead;
     // The blocks of pure cells (see HeapBlock::set_pure_origin): freed by bitmap after the destructors below have run, with none of their cells looked at.
     static thread_local std::vector<HeapBlock*> pure_blocks;
+    // The blocks whose dead cells the loop below has run the destructors of, to be freed by bitmap (a null at the front so that the first compare needs no emptiness test).
+    static thread_local std::vector<HeapBlock*> freed_blocks;
+    freed_blocks.assign(1, nullptr);
     dead.clear();
     pure_blocks.clear();
     static const bool prof_sweep = env_flag("QUANTA_GC_PROFILE");
@@ -1450,7 +1453,21 @@ size_t run_sweep(bool minor) {
             block->retire_cell(d.cell);  // slot leaked on purpose, never reused
             continue;
         }
-        Heap::cell_free(d.cell);
+        if (poison) {
+            Heap::cell_free(d.cell);
+            continue;
+        }
+        // Not freed one by one (each was a lookup of the chunk that owns the address, a slot index and four bit operations): the dead list comes block by block, and a block frees
+        // what is allocated and not marked in a pass over its words, which is exactly its dead cells.
+        if (d.large) {
+            Heap::cell_free(d.cell);
+        } else {
+            HeapBlock* block = HeapBlock::from_cell(d.cell);
+            if (block != freed_blocks.back()) freed_blocks.push_back(block);
+        }
+    }
+    for (HeapBlock* block : freed_blocks) {
+        if (block) block->free_dead_bits();
     }
     const auto sweep_t2 = std::chrono::steady_clock::now();
     const size_t pure_blocks_count = pure_blocks.size();
@@ -1729,7 +1746,7 @@ void scan_major_roots(MarkVisitor& v) {
     String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
     auto pr3 = std::chrono::steady_clock::now();
-    FunctionExecutable::gc_trace_roots(v);
+    FunctionExecutable::gc_trace_roots(v, /*settled_incrementally=*/true);
     auto pr4 = std::chrono::steady_clock::now();
     // The shared job queue -- one instance for the whole thread, not per-engine.
     EventLoop::instance().gc_trace(v);
@@ -1769,6 +1786,7 @@ void finish_major_cycle(MarkVisitor& v) {
     // The ephemeron fixpoint runs first: a WeakMap value whose key is alive is
     // reached only by it, and may be a closure of a Context the prune below
     // would otherwise free before the fixpoint got to the closure.
+    auto fm0 = std::chrono::steady_clock::now();
     v.drain_ephemerons();
     bool any_forced = false;
     std::vector<std::pair<Engine*, std::vector<Context*>>> doomed;
@@ -1815,6 +1833,7 @@ void finish_major_cycle(MarkVisitor& v) {
         engine->set_survivor_traced(engine->mutable_survivor_contexts().size());
     }
 
+    auto fm1 = std::chrono::steady_clock::now();
     v.drain_ephemerons();
     v.finalize_ephemerons();
 
@@ -1835,7 +1854,9 @@ void finish_major_cycle(MarkVisitor& v) {
     remembered_values().clear();
     for (Environment* e : remembered_envs()) if (e) { e->gc_remembered_ = false; e->gc_in_remembered_ = false; }
     remembered_envs().clear();
+    auto fm2 = std::chrono::steady_clock::now();
     resolve_pending_env_frees(v);
+    auto fm3 = std::chrono::steady_clock::now();
 
     // Escaped-Environment survivor prune, mirroring the Context-survivor
     // loop above -- must run after the remembered-set cleanup and
@@ -1867,13 +1888,17 @@ void finish_major_cycle(MarkVisitor& v) {
             env_survivors.end());
     }
 
+    auto fm4 = std::chrono::steady_clock::now();
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
+    std::chrono::steady_clock::time_point fm5 = fm4, fm6 = fm4, fm7 = fm4;
     if (!mark_only) {
         g_last_cycle.swept_cells = run_sweep(/*minor=*/false);
+        fm5 = std::chrono::steady_clock::now();
         // See the minor path for why the two halves of the cost are handed
         // over separately, and why the live figure comes from the rebuild.
         Heap::reset_dirty_blocks();
         const size_t live_after = Heap::rebuild_allocation_candidates();
+        fm6 = std::chrono::steady_clock::now();
         Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
         Heap::note_major_done(live_after);
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
@@ -1881,6 +1906,12 @@ void finish_major_cycle(MarkVisitor& v) {
         v.release_excess_capacity();
         ParallelMarkPool::instance().release_excess_capacity();
         Heap::decommit_idle_memory();
+        fm7 = std::chrono::steady_clock::now();
+    }
+    if (prof) {
+        auto us = [](auto a, auto b) { return static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count()); };
+        std::fprintf(stderr, "[gc-prof] major finish phases: survivor_prune=%ldus ephemerons+verify_prelude=%ldus remembered_cleanup=%ldus pending_env_frees=%ldus env_survivor_prune=%ldus sweep=%ldus rebuild=%ldus retune+decommit=%ldus\n",
+                     us(fm0, fm1), us(fm1, fm2), us(fm2, fm3), 0L, us(fm3, fm4), us(fm4, fm5), us(fm5, fm6), us(fm6, fm7));
     }
 
     if (prof) {
@@ -1958,6 +1989,10 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
     // both opens and drains inside this one call needs no second scan.
     bool roots_scanned_here = cycle_opened;
     if (cycle_opened) scan_major_roots(v);
+    // The settled executables of a new epoch are traced a slice's share at a time (see FunctionExecutable::gc_trace_roots); an unbounded slice does all that is left.
+    if (FunctionExecutable::gc_settled_walk_pending()) {
+        FunctionExecutable::gc_settled_walk_step(v, std::chrono::steady_clock::now() + (budget.count() > 0 ? budget / 2 : std::chrono::microseconds(0)), budget.count() >= 0);
+    }
     Collector::SliceResult result = Collector::mark_step(budget);
     if (result == Collector::SliceResult::CycleComplete && !roots_scanned_here) {
         // Marking has drained, but the mutator has run since the last root
@@ -1967,6 +2002,8 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
         scan_major_roots(v);
         result = Collector::mark_step(budget);
     }
+    // A cycle does not end before every executable has been traced.
+    if (result == Collector::SliceResult::CycleComplete && FunctionExecutable::gc_settled_walk_pending()) result = Collector::SliceResult::Continuing;
     if (prof) {
         auto took_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - slice_t0).count();

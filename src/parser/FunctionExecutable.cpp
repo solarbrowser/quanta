@@ -61,8 +61,11 @@ static_assert(sizeof(FunctionExecutable) <= 256);
 
 constinit thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;
 constinit thread_local FunctionExecutable* FunctionExecutable::settled_head_ = nullptr;
+constinit thread_local FunctionExecutable* FunctionExecutable::walk_cursor_ = nullptr;
+constinit thread_local bool FunctionExecutable::walk_active_ = false;
 
 void FunctionExecutable::unlink_live() const {
+    if (walk_cursor_ == this) walk_cursor_ = live_next_;
     if (live_prev_) live_prev_->live_next_ = live_next_;
     else (gc_in_pending_ ? live_head_ : settled_head_) = live_next_;
     if (live_next_) live_next_->live_prev_ = live_prev_;
@@ -187,13 +190,29 @@ void FunctionExecutable::drop_feedback_of(const Realm* realm) {
     }
 }
 
-void FunctionExecutable::gc_trace_roots(Visitor& v) {
+void FunctionExecutable::gc_settled_walk_step(Visitor& v, std::chrono::steady_clock::time_point deadline, bool bounded) {
+    size_t traced = 0;
+    while (walk_cursor_) {
+        FunctionExecutable* exe = walk_cursor_;
+        walk_cursor_ = exe->live_next_;  // (before the tracing: it does not move anything between lists)
+        exe->trace_chunks_if_needed(v);
+        if (bounded && (++traced & 63) == 0 && std::chrono::steady_clock::now() >= deadline) break;
+    }
+    if (!walk_cursor_) walk_active_ = false;
+}
+
+void FunctionExecutable::gc_trace_roots(Visitor& v, bool settled_incrementally) {
     // A new major epoch means every chunk is to be traced once more (and the marks it left on cells are gone); within the epoch, only what changed.
     static constinit thread_local uint8_t walked_epoch = 0;
     const uint8_t epoch = Collector::current_major_epoch();
     if (epoch != walked_epoch) {
         walked_epoch = epoch;
-        for (FunctionExecutable* exe = settled_head_; exe; exe = exe->live_next_) exe->trace_chunks_if_needed(v);
+        if (settled_incrementally) {
+            walk_cursor_ = settled_head_;
+            walk_active_ = walk_cursor_ != nullptr;
+        } else {
+            for (FunctionExecutable* exe = settled_head_; exe; exe = exe->live_next_) exe->trace_chunks_if_needed(v);
+        }
     }
     for (FunctionExecutable* exe = live_head_; exe;) {
         FunctionExecutable* next = exe->live_next_;

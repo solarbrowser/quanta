@@ -196,6 +196,7 @@ public:
     struct DeadCell {
         void* cell;
         CellKind kind;
+        bool large = false;  // a large cell, not one of a block
     };
     // `minor_only` restricts the walk to blocks that have taken an allocation
     // since the last sweep. A minor collection can only free cells there: with

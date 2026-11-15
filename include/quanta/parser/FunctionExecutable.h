@@ -10,6 +10,7 @@
 #include "quanta/core/vm/Bytecode.h"
 #include "quanta/parser/NamePool.h"
 #include "quanta/lexer/Token.h"
+#include <chrono>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -275,6 +276,9 @@ private:
     // few that had changed.
     static constinit thread_local FunctionExecutable* live_head_;      // pending
     static constinit thread_local FunctionExecutable* settled_head_;
+    // The next settled executable the incremental walk of a major has to trace. unlink_live moves it on when that executable leaves the list, so it never names one that is gone.
+    static constinit thread_local FunctionExecutable* walk_cursor_;
+    static constinit thread_local bool walk_active_;
     mutable FunctionExecutable* live_next_ = nullptr;
     mutable FunctionExecutable* live_prev_ = nullptr;
     void unlink_live() const;
@@ -492,7 +496,12 @@ public:
     // from under a still-alive, still-referencing chunk the next time some
     // new instance reuses it -- exactly the dangling-constant corruption
     // this registry prevents.
-    static void gc_trace_roots(Visitor& v);
+    // `settled_incrementally`: a new major epoch does not walk every settled executable here, in one go (a page of two hundred thousand of them made the first slice of a major seventeen
+    // milliseconds, and up to thirty-five); it sets the walk up, and gc_settled_walk_step does it in the slices, and the cycle cannot end before it has been done.
+    static void gc_trace_roots(Visitor& v, bool settled_incrementally = false);
+    static bool gc_settled_walk_pending() { return walk_active_; }
+    // Traces settled executables until `deadline` (all that are left when `bounded` is false).
+    static void gc_settled_walk_step(Visitor& v, std::chrono::steady_clock::time_point deadline, bool bounded);
     // Forgets what the chunks of `realm`'s executables (every executable, for null)
     // learned about cells. Feedback is a cache and is learned again; but these live as
     // long as the program text does, which is longer than the realm, and while they

@@ -689,7 +689,7 @@ void Heap::collect_dead_cells(std::vector<DeadCell>& out, std::vector<HeapBlock*
         // the whole list.
         for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) {
             if (!lc->marked) {
-                out.push_back({reinterpret_cast<char*>(lc) + kLargeHeaderSize, lc->kind});
+                out.push_back({reinterpret_cast<char*>(lc) + kLargeHeaderSize, lc->kind, true});
             }
         }
     }
