@@ -410,8 +410,17 @@ StrLayout detect_std_string_layout() {
 
 String* String::make_flat_parts(const char* a, size_t alen, const char* b, size_t blen) {
     const size_t n = alen + blen;
-    // 15 bytes live in the std::string itself already.
-    if (n <= 15 || sizeof(String) + n + 1 > Heap::kMaxTier1Size) return nullptr;
+    if (n == 0) return nullptr;
+    // Up to 15 bytes live in the std::string itself (its small-string buffer): the cell owns nothing to destroy, so it goes in a block the sweep frees by bitmap, and the
+    // bytes are put through the ordinary constructor (which joins surrogate pairs).
+    if (n <= 15) {
+        char small[16];
+        if (alen) std::memcpy(small, a, alen);
+        if (blen) std::memcpy(small + alen, b, blen);
+        void* mem = String::operator new(sizeof(String), PureTag{});
+        return ::new (mem) String(std::string_view(small, n));
+    }
+    if (sizeof(String) + n + 1 > Heap::kMaxTier1Size) return nullptr;
     // canonicalize_pairs joins a high surrogate to a low one into one 4-byte sequence, and a cut can fall inside either:
     // any text that could hold a surrogate (an 0xED lead byte) takes the ordinary constructor, which does that.
     if ((alen && std::memchr(a, 0xED, alen)) || (blen && std::memchr(b, 0xED, blen))) return nullptr;

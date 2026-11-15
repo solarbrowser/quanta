@@ -251,14 +251,14 @@ inline bool add_strings_fast(const Value& l, const Value& r, Value& out) {
     if (l.is_string()) {
         String* rs;
         if (r.is_string()) rs = r.as_string();
-        else if (const size_t n = digits(r, buf)) rs = new String(std::string(buf, n));
+        else if (const size_t n = digits(r, buf)) rs = String::make_flat_string(std::string(buf, n));
         else return false;
         out = Value(String::make_concat(l.as_string(), rs));
         return true;
     }
     if (r.is_string()) {
         if (const size_t n = digits(l, buf)) {
-            out = Value(String::make_concat(new String(std::string(buf, n)), r.as_string()));
+            out = Value(String::make_concat(String::make_flat_string(std::string(buf, n)), r.as_string()));
             return true;
         }
     }

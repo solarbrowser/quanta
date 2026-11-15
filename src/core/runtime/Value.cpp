@@ -659,8 +659,8 @@ Value Value::add(const Value& other) const {
 
     if (is_string() || other.is_string()) {
         // Use rope concat: O(1) for large strings, flattens lazily on first read
-        String* ls = is_string()       ? as_string() : new String(to_string());
-        String* rs = other.is_string() ? other.as_string() : new String(other.to_string());
+        String* ls = is_string()       ? as_string() : String::make_flat_string(to_string());
+        String* rs = other.is_string() ? other.as_string() : String::make_flat_string(other.to_string());
         return Value(String::make_concat(ls, rs));
     }
     
