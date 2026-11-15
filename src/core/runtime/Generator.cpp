@@ -27,7 +27,7 @@ namespace Quanta {
 // when it also carried a body pointer, so dropping that one costs nothing
 // here and buys the parse tree back everywhere else.
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Generator) == 120);
+static_assert(sizeof(Generator) == 128);
 #else
 static_assert(sizeof(Generator) <= 192);
 #endif
@@ -144,6 +144,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     if (state_ == State::Completed) {
         return GeneratorResult(Value(), true);
     }
+    if (fiber_.abandoned()) return GeneratorResult(Value(), true);  // its realm was left
     sent_value_ = value;
     throwing_ = false;
     returning_ = false;
@@ -189,6 +190,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
 }
 
 Generator::GeneratorResult Generator::return_value(const Value& value) {
+    if (fiber_.abandoned()) return GeneratorResult(value, true);  // its realm was left
     if (state_ == State::Completed || state_ == State::SuspendedStart) {
         state_ = State::Completed;
         release_fiber();
@@ -241,6 +243,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
 }
 
 Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
+    if (fiber_.abandoned()) return GeneratorResult(Value(), true);  // its realm was left
     if (state_ == State::Completed || state_ == State::SuspendedStart) {
         // Per spec 27.5.3.4: throw() on a never-started/completed generator completes it directly.
         state_ = State::Completed;

@@ -101,7 +101,9 @@ void AsyncExecutor::start_fiber() {
             v.visit_context(exec_context_);
             v.visit(await_result_);
             v.visit_object(owner_fn_);
-        });
+        },
+        // Abandoned (its realm was left while it waited): the hold the engine keeps on its context for as long as the body may run is given back.
+        [this] { if (!module_chunk_ && exec_context_) EventLoop::instance().release_context(exec_context_); });
 
 }
 
@@ -190,6 +192,8 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
 }
 
 void AsyncExecutor::run() {
+    // Abandoned: the page whose function this is was left, and its body is never entered again (see FiberState::abandoned).
+    if (fiber_->abandoned()) return;
     auto* prev = current_;
     current_ = this;
     // The body about to run belongs to exec_context_, and a resume arrives from
@@ -647,6 +651,7 @@ void AsyncGenerator::fiber_entry(mco_coro* co) {
 }
 
 void AsyncGenerator::enter_fiber() {
+    if (fiber_->abandoned()) return;  // (its realm was left)
     auto* prev = current_;
     current_ = this;
     {

@@ -5,6 +5,9 @@
  */
 
 #include "quanta/core/gc/FiberRegistry.h"
+#include "quanta/core/engine/Realm.h"
+#include "quanta/core/gc/Collector.h"
+#include "quanta/core/runtime/FiberState.h"
 #include <vector>
 
 namespace Quanta {
@@ -27,8 +30,8 @@ std::vector<const void*>& enter_sps() {
 
 void FiberRegistry::register_fiber(const void* owner, const char* stack, size_t size,
                                    const FiberState* state, Object* owner_cell,
-                                   std::function<void(Visitor&)> extra_roots) {
-    records().push_back({owner, stack, stack + size, state, owner_cell, std::move(extra_roots)});
+                                   std::function<void(Visitor&)> extra_roots, std::function<void()> on_abandon) {
+    records().push_back({owner, stack, stack + size, state, owner_cell, std::move(extra_roots), g_current_realm ? g_current_realm->id() : 0, std::move(on_abandon)});
 }
 
 void FiberRegistry::unregister_fiber(const void* owner) {
@@ -40,6 +43,27 @@ void FiberRegistry::unregister_fiber(const void* owner) {
             return;
         }
     }
+}
+
+size_t FiberRegistry::abandon_realm(uint64_t realm_id) {
+    size_t n = 0;
+    // (A copy of the records: giving back what an owner holds may reach the registry.)
+    std::vector<Record> mine;
+    for (const Record& rec : records()) {
+        if (rec.realm_id != realm_id || !rec.state || rec.state->abandoned()) continue;
+        // Suspended: it yielded, so it knows where. A fiber that is running (or has resumed another, or has not started) has no suspend point.
+        if (!rec.state->suspend_sp || !rec.state->co) continue;
+        mine.push_back(rec);
+    }
+    for (Record& rec : mine) {
+        FiberState* state = const_cast<FiberState*>(rec.state);
+        state->abandon();
+        // What the stack registered as roots (environments, argument vectors): the fiber never runs again, so nothing there is held for it.
+        Collector::purge_stack_roots(rec.stack_lo, rec.stack_hi);
+        if (rec.on_abandon) rec.on_abandon();
+        n++;
+    }
+    return n;
 }
 
 void FiberRegistry::for_each(const std::function<void(const Record&)>& fn) {

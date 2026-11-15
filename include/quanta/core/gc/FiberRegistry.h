@@ -8,6 +8,7 @@
 #define QUANTA_GC_FIBERREGISTRY_H
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 
 namespace Quanta {
@@ -38,12 +39,20 @@ public:
         // Non-cell fiber owners (AsyncExecutor) report the cells their C++
         // fields reference here; cell owners are traced like any object.
         std::function<void(Visitor&)> extra_roots;
+        // The realm that was running when the fiber was made (zero when there was none).
+        uint64_t realm_id = 0;
+        // What the owner has to give back when the fiber is abandoned (an async function's hold on its context).
+        std::function<void()> on_abandon;
     };
 
     static void register_fiber(const void* owner, const char* stack, size_t size,
                                const FiberState* state, Object* owner_cell,
-                               std::function<void(Visitor&)> extra_roots = {});
+                               std::function<void(Visitor&)> extra_roots = {}, std::function<void()> on_abandon = {});
     static void unregister_fiber(const void* owner);
+    // The fibers made while `realm_id` was running that are SUSPENDED are abandoned (see FiberState::abandoned); one that is running (the page's own
+    // callback is what asked for the navigation, and it may be on a fiber) is left as it is, since its stack must go on being scanned. For a page that was
+    // left. Returns how many.
+    static size_t abandon_realm(uint64_t realm_id);
     static void for_each(const std::function<void(const Record&)>& fn);
 
     // Caller-side suspension points: pushed right before mco_resume into a

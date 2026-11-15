@@ -227,6 +227,8 @@ public:
     // reallocates after BytecodeCompiler freezes it, but it's still
     // re-scanned each collection the same way, for symmetry/simplicity.
     static void push_value_array(const FixedArray<Value>* arr);
+    // Forgets the roots registered from inside [lo, hi), the stack of a fiber that was abandoned.
+    static void purge_stack_roots(const void* lo, const void* hi);
     static void push_chunk(const class BytecodeChunk* chunk);
     static void pop_chunk(const class BytecodeChunk* chunk);
     static void pop_value_array(const FixedArray<Value>* arr);

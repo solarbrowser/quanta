@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/Embed.h"
 #include "quanta/parser/ScriptCache.h"
 #include "quanta/core/gc/Collector.h"
@@ -643,6 +644,9 @@ void Realm::DropGlobalState() {
     RealmScope realm_scope(ctx.realm());
     if (Object* global = ctx.get_global_object()) global->clear_properties();
     if (Environment* lexical = ctx.get_script_global_lexical_env()) lexical->drop_all_bindings();
+    // The async functions and generators of the page that are waiting (nothing will wake them: the page's timers and jobs are gone) were roots, each with its
+    // whole context chain; a fiber that is running, which the navigation may have been asked from, is left alone.
+    if (Quanta::Realm* realm = ctx.realm()) FiberRegistry::abandon_realm(realm->id());
 }
 
 void Realm::Run(const std::function<void()>& body) {

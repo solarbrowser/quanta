@@ -27,6 +27,11 @@ struct FiberState {
     // stopped is dead. Null reads as "unknown", which scans all of it, so a
     // suspend that does not go through quanta_fiber_yield is merely slower.
     const char* suspend_sp = nullptr;
+    // Set by FiberRegistry::abandon_realm for a suspended fiber of a realm that was left: it is no longer a root, what its stack registered as roots is gone, and
+    // whoever would resume it does nothing instead (its body will never run again).
+    bool abandoned_ = false;
+    bool abandoned() const { return abandoned_; }
+    void abandon() { abandoned_ = true; }
 };
 
 // The only two ways to suspend or resume a fiber. Going through mco_yield or

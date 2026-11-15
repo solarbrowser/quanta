@@ -1132,6 +1132,8 @@ void scan_stacks(MarkVisitor& v) {
     // the narrowing below and walks every page of every live fiber on every
     // cycle. The stack's own live region is decided from the suspend point.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
+        // An abandoned fiber is not a root: its stack, its registers and what its owner reports are not held for it any more.
+        if (rec.state && rec.state->abandoned()) return;
         // A fiber's live region is [sp, stack_hi] -- stacks grow down, so
         // anything below the deepest point it currently reaches is dead. Take
         // the deepest of the three things that can be holding frames: where it
@@ -1592,7 +1594,7 @@ void run_minor_collection() {
     for (Environment* e : remembered_envs()) v.visit_environment(e);
     // See FiberRegistry::Record::owner_cell for why these are minor roots.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
-        if (rec.owner_cell && !Heap::is_retiring()) v.visit_object(rec.owner_cell);
+        if (rec.owner_cell && !Heap::is_retiring() && !(rec.state && rec.state->abandoned())) v.visit_object(rec.owner_cell);
     });
     scan_stacks(v);
     auto t1 = std::chrono::steady_clock::now();
@@ -1763,7 +1765,7 @@ void scan_major_roots(MarkVisitor& v) {
     auto pr1 = std::chrono::steady_clock::now();
     // See FiberRegistry::Record::owner_cell for why these are roots here too.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
-        if (rec.owner_cell && !Heap::is_retiring()) v.visit_object(rec.owner_cell);
+        if (rec.owner_cell && !Heap::is_retiring() && !(rec.state && rec.state->abandoned())) v.visit_object(rec.owner_cell);
     });
     // revisit_context, not visit_context: root contexts must be re-traced
     // every slice, not only the first.
@@ -2419,6 +2421,17 @@ void Collector::pop_value_vector(const std::vector<Value>* vec) {
     for (size_t i = roots.size(); i-- > 0;) {
         if (roots[i] == vec) { roots.erase(roots.begin() + i); return; }
     }
+}
+
+void Collector::purge_stack_roots(const void* lo, const void* hi) {
+    const auto inside = [lo, hi](const void* p) { return p >= lo && p < hi; };
+    auto& vectors = value_vector_roots();
+    vectors.erase(std::remove_if(vectors.begin(), vectors.end(), inside), vectors.end());
+    auto& arrays = value_array_roots();
+    arrays.erase(std::remove_if(arrays.begin(), arrays.end(), inside), arrays.end());
+    auto& envs = environment_roots();
+    envs.erase(std::remove_if(envs.begin(), envs.end(), inside), envs.end());
+    EnvironmentRoot::purge(lo, hi);
 }
 
 void EnvironmentRoot::purge(const void* lo, const void* hi) {
