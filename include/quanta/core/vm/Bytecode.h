@@ -904,6 +904,8 @@ struct HandlerEntry {
 // by every Function instance built from that decl site (see
 // FunctionExecutable), not just every call of a single instance.
 struct BytecodeChunk {
+    // Bytes this chunk holds (the interpreter's, the feedback's and the JIT's), for the profile; `parts` gets code, constants, feedback, caches and JIT code added to it.
+    size_t approx_bytes(size_t parts[8]) const;
     // Built via a std::vector builder in BytecodeCompiler, frozen into these
     // FixedArray<T> (pointer+count, no capacity slack) exactly once at the
     // end of compile()/compile_script() -- see BytecodeCompiler.h's code_/

@@ -190,6 +190,19 @@ void FunctionExecutable::drop_feedback_of(const Realm* realm) {
     }
 }
 
+void FunctionExecutable::print_chunk_profile() {
+    size_t n = 0, with_chunk = 0, jitted = 0, total = 0, parts[8] = {}, slots = 0, learned = 0;
+    for (FunctionExecutable* head : {live_head_, settled_head_}) {
+        for (FunctionExecutable* exe = head; exe; exe = exe->live_next_) {
+            n++;
+            if (exe->bytecode_chunk) { for (const auto& sl : exe->bytecode_chunk->feedback) { slots++; if (sl.peek()) learned++; } }
+            if (exe->bytecode_chunk) { with_chunk++; if (exe->bytecode_chunk->jit) jitted++; total += exe->bytecode_chunk->approx_bytes(parts); }
+        }
+    }
+    std::fprintf(stderr, "[gc-prof] feedback slots=%zu learned=%zu sizeof(slot)=%zu sizeof(body)=%zu\n", slots, learned, sizeof(FeedbackSlot), sizeof(FeedbackBody));
+    std::fprintf(stderr, "[gc-prof] executables=%zu with_chunk=%zu jitted=%zu chunk_bytes=%zu KB (code+positions %zu, constants+names %zu, feedback %zu, caches %zu, jit %zu KB)\n", n, with_chunk, jitted, total / 1024, parts[0] / 1024, parts[1] / 1024, parts[2] / 1024, parts[3] / 1024, parts[4] / 1024);
+}
+
 void FunctionExecutable::gc_settled_walk_step(Visitor& v, std::chrono::steady_clock::time_point deadline, bool bounded) {
     size_t traced = 0;
     while (walk_cursor_) {

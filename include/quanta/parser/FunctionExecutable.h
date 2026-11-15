@@ -500,6 +500,8 @@ public:
     // milliseconds, and up to thirty-five); it sets the walk up, and gc_settled_walk_step does it in the slices, and the cycle cannot end before it has been done.
     static void gc_trace_roots(Visitor& v, bool settled_incrementally = false);
     static bool gc_settled_walk_pending() { return walk_active_; }
+    // QUANTA_GC_PROFILE: how many executables there are and what their compiled chunks hold.
+    static void print_chunk_profile();
     // Traces settled executables until `deadline` (all that are left when `bounded` is false).
     static void gc_settled_walk_step(Visitor& v, std::chrono::steady_clock::time_point deadline, bool bounded);
     // Forgets what the chunks of `realm`'s executables (every executable, for null)

@@ -105,6 +105,20 @@ bool BytecodeChunk::position_at(uint32_t pc, uint32_t& line, uint32_t& column) c
     return found;
 }
 
+size_t BytecodeChunk::approx_bytes(size_t parts[8]) const {
+    size_t b = sizeof(BytecodeChunk);
+    const size_t p_code = code.size() + positions.size();
+    const size_t p_const = constants.size() * sizeof(Value) + names.size() * sizeof(void*);
+    size_t p_fb = feedback.size() * sizeof(FeedbackSlot);
+    for (const auto& slot : feedback) if (slot.peek()) p_fb += sizeof(FeedbackBody);
+    size_t p_ic = lookup_cache.size() * sizeof(LookupCacheEntry);
+    if (ic_feedback) p_ic += ic_feedback->call_sites.size() * sizeof(IcFeedback::CallSite) + ic_feedback->keyed_feedback.size() * sizeof(void*);
+    size_t p_jit = 0;
+    if (jit) p_jit = jit->mem_size + jit->code_copy.size() + jit->native_off.size() * 4 + jit->ics.size() * sizeof(JitIC) + sizeof(JitCode);
+    parts[0] += p_code; parts[1] += p_const; parts[2] += p_fb; parts[3] += p_ic; parts[4] += p_jit;
+    return b + p_code + p_const + p_fb + p_ic + p_jit;
+}
+
 void BytecodeChunk::trace(Visitor& v) const {
     for (const auto& c : constants) {
         v.visit(c);

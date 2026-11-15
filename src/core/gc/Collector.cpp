@@ -1974,6 +1974,7 @@ void finish_major_cycle(MarkVisitor& v) {
         std::fprintf(stderr, "[gc-prof] par deferred by type:");
         for (size_t t = 0; t < 48; t++) if (g_par_deferred_type[t]) std::fprintf(stderr, " type%zu=%zu", t, g_par_deferred_type[t]);
         std::fprintf(stderr, "\n");
+        FunctionExecutable::print_chunk_profile();
         if (Heap::active_or_null()) Heap::active().print_block_profile();
     }
     if (log) {
