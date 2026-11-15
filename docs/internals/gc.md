@@ -26,7 +26,7 @@ The first slice of a major scans the stacks, the contexts and the thread-wide ro
 
 ## Sweep
 
-A sweep first collects the dead cells of the blocks it has reason to look at (the dirty blocks, for a minor). Blocks of pure cells are freed by their bitmaps without reading a cell. For the rest, the destructors run first, with the bitmaps still stable, and then each block frees what is allocated and not marked in one pass over its words (`HeapBlock::free_dead_bits`); large cells are freed one by one. Under `QUANTA_GC_POISON=1` every dead cell is retired individually instead.
+A sweep first collects the dead cells of the blocks it has reason to look at (the dirty blocks, for a minor). Blocks of pure cells (cells that own nothing to destroy when made) are freed by their bitmaps without reading a cell; a cell that comes to own something (a butterfly of its own, extras) is recorded in the block's impure bitmap, and only those dead cells have their destructors run. For the rest, the destructors run first, with the bitmaps still stable, and then each block frees what is allocated and not marked in one pass over its words (`HeapBlock::free_dead_bits`); large cells are freed one by one. Under `QUANTA_GC_POISON=1` every dead cell is retired individually instead.
 
 ## Profiling
 

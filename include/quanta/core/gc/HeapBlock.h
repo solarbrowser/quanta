@@ -59,8 +59,29 @@ public:
     // to destroy after all (a butterfly of its own, a RareExtras) calls mark_impure(), and the block is swept cell by cell again until it is empty.
     void set_pure_origin()              { h_.pure_origin = true; }
     bool pure_origin() const            { return h_.pure_origin; }
-    bool fast_sweepable() const         { return h_.pure_origin && !h_.impure && !h_.no_reuse; }
-    void mark_impure()                  { h_.impure = true; }
+    // Whether the sweep may free this block's dead cells by bitmap, after running the destructors of the ones that went impure (see impure_bitmap).
+    bool fast_sweepable() const         { return h_.pure_origin && !h_.no_reuse; }
+    bool has_impure_cells() const       { return h_.impure; }
+    // The cell, not the block: only the cells that own something are looked at by the sweep, the rest of the block is still freed by its bitmaps.
+    void mark_impure(const void* cell) {
+        const size_t idx = slot_index(cell);
+        if (idx == SIZE_MAX) return;
+        h_.impure_bitmap[idx / 64] |= (1ULL << (idx % 64));
+        h_.impure = true;
+    }
+    // The dead cells of a pure block that went impure: the only ones with a destructor to run.
+    template <typename Fn>
+    void for_each_dead_impure_cell(Fn&& fn) {
+        const uint32_t word_count = (h_.bump_cursor + 63) / 64;
+        for (uint32_t w = 0; w < word_count; w++) {
+            uint64_t dead_bits = h_.bm[w].alloc & ~h_.bm[w].mark & h_.impure_bitmap[w];
+            while (dead_bits) {
+                const uint32_t bit = static_cast<uint32_t>(__builtin_ctzll(dead_bits));
+                dead_bits &= dead_bits - 1;
+                fn(payload_start() + static_cast<size_t>(w * 64 + bit) * h_.cell_size);
+            }
+        }
+    }
     void clear_impure_if_empty()        { if (h_.impure && live_count() == 0) h_.impure = false; }
     // Frees every allocated cell that is not marked, looking at none of them; the number freed.
     uint32_t free_dead_bits();
@@ -203,6 +224,8 @@ private:
         bool       pure_origin;
         bool       impure;
         uint64_t   remembered_bitmap[kBitmapWords];
+        // The cells of a pure block that came to own something to destroy (mark_impure): their destructors are the sweep's work, nobody else's.
+        uint64_t   impure_bitmap[kBitmapWords];
     };
 
 public:

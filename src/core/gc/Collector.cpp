@@ -1463,6 +1463,8 @@ size_t run_sweep(bool minor) {
             Heap::cell_free(d.cell);
         } else {
             HeapBlock* block = HeapBlock::from_cell(d.cell);
+            // A pure block is freed with the other pure blocks below (counted there).
+            if (block->pure_origin()) continue;
             if (block != freed_blocks.back()) freed_blocks.push_back(block);
         }
     }

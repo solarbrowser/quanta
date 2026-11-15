@@ -222,7 +222,7 @@ void* Heap::allocate_pure(size_t size, CellKind kind) {
 }
 
 void Heap::note_impure(const void* cell) {
-    if (cell && BlockAllocator::owns_address(cell)) HeapBlock::from_cell(cell)->mark_impure();
+    if (cell && BlockAllocator::owns_address(cell)) HeapBlock::from_cell(cell)->mark_impure(cell);
 }
 
 bool Heap::survives_sweep(const void* cell) {
@@ -672,7 +672,15 @@ void Heap::collect_dead_cells(std::vector<DeadCell>& out, std::vector<HeapBlock*
     for (Heap* heap : thread_heaps()) {
         auto sweep_block = [&out, &pure_blocks](HeapBlock* b) {
             // A block of pure cells is freed by its bitmaps after the destructors have run: not one of its cells is read.
-            if (b->fast_sweepable()) { pure_blocks.push_back(b); return; }
+            // Only what went impure has a destructor to run; every other dead cell is freed with the rest by bitmap.
+            if (b->fast_sweepable()) {
+                pure_blocks.push_back(b);
+                if (b->has_impure_cells()) {
+                    const CellKind kind = b->cell_kind();
+                    b->for_each_dead_impure_cell([&](void* cell) { out.push_back({cell, kind}); });
+                }
+                return;
+            }
             const CellKind kind = b->cell_kind();
             b->for_each_dead_cell([&](void* cell) { out.push_back({cell, kind}); });
         };
