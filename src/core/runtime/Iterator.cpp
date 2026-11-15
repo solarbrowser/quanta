@@ -267,7 +267,8 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 }
 
 Value Iterator::create_iterator_result(const Value& value, bool done, Context* realm_hint) {
-    auto result_obj = ObjectFactory::create_object();
+    // `value` and `done`: room for both in the cell (made bare, the first took a block of its own and made the cell one the sweep has to destroy).
+    auto result_obj = ObjectFactory::create_object_with_slots(2);
     Engine::fixup_new_object_realm(result_obj.get(), realm_hint);
     Object* obj = result_obj.get();
     // Every one of these is the same two properties in the same order on a

@@ -78,7 +78,7 @@ static void iterator_helper_close(Context& ctx, const Value& iter_val) {
 }
 
 static Object* make_iter_result(const Value& value, bool done, Context* realm_hint = nullptr) {
-    auto result = ObjectFactory::create_object();
+    auto result = ObjectFactory::create_object_with_slots(2);
     Engine::fixup_new_object_realm(result.get(), realm_hint);
     result->set_property("value", done ? Value() : value);
     result->set_property("done", Value(done));

@@ -4299,15 +4299,11 @@ std::unique_ptr<Object> create_array_with_room(uint32_t capacity) {
     return std::unique_ptr<Object>(array);
 }
 
-// Room in the cell for the properties of an object that is made bare and filled afterwards (an iterator result, a descriptor, a plain record): the first property of one that
-// had none took a block of its own (and made its cell one the sweep has to destroy).
-constexpr uint32_t kBareObjectSlots = 4;
-constexpr uint32_t kBareArrayElements = 4;
+// An object or an array made bare is given no room in its cell: a program can make millions that stay empty or hold one thing (measured on a 3 MB script, room for four
+// properties or four elements was 35 and 48 MB of resident memory), and the places that are known to fill what they make ask for the room themselves (an iterator result).
 
 std::unique_ptr<Object> get_pooled_object() {
-    void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(kBareObjectSlots), Object::PureTag{});
-    Object* raw = ::new (cell) Object(Object::ObjectType::Ordinary);
-    raw->adopt_inline_butterfly(sizeof(Object), kBareObjectSlots);
+    Object* raw = ::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Ordinary);
     auto obj = std::unique_ptr<Object>(raw);
     Object* obj_proto = get_object_prototype();
     if (obj_proto) {
@@ -4318,8 +4314,7 @@ std::unique_ptr<Object> get_pooled_object() {
 
 std::unique_ptr<Object> get_pooled_array() {
     // Room for the first four elements in the cell (what the constructor reserved in a block of its own, which made the cell one the sweep has to destroy).
-    auto array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::inline_array_bytes(kBareArrayElements), Object::PureTag{})) Object(Object::ObjectType::Array, Object::StorageAdoptedTag{}));
-    array->adopt_inline_array_butterfly(sizeof(Object), kBareArrayElements);
+    auto array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
     Object* array_proto = get_array_prototype();
     if (array_proto) {
         array->initialize_prototype_of_new(array_proto);
@@ -4415,9 +4410,7 @@ std::unique_ptr<Object> create_object(Object* prototype) {
             return get_pooled_object();
         }
         
-        void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(kBareObjectSlots), Object::PureTag{});
-        Object* raw = ::new (cell) Object(Object::ObjectType::Ordinary);
-        raw->adopt_inline_butterfly(sizeof(Object), kBareObjectSlots);
+        Object* raw = ::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Ordinary);
         if (prototype) raw->initialize_prototype_of_new(prototype);
         return std::unique_ptr<Object>(raw);
     } catch (...) {
@@ -4428,13 +4421,7 @@ std::unique_ptr<Object> create_object(Object* prototype) {
 std::unique_ptr<Object> create_array(uint32_t length) {
     std::unique_ptr<Object> array;
 
-    // A short one starts in the cell; a long one asks for its elements at once (set_length below) and would leave that room unused.
-    if (length <= kBareArrayElements) {
-        array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::inline_array_bytes(kBareArrayElements), Object::PureTag{})) Object(Object::ObjectType::Array, Object::StorageAdoptedTag{}));
-        array->adopt_inline_array_butterfly(sizeof(Object), kBareArrayElements);
-    } else {
-        array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
-    }
+    array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
 
     if (!array) {
         return nullptr;
