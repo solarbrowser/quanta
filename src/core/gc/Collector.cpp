@@ -104,6 +104,9 @@ constinit thread_local size_t g_expect_major = 0;
 constinit thread_local size_t g_par_rounds = 0, g_par_left = 0, g_par_deferred = 0, g_par_maxfront = 0;
 constinit thread_local size_t g_par_marked[8] = {};
 constinit thread_local size_t g_par_deferred_type[48] = {};
+constinit thread_local uint64_t g_env_ns = 0, g_ctx_ns = 0, g_env_n = 0, g_ctx_n = 0;
+const bool g_trace_all_envs = std::getenv("QUANTA_GC_TRACE_ALL_ENVS") != nullptr;
+const bool g_prof_cost = std::getenv("QUANTA_GC_PROFILE_COST") != nullptr;
 
 } // anonymous namespace
 
@@ -632,16 +635,25 @@ public:
                 environment_work_.pop_back();
                 // Re-arm Collector::write_barrier_env's mid-major re-trace
                 // path, same trace-time-clear discipline as trace_cell.
-                if (Collector::major_in_progress_) e->gc_remembered_ = false;
+                if (Collector::major_in_progress_) {
+                    e->gc_remembered_ = false;
+                } else if (e->gc_traced_epoch_ == g_major_epoch && !e->gc_remembered_ && !g_trace_all_envs) {
+                    // A minor does not trace an old cell again unless it was written (its mark is sticky); an environment that was traced since the last major and not written since
+                    // is the same: whatever it names was marked then and is marked still.
+                    continue;
+                }
+                e->gc_traced_epoch_ = g_major_epoch;
                 // Checked where the environment is actually read rather than
                 // at every edge that names it: same catch, once per cycle
                 // instead of once per reference.
                 if (env_hunt()) hunt_check(e, "mark");
-                e->gc_trace(*this);
+                if (g_prof_cost) { const auto a = std::chrono::steady_clock::now(); e->gc_trace(*this); g_env_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - a).count(); g_env_n++; }
+                else e->gc_trace(*this);
             } else {
                 Context* c = context_work_.back();
                 context_work_.pop_back();
-                c->gc_trace(*this);
+                if (g_prof_cost) { const auto a = std::chrono::steady_clock::now(); c->gc_trace(*this); g_ctx_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - a).count(); g_ctx_n++; }
+                else c->gc_trace(*this);
             }
         }
     }
@@ -1594,6 +1606,8 @@ void run_minor_collection() {
     auto t2 = std::chrono::steady_clock::now();
 
     Collector::mark_step(std::chrono::microseconds(-1));
+    const auto t2b = std::chrono::steady_clock::now();
+    const size_t remembered_n = remembered_cells().size();
 
     // The Context survivor pool is rooted only now, after every other root has
     // been traced to exhaustion. A minor doesn't retrace old, unmutated cells,
@@ -1704,7 +1718,9 @@ void run_minor_collection() {
 
     if (prof) {
         auto us = [](auto a, auto b) { return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count(); };
+        if (g_prof_cost) { std::fprintf(stderr, "[gc-prof] minor ctx/env: contexts=%llu (%llu us) envs=%llu (%llu us)\n", (unsigned long long)g_ctx_n, (unsigned long long)g_ctx_ns / 1000, (unsigned long long)g_env_n, (unsigned long long)g_env_ns / 1000); g_ctx_n = g_ctx_ns = g_env_n = g_env_ns = 0; }
         std::fprintf(stderr, "[gc-prof] minor survivors rooted=%zu skipped=%zu\n", rooted_survivors, skipped_survivors);
+        std::fprintf(stderr, "[gc-prof] minor drain split: first=%ldus survivors+second=%ldus remembered=%zu rooted_survivors=%zu skipped=%zu\n", static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(t2b - t2).count()), static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2b).count()), remembered_n, rooted_survivors, skipped_survivors);
         std::fprintf(stderr, "[gc-prof] minor scan_stacks=%ldus roots=%ldus drain=%ldus ephemeron=%ldus verify=%ldus sweep+rebuild=%ldus marked=%zu\n",
                      us(t0,t1), us(t1,t2), us(t2,t3), us(t3,t4), us(t4,t5), us(t5,t6), v.marked_cells);
     }

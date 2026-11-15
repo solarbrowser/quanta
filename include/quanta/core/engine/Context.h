@@ -908,13 +908,14 @@ private:
     // byte is also what keeps sizeof(Environment) in its allocator bin.
     static constexpr uint8_t kInnerCountMax = 255;
     uint8_t inner_count_ = 0;
+private:
     void add_inner() { if (inner_count_ != kInnerCountMax) inner_count_++; }
     void remove_inner() { if (inner_count_ != kInnerCountMax) inner_count_--; }
 
 public:
     // Write-barrier dedup flag, owned by the Collector (set on first binding
     // write per GC cycle, cleared after the cycle).
-    bool gc_remembered_ = false;
+    bool gc_remembered_ : 1 = false;
     // Whether the collector's remembered-envs vector currently holds a raw
     // pointer to this environment, and at which index. That vector is not a GC
     // root, so it does not keep the environment alive, yet the next collection
@@ -931,7 +932,10 @@ public:
     // remove. The barrier keeps at most one live entry per environment (it
     // blanks the previous one before pushing again), which is what makes a
     // single index enough to find and drop it.
-    bool gc_in_remembered_ = false;
+    bool gc_in_remembered_ : 1 = false;
+    // The major epoch (Collector::current_major_epoch) in which a collection last traced this environment; zero before the first. Every mark bit in the heap was cleared when
+    // that epoch began, so what the environment named then is still marked now unless its bindings were written since, which the barrier gc_remembered_ tells.
+    uint8_t gc_traced_epoch_ = 0;
     uint32_t gc_remembered_index_ = 0;
     // Which collection last queued this environment, owned by the Collector.
     // Environments are not cells and have no mark bit, so the marker used to
