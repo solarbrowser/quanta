@@ -629,31 +629,56 @@ public:
     // tracing a gray cell (e.g. Function::trace visiting closure_context_)
     // can push new context/environment work right back.
     void drain_contexts_and_environments() {
+        // A few at a time, their lines asked for before the first is read: an environment (216 bytes) and a context (168) span several cache lines of memory that was last
+        // touched a collection ago, and tracing them one by one waited on each in turn.
+        constexpr size_t kBatch = 8;
         while (!context_work_.empty() || !environment_work_.empty()) {
             if (!environment_work_.empty()) {
-                Environment* e = environment_work_.back();
-                environment_work_.pop_back();
-                // Re-arm Collector::write_barrier_env's mid-major re-trace
-                // path, same trace-time-clear discipline as trace_cell.
-                if (Collector::major_in_progress_) {
-                    e->gc_remembered_ = false;
-                } else if (e->gc_traced_epoch_ == g_major_epoch && !e->gc_remembered_ && !g_trace_all_envs) {
-                    // A minor does not trace an old cell again unless it was written (its mark is sticky); an environment that was traced since the last major and not written since
-                    // is the same: whatever it names was marked then and is marked still.
-                    continue;
+                Environment* batch[kBatch];
+                size_t n = 0;
+                while (n < kBatch && !environment_work_.empty()) {
+                    Environment* e = environment_work_.back();
+                    environment_work_.pop_back();
+                    __builtin_prefetch(e, 0, 3);
+                    __builtin_prefetch(reinterpret_cast<const char*>(e) + 64, 0, 3);
+                    __builtin_prefetch(reinterpret_cast<const char*>(e) + 128, 0, 3);
+                    __builtin_prefetch(reinterpret_cast<const char*>(e) + 192, 0, 3);
+                    batch[n++] = e;
                 }
-                e->gc_traced_epoch_ = g_major_epoch;
-                // Checked where the environment is actually read rather than
-                // at every edge that names it: same catch, once per cycle
-                // instead of once per reference.
-                if (env_hunt()) hunt_check(e, "mark");
-                if (g_prof_cost) { const auto a = std::chrono::steady_clock::now(); e->gc_trace(*this); g_env_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - a).count(); g_env_n++; }
-                else e->gc_trace(*this);
+                for (size_t i = 0; i < n; i++) {
+                    Environment* e = batch[i];
+                    // Re-arm Collector::write_barrier_env's mid-major re-trace
+                    // path, same trace-time-clear discipline as trace_cell.
+                    if (Collector::major_in_progress_) {
+                        e->gc_remembered_ = false;
+                    } else if (e->gc_traced_epoch_ == g_major_epoch && !e->gc_remembered_ && !g_trace_all_envs) {
+                        // A minor does not trace an old cell again unless it was written (its mark is sticky); an environment that was traced since the last major and not written
+                        // since is the same: whatever it names was marked then and is marked still.
+                        continue;
+                    }
+                    e->gc_traced_epoch_ = g_major_epoch;
+                    // Checked where the environment is actually read rather than
+                    // at every edge that names it: same catch, once per cycle
+                    // instead of once per reference.
+                    if (env_hunt()) hunt_check(e, "mark");
+                    if (g_prof_cost) { const auto t = std::chrono::steady_clock::now(); e->gc_trace(*this); g_env_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count(); g_env_n++; }
+                    else e->gc_trace(*this);
+                }
             } else {
-                Context* c = context_work_.back();
-                context_work_.pop_back();
-                if (g_prof_cost) { const auto a = std::chrono::steady_clock::now(); c->gc_trace(*this); g_ctx_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - a).count(); g_ctx_n++; }
-                else c->gc_trace(*this);
+                Context* batch[kBatch];
+                size_t n = 0;
+                while (n < kBatch && !context_work_.empty()) {
+                    Context* c = context_work_.back();
+                    context_work_.pop_back();
+                    __builtin_prefetch(c, 0, 3);
+                    __builtin_prefetch(reinterpret_cast<const char*>(c) + 64, 0, 3);
+                    __builtin_prefetch(reinterpret_cast<const char*>(c) + 128, 0, 3);
+                    batch[n++] = c;
+                }
+                for (size_t i = 0; i < n; i++) {
+                    if (g_prof_cost) { const auto t = std::chrono::steady_clock::now(); batch[i]->gc_trace(*this); g_ctx_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count(); g_ctx_n++; }
+                    else batch[i]->gc_trace(*this);
+                }
             }
         }
     }

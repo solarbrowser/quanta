@@ -4299,8 +4299,15 @@ std::unique_ptr<Object> create_array_with_room(uint32_t capacity) {
     return std::unique_ptr<Object>(array);
 }
 
+// Room in the cell for the properties of an object that is made bare and filled afterwards (an iterator result, a descriptor, a plain record): the first property of one that
+// had none took a block of its own (and made its cell one the sweep has to destroy).
+constexpr uint32_t kBareObjectSlots = 4;
+
 std::unique_ptr<Object> get_pooled_object() {
-    auto obj = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Ordinary));
+    void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(kBareObjectSlots), Object::PureTag{});
+    Object* raw = ::new (cell) Object(Object::ObjectType::Ordinary);
+    raw->adopt_inline_butterfly(sizeof(Object), kBareObjectSlots);
+    auto obj = std::unique_ptr<Object>(raw);
     Object* obj_proto = get_object_prototype();
     if (obj_proto) {
         obj->initialize_prototype_of_new(obj_proto);
@@ -4405,7 +4412,11 @@ std::unique_ptr<Object> create_object(Object* prototype) {
             return get_pooled_object();
         }
         
-        return std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(prototype, Object::ObjectType::Ordinary));
+        void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(kBareObjectSlots), Object::PureTag{});
+        Object* raw = ::new (cell) Object(Object::ObjectType::Ordinary);
+        raw->adopt_inline_butterfly(sizeof(Object), kBareObjectSlots);
+        if (prototype) raw->initialize_prototype_of_new(prototype);
+        return std::unique_ptr<Object>(raw);
     } catch (...) {
         return nullptr;
     }
