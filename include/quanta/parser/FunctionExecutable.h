@@ -8,6 +8,7 @@
 #define QUANTA_FUNCTION_EXECUTABLE_H
 
 #include "quanta/core/vm/Bytecode.h"
+#include "quanta/parser/NamePool.h"
 #include "quanta/lexer/Token.h"
 #include <memory>
 #include <string>
@@ -299,7 +300,8 @@ public:
     // declaration is compiled. Every function carries the text of itself for
     // a toString() almost none of them receives, and on a real script that
     // came to more than the bytecode did.
-    mutable std::string source_text_cut_;
+    // (A pointer, made when something asks: of two hundred thousand executables on a large page none but a handful has one, and a string is 32 bytes.)
+    mutable std::unique_ptr<std::string> source_text_cut_;
     mutable uint32_t source_start_ = 0;
     mutable uint32_t source_end_ = 0;
 
@@ -312,7 +314,7 @@ public:
     }
     const std::string& source_text() const;
     void set_source_text(std::string s) const {
-        source_text_cut_ = std::move(s);
+        source_text_cut_ = std::make_unique<std::string>(std::move(s));
         source_end_ = source_start_;  // no longer wants cutting
     }
 
@@ -323,7 +325,26 @@ public:
     // property key whose runtime value differs across separate evaluations
     // of the same literal) is handled by Function's own per-instance
     // InstanceOverrides, not here -- see Function::set_name.
-    mutable std::string name;
+    // (Kept in the name pool, as the identifiers of the source are: four bytes where a string is thirty-two, and most functions of a page are called by a few hundred names.)
+    class Name {
+    public:
+        Name() = default;
+        Name& operator=(const std::string& text) { id_ = NamePool::intern(text); return *this; }
+        Name& operator=(std::string_view text) { id_ = NamePool::intern(text); return *this; }
+        Name& operator=(const char* text) { id_ = NamePool::intern(text); return *this; }
+        operator const std::string&() const { return NamePool::text(id_); }
+        const std::string& str() const { return NamePool::text(id_); }
+        bool empty() const { return id_ == 0; }
+        size_t size() const { return str().size(); }
+        const char* c_str() const { return str().c_str(); }
+        const char* data() const { return str().data(); }
+        friend bool operator==(const Name& a, const std::string& b) { return a.str() == b; }
+        friend bool operator==(const Name& a, const char* b) { return a.str() == b; }
+        friend bool operator==(const Name& a, const Name& b) { return a.id_ == b.id_; }
+    private:
+        uint32_t id_ = 0;
+    };
+    mutable Name name;
 
     // uint32_t, not size_t: this is a formal parameter count (the compiler
     // itself refuses anything past 64 params). set_declared_length()/

@@ -54,7 +54,7 @@ bool ClosureTemplate::needs_own_context() const {
 // every single minor collection unconditionally -- see FunctionExecutable.h.
 // Eight bytes per decl site is negligible next to that.
 // Then by owner_realm_ (8 bytes): which realm's cells the chunks' feedback names.
-static_assert(sizeof(FunctionExecutable) == 256);
+static_assert(sizeof(FunctionExecutable) == 208);
 #else
 static_assert(sizeof(FunctionExecutable) <= 256);
 #endif
@@ -368,10 +368,11 @@ void FunctionExecutable::borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTN
 // more than the bytecode compiled out of it.
 const std::string& FunctionExecutable::source_text() const {
     if (source_end_ > source_start_ && unit_) {
-        source_text_cut_ = unit_->source_range(source_start_, source_end_);
+        source_text_cut_ = std::make_unique<std::string>(unit_->source_range(source_start_, source_end_));
         source_end_ = source_start_;
     }
-    return source_text_cut_;
+    static const std::string none;
+    return source_text_cut_ ? *source_text_cut_ : none;
 }
 
 const BodyScopeInfo* FunctionExecutable::body_scope_info() const {
