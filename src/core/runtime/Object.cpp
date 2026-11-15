@@ -4302,6 +4302,7 @@ std::unique_ptr<Object> create_array_with_room(uint32_t capacity) {
 // Room in the cell for the properties of an object that is made bare and filled afterwards (an iterator result, a descriptor, a plain record): the first property of one that
 // had none took a block of its own (and made its cell one the sweep has to destroy).
 constexpr uint32_t kBareObjectSlots = 4;
+constexpr uint32_t kBareArrayElements = 4;
 
 std::unique_ptr<Object> get_pooled_object() {
     void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(kBareObjectSlots), Object::PureTag{});
@@ -4316,7 +4317,9 @@ std::unique_ptr<Object> get_pooled_object() {
 }
 
 std::unique_ptr<Object> get_pooled_array() {
-    auto array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
+    // Room for the first four elements in the cell (what the constructor reserved in a block of its own, which made the cell one the sweep has to destroy).
+    auto array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::inline_array_bytes(kBareArrayElements), Object::PureTag{})) Object(Object::ObjectType::Array, Object::StorageAdoptedTag{}));
+    array->adopt_inline_array_butterfly(sizeof(Object), kBareArrayElements);
     Object* array_proto = get_array_prototype();
     if (array_proto) {
         array->initialize_prototype_of_new(array_proto);
@@ -4425,7 +4428,13 @@ std::unique_ptr<Object> create_object(Object* prototype) {
 std::unique_ptr<Object> create_array(uint32_t length) {
     std::unique_ptr<Object> array;
 
-    array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
+    // A short one starts in the cell; a long one asks for its elements at once (set_length below) and would leave that room unused.
+    if (length <= kBareArrayElements) {
+        array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::inline_array_bytes(kBareArrayElements), Object::PureTag{})) Object(Object::ObjectType::Array, Object::StorageAdoptedTag{}));
+        array->adopt_inline_array_butterfly(sizeof(Object), kBareArrayElements);
+    } else {
+        array = std::unique_ptr<Object>(::new (Object::operator new(sizeof(Object), Object::PureTag{})) Object(Object::ObjectType::Array));
+    }
 
     if (!array) {
         return nullptr;
