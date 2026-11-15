@@ -121,6 +121,9 @@ private:
         // reaches for it on every evaluation and the alternative is two
         // string-keyed lookups.
         Object* regexp_prototype = nullptr;
+        // %Array.prototype%, %Object.prototype% and %Map.prototype% of this realm (see Engine::get_realm_intrinsic_prototype, which a page with more than one realm reaches
+        // for on every array a Reflect, Proxy or apply call makes).
+        Object* intrinsic_protos[3] = {nullptr, nullptr, nullptr};
         // The function every arguments object carries as @@iterator, found
         // once on the first arguments object of this realm and kept here:
         // finding it costs a lookup of `Array` on the global object and two
@@ -546,6 +549,8 @@ public:
     void register_built_in_function(const std::string& name, Function* function);
     Object* get_built_in_object(const std::string& name) const;
     Object* regexp_prototype() const;
+    Object* cached_intrinsic_prototype(int kind) const;
+    void cache_intrinsic_prototype(int kind, Object* proto);
     void set_regexp_prototype(Object* proto);
     Object* arguments_iterator() const;
     void set_arguments_iterator(Object* fn);

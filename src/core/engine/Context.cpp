@@ -765,6 +765,18 @@ Object* Context::regexp_prototype() const {
     return nullptr;
 }
 
+Object* Context::cached_intrinsic_prototype(int kind) const {
+    if (builtins_ && builtins_->intrinsic_protos[kind]) return builtins_->intrinsic_protos[kind];
+    if (builtins_root_ && builtins_root_->builtins_) return builtins_root_->builtins_->intrinsic_protos[kind];
+    return nullptr;
+}
+
+void Context::cache_intrinsic_prototype(int kind, Object* proto) {
+    Context* root = builtins_root_ ? builtins_root_ : this;
+    if (!root->builtins_) return;
+    root->builtins_->intrinsic_protos[kind] = proto;
+}
+
 void Context::set_regexp_prototype(Object* proto) {
     if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
     builtins_->regexp_prototype = proto;

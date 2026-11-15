@@ -90,13 +90,27 @@ Context* Engine::find_realm_owning_function(Object* fn) {
 
 Object* Engine::get_realm_intrinsic_prototype(Context* realm, const std::string& ctor_name) {
     if (!realm || !realm->get_global_object()) return nullptr;
-    Value ctor = realm->get_global_object()->get_property(ctor_name);
+    // The three a page with several realms asks for on every array, plain object or Map a Reflect, Proxy or apply call makes (a Solar page: 19 million a minute of "Array") are kept
+    // per realm: found by the realm's own constructor, as the intrinsic is, and not by a lookup of a global a script may have written.
+    int kind = -1;
+    if (ctor_name.size() == 5 && ctor_name == "Array") kind = 0;
+    else if (ctor_name.size() == 6 && ctor_name == "Object") kind = 1;
+    else if (ctor_name.size() == 3 && ctor_name == "Map") kind = 2;
+    if (kind >= 0) {
+        if (Object* cached = realm->cached_intrinsic_prototype(kind)) return cached;
+    }
+    Value ctor;
+    if (kind >= 0) {
+        if (Object* built_in = realm->get_built_in_object(ctor_name)) ctor = built_in->is_function() ? Value(static_cast<Function*>(built_in)) : Value(built_in);
+    }
+    if (!ctor.is_function()) ctor = realm->get_global_object()->get_property(ctor_name);
     if (!ctor.is_function()) return nullptr;
     Value proto = ctor.as_function()->get_property("prototype");
     // %Function.prototype% is itself callable (typeof === "function"); every
     // other builtin's own .prototype is a plain, non-callable object.
-    if (proto.is_function()) return static_cast<Object*>(proto.as_function());
-    return proto.is_object() ? proto.as_object() : nullptr;
+    Object* result = proto.is_function() ? static_cast<Object*>(proto.as_function()) : (proto.is_object() ? proto.as_object() : nullptr);
+    if (kind >= 0 && result && ctor.as_function() == realm->get_built_in_object(ctor_name)) realm->cache_intrinsic_prototype(kind, result);
+    return result;
 }
 
 Object* Engine::realm_intrinsic_prototype_for(Object* new_target_like, const std::string& ctor_name) {
