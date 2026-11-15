@@ -52,8 +52,4 @@
 // Priority 101 so it runs before any allocation that could fix the option.
 __attribute__((constructor(101))) static void quanta_mimalloc_defaults() {
     mi_option_set_default(mi_option_allow_thp, 0);
-    // Memory the program has freed goes back to the system at once, not after the default delay of 10 ms: a burst of garbage (the parse of a page, a layout made again) is
-    // otherwise still resident when the peak is taken. Solar's Wikipedia page with a second layout: 240 -> 226 MB for 1.5 per cent of the time; code.js 214 -> 208 MB, same time.
-    // Only the default is set, so MIMALLOC_PURGE_DELAY still wins.
-    mi_option_set_default(mi_option_purge_delay, 0);
 }
