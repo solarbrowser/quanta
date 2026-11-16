@@ -128,12 +128,14 @@ struct ModuleSource {
     enum class Kind { Script, Json, Text, Bytes, Value, Failure };
     Kind kind = Kind::Failure;
     std::string text;                  // Script, Json, Text
+    std::shared_ptr<const std::string> shared;  // Script: the text, held by the host as well (nothing is copied): `text` is then empty
     std::vector<uint8_t> bytes;        // Bytes: an immutable Uint8Array over them is the default export
     Value value;                // Value: made by the host (a CSSStyleSheet, say), exported as it is
     std::string error;                 // Failure: the message of the TypeError the import rejects with
     Value errorValue;           // Failure: or exactly what to reject with, when the host has one
 
     static ModuleSource Script(std::string source) { ModuleSource s; s.kind = Kind::Script; s.text = std::move(source); return s; }
+    static ModuleSource ScriptShared(std::shared_ptr<const std::string> source) { ModuleSource s; s.kind = Kind::Script; s.shared = std::move(source); return s; }
     static ModuleSource Json(std::string source) { ModuleSource s; s.kind = Kind::Json; s.text = std::move(source); return s; }
     static ModuleSource Text(std::string text) { ModuleSource s; s.kind = Kind::Text; s.text = std::move(text); return s; }
     static ModuleSource Bytes(std::vector<uint8_t> bytes) { ModuleSource s; s.kind = Kind::Bytes; s.bytes = std::move(bytes); return s; }
@@ -469,6 +471,10 @@ public:
     // what a parse costs; a cache that is not for this text, or is damaged, is ignored (`cacheUsed` says which). The
     // compiling is on the Isolate's thread: it shares the heap and the name table with everything that runs.
     CompileResult CompileScript(std::string_view source, const std::string& filename,
+                                std::span<const uint8_t> cache = {});
+    // The same for a text the host already holds as a shared one (a response it keeps for the next page): the Script holds the very text and not a copy of it. A page's scripts are
+    // megabytes, and a copy of each was in the host and in the Script for as long as the page was.
+    CompileResult CompileScript(std::shared_ptr<const std::string> source, const std::string& filename,
                                 std::span<const uint8_t> cache = {});
 
     // Full collection, now. Ordinary collections happen on their own at the

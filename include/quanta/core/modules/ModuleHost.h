@@ -31,6 +31,7 @@ struct ModuleContent {
     };
     Kind kind = Kind::Failure;
     std::string text;               // Script, Json, Text
+    std::shared_ptr<const std::string> shared;  // Script: the text, shared with the host (then `text` is empty)
     std::vector<uint8_t> bytes;     // Bytes
     Value value;                    // Default
     std::string error;              // Failure: the message of the TypeError the import rejects with

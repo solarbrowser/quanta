@@ -1536,7 +1536,10 @@ void ModuleLoader::on_fetched(const std::string& url, const std::string& type, M
     if (fetched_[key].failure.is_undefined() && kind == ModuleContent::Kind::Script) {
         Lexer::LexerOptions lex_opts;
         lex_opts.source_type_module = true;
-        Lexer lexer(fetched_[key].content.text, lex_opts);
+        // (A text the host shares is lexed as it is held: the tokens and the tree name it, for the bodies that are read when they first run, and a copy of it was one more of a page's megabytes.)
+        Lexer lexer(fetched_[key].content.shared ? fetched_[key].content.shared : std::make_shared<const std::string>(std::move(fetched_[key].content.text)), lex_opts);
+        fetched_[key].content.shared.reset();
+        fetched_[key].content.text = std::string();
         TokenSequence token_sequence = lexer.tokenize();
         Parser::ParseOptions parse_opts;
         parse_opts.source_type_module = true;

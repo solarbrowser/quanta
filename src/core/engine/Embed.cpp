@@ -243,6 +243,7 @@ private:
             case ModuleSource::Kind::Failure: out.kind = Quanta::ModuleContent::Kind::Failure; break;
         }
         out.text = std::move(source.text);
+        out.shared = std::move(source.shared);
         out.bytes = std::move(source.bytes);
         out.value = source.value;
         out.error = std::move(source.error);
@@ -718,9 +719,12 @@ std::vector<uint8_t> Script::SerializeCache() const {
 }
 
 CompileResult Isolate::CompileScript(std::string_view source, const std::string& filename, std::span<const uint8_t> cache) {
+    return CompileScript(std::make_shared<const std::string>(source), filename, cache);
+}
+
+CompileResult Isolate::CompileScript(std::shared_ptr<const std::string> text, const std::string& filename, std::span<const uint8_t> cache) {
     CompileResult result;
     HeapScope heap_scope(isolate_->heap());
-    auto text = std::make_shared<const std::string>(source);
     Quanta::ScriptCache loaded;
     const Quanta::ScriptCache* use = nullptr;
     if (!cache.empty() && Quanta::ScriptCache::deserialize(cache.data(), cache.size(), *text, loaded)) {
