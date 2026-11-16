@@ -708,7 +708,7 @@ inline bool typed_length_ok(Object* obj) {
     return ok;
 }
 
-// Custom objects whose named reads are the plain object ones (a generator, an iterator): their methods sit on the prototype and
+// Custom objects whose named reads are the plain object ones (a generator, an iterator, a host object with no hooks): their methods sit on the prototype and
 // nothing about the names is theirs, so a cached prototype entry is as good for them as for an ordinary object.
 inline bool plain_custom_named(const Object* o) {
     if (o->get_type() != Object::ObjectType::Custom) return false;
@@ -718,6 +718,11 @@ inline bool plain_custom_named(const Object* o) {
         case CustomObjectBase::CustomKind::StringIterator: case CustomObjectBase::CustomKind::MapIterator:
         case CustomObjectBase::CustomKind::SetIterator:
             return true;
+        // An embedder's object (a DOM node) whose type has no legacy or exotic hooks: its reads are the plain object's too (its getters and methods
+        // sit on the prototype chain), so a cached prototype entry is as good for it as for any other receiver. The entry already holds the receiver's
+        // shape and prototype (a Text and an Element do not share an entry) and is retired by the same epochs.
+        case CustomObjectBase::CustomKind::Host:
+            return !static_cast<const DOMObject*>(static_cast<const CustomObjectBase*>(o))->answers_with_hooks();
         default:
             return false;
     }
@@ -1246,7 +1251,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     // desc_epoch retires the entry if the accessor is
                     // redefined.
                     if (rooted && fb_slot && !(fb && fb->proto_mega) && getter_fn && obj->get_shape() &&
-                        fast_type_ok &&
+                        (fast_type_ok || (recv_type == Object::ObjectType::Custom && exotic_proto_ok)) &&
                         shape_fast_path_ok(proto->get_type()) &&
                         !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
                         learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), proto, 0,
