@@ -6754,9 +6754,33 @@ void BytecodeCompiler::record_env_slot_info(const std::vector<BytecodeChunk::Loo
     }
 }
 
+void ClosureNameTable::Add(const std::string& name, bool exposed, ClosureSlotInfo info) {
+    if (name.size() > 0xffff) return;  // never a real name; the read falls back to the lookup
+    entries.push_back(Entry{static_cast<uint32_t>(chars.size()), static_cast<uint16_t>(name.size()), info.slot,
+                            static_cast<uint8_t>(exposed), static_cast<int32_t>(info.depth)});
+    chars += name;
+}
+
+void ClosureNameTable::Finish() {
+    std::sort(entries.begin(), entries.end(), [this](const Entry& a, const Entry& b) {
+        return std::string_view(chars).substr(a.offset, a.length) < std::string_view(chars).substr(b.offset, b.length);
+    });
+    entries.shrink_to_fit();
+    chars.shrink_to_fit();
+}
+
+const ClosureNameTable::Entry* ClosureNameTable::Find(std::string_view name) const {
+    auto it = std::lower_bound(entries.begin(), entries.end(), name, [this](const Entry& e, std::string_view n) {
+        return std::string_view(chars).substr(e.offset, e.length) < n;
+    });
+    if (it == entries.end() || std::string_view(chars).substr(it->offset, it->length) != name) return nullptr;
+    return &*it;
+}
+
 void BytecodeCompiler::finalize_ancestor_chains() {
     if (pending_ancestor_chain_sites_.empty()) return;
-    auto slots = std::make_shared<std::unordered_map<std::string, ClosureSlotInfo>>();
+    auto names = std::make_shared<ClosureNameTable>();
+    std::unordered_set<std::string> exposed;
     for (const auto& [name, info] : env_slot_info_) {
         // sibling_safe_names_ entries are excluded: their (slot, depth) is
         // only proven valid for reads that stay inside this function (the
@@ -6764,7 +6788,8 @@ void BytecodeCompiler::finalize_ancestor_chains() {
         // what a closure escaping it might see) -- see ClosureSlotInfo.
         auto it = global_decl_count_.find(name);
         if (it != global_decl_count_.end() && it->second == 1) {
-            (*slots)[name] = ClosureSlotInfo{info.slot, info.depth};
+            names->Add(name, true, ClosureSlotInfo{info.slot, info.depth});
+            exposed.insert(name);
         }
     }
     // Every OTHER name this function itself considers local -- the exact
@@ -6774,18 +6799,21 @@ void BytecodeCompiler::finalize_ancestor_chains() {
     // slot prediction), so a read written inside a nested closure meaning
     // THIS name has to mean the declaration here, never an unrelated
     // same-named one further out. See ClosureScopeChain::ambiguous.
-    auto ambiguous = std::make_shared<std::unordered_set<std::string>>();
-    for (const auto& name : env_names_) if (!slots->count(name)) ambiguous->insert(name);
-    for (const auto& [name, reg] : locals_) { (void)reg; if (!slots->count(name)) ambiguous->insert(name); }
-    for (const auto& name : hoisted_fn_names_) if (!slots->count(name)) ambiguous->insert(name);
-    if (!self_name_.empty() && !slots->count(self_name_)) ambiguous->insert(self_name_);
-    for (const auto& name : class_decl_names_) if (!slots->count(name)) ambiguous->insert(name);
+    std::unordered_set<std::string> stopped;
+    auto stop = [&](const std::string& name) {
+        if (!exposed.count(name) && stopped.insert(name).second) names->Add(name, false, ClosureSlotInfo{0, 0});
+    };
+    for (const auto& name : env_names_) stop(name);
+    for (const auto& [name, reg] : locals_) { (void)reg; stop(name); }
+    for (const auto& name : hoisted_fn_names_) stop(name);
+    if (!self_name_.empty()) stop(self_name_);
+    for (const auto& name : class_decl_names_) stop(name);
+    names->Finish();
     auto& closures = chunk_->ensure_closures();
     for (const auto& [index, creation_depth] : pending_ancestor_chain_sites_) {
         auto layer = std::make_shared<ClosureScopeChain>();
         layer->outer = ancestor_chain_;
-        layer->slots = slots;
-        layer->ambiguous = ambiguous;
+        layer->names = names;
         layer->entry_hop = 1 + creation_depth;
         layer->child_has_self_name_wrapper = closures[index].needs_self_binding;
         closures[index].outer_scope_chain = std::move(layer);
@@ -6866,9 +6894,9 @@ bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, ui
             hop += 1;
         }
         total += hop;
-        auto it = node->slots->find(name);
-        if (it != node->slots->end()) {
-            const int h = total - it->second.depth;
+        const ClosureNameTable::Entry* found = node->names->Find(name);
+        if (found && found->exposed) {
+            const int h = total - found->depth;
             // h == 0 is valid (a register-mode child's hop 0 already IS an
             // ancestor's own environment -- see find_ancestor_slot's own
             // comment on first_layer) and callers emit Op::LdaEnvSlot for
@@ -6876,14 +6904,14 @@ bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, ui
             // function case uses. Only genuinely too-deep nesting bails.
             if (h < 0 || h > 255) return false;  // pathological nesting; LdaLookup still answers it
             hops = h;
-            slot = it->second.slot;
+            slot = found->slot;
             return true;
         }
         // This layer's own function declares `name` too, just not safely
         // (ambiguous, or register-only with no predicted slot) -- stopping
         // here (rather than continuing outward) is what keeps a read from
         // ever matching an unrelated same-named declaration past it.
-        if (node->ambiguous->count(name)) return false;
+        if (found) return false;
     }
     return false;
 }

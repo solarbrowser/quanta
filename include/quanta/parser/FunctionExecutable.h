@@ -12,6 +12,7 @@
 #include "quanta/lexer/Token.h"
 #include <chrono>
 #include <memory>
+#include <string_view>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -594,10 +595,22 @@ struct ClosureSlotInfo { uint8_t slot; int depth; };
 // this, two functions that happen to reuse a short name (every minifier's
 // output) could make a nested closure's `x` resolve to a completely
 // different `x` several scopes out.
+// The two name sets of a layer (`slots` and `ambiguous` above) in one table: the names packed in one string and a
+// sorted 12-byte record for each, in place of a hash node per name (about 70 bytes each) and a bucket array.
+struct ClosureNameTable {
+    struct Entry { uint32_t offset; uint16_t length; uint8_t slot; uint8_t exposed; int32_t depth; };
+    std::string chars;
+    std::vector<Entry> entries;  // sorted by name
+    // Adds a name: exposed ones carry (slot, depth), the others only stop the walk. Call Finish() after the last.
+    void Add(const std::string& name, bool exposed, ClosureSlotInfo info);
+    void Finish();
+    // Null when the layer's function does not declare the name at all.
+    const Entry* Find(std::string_view name) const;
+};
+
 struct ClosureScopeChain {
     std::shared_ptr<const ClosureScopeChain> outer;
-    std::shared_ptr<const std::unordered_map<std::string, ClosureSlotInfo>> slots;
-    std::shared_ptr<const std::unordered_set<std::string>> ambiguous;
+    std::shared_ptr<const ClosureNameTable> names;
     int entry_hop = 0;
     // The function this layer was built for is a named function expression, so
     // its closure environment is a wrapper holding only its own name, one hop
