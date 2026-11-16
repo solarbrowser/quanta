@@ -57,8 +57,9 @@ public:
     }
 
     // The spelling an embedder's DOMObject::Visit reports its edges with.
-    void Mark(Object* o) { visit_object(o); }
-    void Mark(String* s) { visit_string(s); }
+    // (A null is most of what a host type reports: asked here, not by a virtual call that is made to find that out.)
+    void Mark(Object* o) { if (o) visit_object(o); }
+    void Mark(String* s) { if (s) visit_string(s); }
     void Mark(Symbol* s) { visit_symbol(s); }
     void Mark(BigInt* b) { visit_bigint(b); }
     void Mark(const Value& v) { visit(v); }
