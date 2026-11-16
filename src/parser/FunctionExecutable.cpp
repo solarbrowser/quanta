@@ -54,7 +54,7 @@ bool ClosureTemplate::needs_own_context() const {
 // every single minor collection unconditionally -- see FunctionExecutable.h.
 // Eight bytes per decl site is negligible next to that.
 // Then by owner_realm_ (8 bytes): which realm's cells the chunks' feedback names.
-static_assert(sizeof(FunctionExecutable) == 208);
+static_assert(sizeof(FunctionExecutable) == 184);  // (208 before the parameters were kept in the name pool: the size class went from 224 to 192)
 #else
 static_assert(sizeof(FunctionExecutable) <= 256);
 #endif
@@ -91,8 +91,21 @@ void FunctionExecutable::move_to_settled() const {
     link_live(settled_head_);
 }
 
+void ParamNames::push_back(const std::string& name) {
+    auto grown = std::make_unique<uint32_t[]>(count_ + 1);
+    for (uint32_t i = 0; i < count_; ++i) grown[i] = ids_[i];
+    grown[count_] = NamePool::intern(name);
+    ids_ = std::move(grown);
+    ++count_;
+}
+
+const std::vector<std::unique_ptr<Parameter>>& FunctionExecutable::no_parameter_nodes() {
+    static const std::vector<std::unique_ptr<Parameter>> none;
+    return none;
+}
+
 bool FunctionExecutable::has_parameter_chunks() const {
-    for (const auto& p : parameter_objects) {
+    for (const auto& p : parameter_objects()) {
         if (p && (p->default_chunk() || p->pattern_chunk())) return true;
     }
     return false;
@@ -108,18 +121,21 @@ FunctionExecutable::~FunctionExecutable() {
 }
 
 bool FunctionExecutable::param_has_default(size_t i) const {
-    return parameter_objects[i] && parameter_objects[i]->has_default();
+    const Parameter* p = parameter_node(i);
+    return p && p->has_default();
 }
 
 bool FunctionExecutable::param_has_pattern(size_t i) const {
-    return parameter_objects[i] && parameter_objects[i]->has_destructuring();
+    const Parameter* p = parameter_node(i);
+    return p && p->has_destructuring();
 }
 
 size_t ParamList::size() const {
-    return names ? names->size() : (nodes ? nodes->size() : 0);
+    return packed ? packed->size() : names ? names->size() : (nodes ? nodes->size() : 0);
 }
 const std::string& ParamList::name(size_t i) const {
     static const std::string kEmpty;
+    if (packed) return (*packed)[i];
     if (names) return (*names)[i];
     const Parameter* p = node(i);
     return p && p->get_name() ? p->get_name()->get_name() : kEmpty;
@@ -147,31 +163,37 @@ const ASTNode* ParamList::pattern(size_t i) const {
 
 ParamList FunctionExecutable::param_list() const {
     ParamList l;
-    l.nodes = &parameter_objects;
-    l.names = &parameters;
+    l.nodes = &parameter_objects();
+    l.packed = &parameters;
     l.rest_last = has_rest_param_;
     return l;
+}
+
+// Before a parameter is added: the list of nodes is made when the first one that has something to run comes, with a null for each parameter there is.
+void FunctionExecutable::note_parameter_node(bool keep) {
+    if (parameter_nodes_ || !keep) return;
+    parameter_nodes_ = std::make_unique<std::vector<std::unique_ptr<Parameter>>>();
+    for (size_t i = 0; i < parameters.size(); ++i) parameter_nodes_->push_back(nullptr);
 }
 
 void FunctionExecutable::add_parameter_owned(std::unique_ptr<Parameter> p) {
     if (!p) return;
     if (p->is_rest()) has_rest_param_ = true;
-    parameters.push_back(p->get_name() ? p->get_name()->get_name() : std::string());
     const bool keep = p->has_default() || p->has_destructuring();
-    parameter_objects.push_back(keep ? std::move(p) : nullptr);
+    note_parameter_node(keep);
+    parameters.push_back(p->get_name() ? p->get_name()->get_name() : std::string());
+    if (parameter_nodes_) parameter_nodes_->push_back(keep ? std::move(p) : nullptr);
 }
 
 void FunctionExecutable::add_parameter(const Parameter& p, bool copy) {
     if (p.is_rest()) has_rest_param_ = true;
-    parameters.push_back(p.get_name() ? p.get_name()->get_name() : std::string());
     // Only a parameter with something to run keeps its node; a name and a bit
     // say everything about the rest of them.
-    if (p.has_default() || p.has_destructuring()) {
-        parameter_objects.push_back(
-            copy ? std::unique_ptr<Parameter>(static_cast<Parameter*>(p.clone().release()))
-                 : std::unique_ptr<Parameter>());
-    } else {
-        parameter_objects.push_back(nullptr);
+    const bool keep = p.has_default() || p.has_destructuring();
+    note_parameter_node(keep);
+    parameters.push_back(p.get_name() ? p.get_name()->get_name() : std::string());
+    if (parameter_nodes_) {
+        parameter_nodes_->push_back(keep && copy ? std::unique_ptr<Parameter>(static_cast<Parameter*>(p.clone().release())) : std::unique_ptr<Parameter>());
     }
 }
 
@@ -181,7 +203,7 @@ void FunctionExecutable::drop_feedback_of(const Realm* realm) {
             if (realm && exe->owner_realm_ != realm) continue;
             if (exe->bytecode_chunk) exe->bytecode_chunk->drop_feedback();
             if (exe->suspendable_chunk) exe->suspendable_chunk->drop_feedback();
-            for (const auto& p : exe->parameter_objects) {
+            for (const auto& p : exe->parameter_objects()) {
                 if (!p) continue;
                 if (p->default_chunk()) p->default_chunk()->drop_feedback();
                 if (p->pattern_chunk()) p->pattern_chunk()->drop_feedback();
@@ -259,13 +281,13 @@ void FunctionExecutable::trace_chunks_if_needed(Visitor& v) const {
         gc_traced_epoch_ = epoch;
         gc_feedback_dirty_ = false;
     }
-    trace_parameter_chunks(parameter_objects, v);
+    trace_parameter_chunks(parameter_objects(), v);
 }
 
 void FunctionExecutable::trace_chunks_unconditional(Visitor& v) const {
     if (bytecode_chunk) bytecode_chunk->trace(v);
     if (suspendable_chunk) suspendable_chunk->trace(v);
-    trace_parameter_chunks(parameter_objects, v);
+    trace_parameter_chunks(parameter_objects(), v);
 }
 
 // Both body setters funnel through here: the directive is a fact about the

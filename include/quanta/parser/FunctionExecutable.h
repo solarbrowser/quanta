@@ -98,9 +98,45 @@ inline ExecutableRef<FunctionExecutable> make_executable_ref();
 // three questions each, plus the node for the few that carry something to run.
 // A literal hands over its own nodes, all of them present; an executable hands
 // over what it kept, which for a parameter that is only a name is nothing.
+// The names of a function's parameters, kept in the name pool: four bytes for each and one pointer for the list, where a vector of strings was twenty-four bytes, the
+// block for it, and thirty-two for each name (a function of a large page has one or two, and there are a hundred thousand of them).
+class ParamNames {
+public:
+    ParamNames() = default;
+    ParamNames(const ParamNames&) = delete;
+    ParamNames& operator=(const ParamNames&) = delete;
+    size_t size() const { return count_; }
+    bool empty() const { return count_ == 0; }
+    const std::string& operator[](size_t i) const { return NamePool::text(ids_[i]); }
+    void push_back(const std::string& name);
+    ParamNames& operator=(const std::vector<std::string>& names) {
+        ids_.reset();
+        count_ = 0;
+        for (const std::string& n : names) push_back(n);
+        return *this;
+    }
+    class const_iterator {
+    public:
+        const_iterator(const ParamNames* list, size_t at) : list_(list), at_(at) {}
+        const std::string& operator*() const { return (*list_)[at_]; }
+        const_iterator& operator++() { ++at_; return *this; }
+        bool operator!=(const const_iterator& o) const { return at_ != o.at_; }
+        bool operator==(const const_iterator& o) const { return at_ == o.at_; }
+    private:
+        const ParamNames* list_;
+        size_t at_;
+    };
+    const_iterator begin() const { return {this, 0}; }
+    const_iterator end() const { return {this, count_}; }
+private:
+    std::unique_ptr<uint32_t[]> ids_;
+    uint32_t count_ = 0;
+};
+
 struct ParamList {
     const std::vector<std::unique_ptr<Parameter>>* nodes = nullptr;
     const std::vector<std::string>* names = nullptr;  // null when nodes carry them
+    const ParamNames* packed = nullptr;               // the names of an executable (instead of `names`)
     bool rest_last = false;
 
     size_t size() const;
@@ -111,7 +147,7 @@ struct ParamList {
     const ASTNode* default_value(size_t i) const;
     const ASTNode* pattern(size_t i) const;
     const Parameter* node(size_t i) const {
-        return nodes && (*nodes)[i] ? (*nodes)[i].get() : nullptr;
+        return nodes && i < nodes->size() && (*nodes)[i] ? (*nodes)[i].get() : nullptr;
     }
     bool empty() const { return size() == 0; }
 
@@ -215,8 +251,18 @@ public:
     // which on a real script is a few hundred parameters out of tens of
     // thousands. Both vectors stay the same length so an index means the same
     // thing in either.
-    std::vector<std::unique_ptr<Parameter>> parameter_objects;
-    std::vector<std::string> parameters;
+    // (Made when the first parameter with something to run comes: of a hundred thousand functions of a large page a few hundred have one, and an empty vector is twenty-four
+    // bytes and, with a null for each name, a block of its own.) When it is there it has a place for each parameter.
+    std::unique_ptr<std::vector<std::unique_ptr<Parameter>>> parameter_nodes_;
+    ParamNames parameters;
+    const std::vector<std::unique_ptr<Parameter>>& parameter_objects() const {
+        return parameter_nodes_ ? *parameter_nodes_ : no_parameter_nodes();
+    }
+    const Parameter* parameter_node(size_t i) const {
+        return parameter_nodes_ && i < parameter_nodes_->size() ? (*parameter_nodes_)[i].get() : nullptr;
+    }
+    static const std::vector<std::unique_ptr<Parameter>>& no_parameter_nodes();
+    void note_parameter_node(bool keep);
 
     size_t param_count() const { return parameters.size(); }
     const std::string& param_name(size_t i) const { return parameters[i]; }

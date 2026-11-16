@@ -365,9 +365,9 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
         create_arguments_object(*exec_ctx, args);
     }
 
-    if (!param_objs.empty()) {
+    if (get_arity() != 0) {
         size_t regular_count = 0;
-        for (size_t i = 0; i < param_objs.size(); i++) {
+        for (size_t i = 0; i < get_arity(); i++) {
             if (!param_is_rest(i)) regular_count++;
         }
         {
@@ -378,8 +378,8 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
             exec_ctx->set_eval_param_names(std::move(pnames));
         }
         exec_ctx->set_in_param_eval(true);
-        for (size_t i = 0; i < param_objs.size(); ++i) {
-            const Parameter* param = param_objs[i].get();
+        for (size_t i = 0; i < get_arity(); ++i) {
+            const Parameter* param = parameter_node(i);
             // Only a parameter carrying something to run keeps a node; the
             // rest are a name and a bit.
             const std::string& pname_i = get_parameters()[i];
@@ -1880,9 +1880,9 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
 
     // Bind parameters
     const auto& param_objs = get_parameter_objects();
-    if (!param_objs.empty()) {
+    if (get_arity() != 0) {
         size_t regular_count = 0;
-        for (size_t i = 0; i < param_objs.size(); i++) {
+        for (size_t i = 0; i < get_arity(); i++) {
             if (!param_is_rest(i)) regular_count++;
         }
         gen_ctx->set_eval_arguments_conflict(true);
@@ -1894,8 +1894,8 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
             gen_ctx->set_eval_param_names(std::move(pnames));
         }
         gen_ctx->set_in_param_eval(true);
-        for (size_t i = 0; i < param_objs.size(); ++i) {
-            const Parameter* param = param_objs[i].get();
+        for (size_t i = 0; i < get_arity(); ++i) {
+            const Parameter* param = parameter_node(i);
             // Only a parameter carrying something to run keeps a node; the
             // rest are a name and a bit.
             const std::string& pname_i = get_parameters()[i];

@@ -119,7 +119,7 @@ static Environment* capture_closure_environment(Context* closure_context,
 
 // Duplicate parameter names share one binding; only the last occurrence is live-mapped.
 // Shared by setup_mapped_arguments() and the pre-pass seeding raw element values.
-static bool param_gets_mapped_accessor(const std::vector<std::string>& names, size_t mi) {
+static bool param_gets_mapped_accessor(const ParamNames& names, size_t mi) {
     const std::string& pname = names[mi];
     if (pname.empty() || pname[0] == '_') return false;
     for (size_t later = mi + 1; later < names.size(); later++) {
@@ -320,8 +320,8 @@ Function::~Function() {
 
 void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> args, Object* arguments_obj) {
     const FunctionExecutable* exe = executable_.get();
-    const std::vector<std::string>& param_names =
-        exe ? exe->parameters : *(new std::vector<std::string>());
+    static const ParamNames kNone;
+    const ParamNames& param_names = exe ? exe->parameters : kNone;
     // ES5 10.6 / ES6 9.4.4: mapped arguments only for simple, non-strict parameter lists.
     bool is_simple_params = true;
     for (size_t i = 0; exe && i < exe->param_count(); i++) {
@@ -401,8 +401,8 @@ std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::s
     }
     Object::DescriptorEpochHold no_epoch_bump;
     const FunctionExecutable* exe = executable_.get();
-    static const std::vector<std::string> kNoNames;
-    const std::vector<std::string>& param_names = exe ? exe->parameters : kNoNames;
+    static const ParamNames kNoNames;
+    const ParamNames& param_names = exe ? exe->parameters : kNoNames;
     auto arguments_obj = ObjectFactory::create_array(args.size());
     // Elements for non-mapped indices; mapped ones get accessor descriptors below.
     // Only skip elements for simple param lists (no defaults/rest/destructuring).
@@ -498,7 +498,16 @@ bool Function::param_is_rest(size_t i) const {
 
 const std::vector<std::unique_ptr<Parameter>>& Function::get_parameter_objects() const {
     static const std::vector<std::unique_ptr<Parameter>> empty;
-    return executable_ ? executable_->parameter_objects : empty;
+    return executable_ ? executable_->parameter_objects() : empty;
+}
+
+size_t Function::get_arity() const { return get_parameters().size(); }
+
+const Parameter* Function::parameter_node(size_t i) const { return executable_ ? executable_->parameter_node(i) : nullptr; }
+
+const ParamNames& Function::get_parameters() const {
+    static const ParamNames empty;
+    return executable_ ? executable_->parameters : empty;
 }
 
 // A destructuring parameter names its own bindings, which have to exist in the
@@ -2632,7 +2641,7 @@ std::vector<std::string> Function::parameter_bound_names() const {
     const FunctionExecutable* exe = executable_.get();
     for (size_t i = 0; exe && i < exe->param_count(); i++) {
         if (!exe->param_name(i).empty()) names.push_back(exe->param_name(i));
-        const Parameter* p = exe->parameter_objects[i].get();
+        const Parameter* p = exe->parameter_node(i);
         if (p && p->has_destructuring()) {
             const ASTNode* pat = p->get_destructuring_pattern();
             if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {

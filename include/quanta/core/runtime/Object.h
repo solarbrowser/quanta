@@ -71,6 +71,7 @@ class Context;
 class Environment;
 class ASTNode;
 class Parameter;
+class ParamNames;
 class Visitor;
 
 class Object {
@@ -1930,10 +1931,7 @@ public:
         overrides.name = name;
         overrides.has_name = true;
     }
-    const std::vector<std::string>& get_parameters() const {
-        static const std::vector<std::string> empty;
-        return executable_ ? executable_->parameters : empty;
-    }
+    const ParamNames& get_parameters() const;
     // Out-of-line (Function.cpp): the static empty-vector fallback's
     // destructor needs Parameter complete, which this header can't provide
     // (only forward-declared here to avoid a runtime->parser header cycle).
@@ -1941,7 +1939,9 @@ public:
     // A parameter that is only a name keeps no node; these answer for it.
     bool param_is_rest(size_t i) const;
     const ASTNode* get_body() const { return ast_body(); }
-    size_t get_arity() const { return get_parameters().size(); }
+    size_t get_arity() const;
+    // The node of parameter i when it has something to run (a default or a pattern), else null.
+    const class Parameter* parameter_node(size_t i) const;
     bool is_native() const { return is_native_; }
     bool native_captures_ctx() const { return native_captures_ctx_; }
     // For natives that read and compute only: no closure over the context, no
