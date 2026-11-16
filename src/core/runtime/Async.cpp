@@ -651,6 +651,8 @@ void AsyncGenerator::fiber_entry(mco_coro* co) {
 }
 
 void AsyncGenerator::enter_fiber() {
+    // (No coroutine once the generator completed and released it: the continuation of an await that was still on its way, when `return()` ended it, has nothing to resume.)
+    if (!fiber_ || !fiber_->co) return;
     if (fiber_->abandoned()) return;  // (its realm was left)
     auto* prev = current_;
     current_ = this;
