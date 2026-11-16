@@ -2210,7 +2210,9 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
 Value perform_await(Context& ctx, Value awaited, bool has_argument) {
     // Async generator fiber path
     AsyncGenerator* async_gen = AsyncGenerator::get_current();
-    if (async_gen && async_gen->fiber_->co != nullptr) {
+    // (Only when it is the generator's own fiber that runs: an async function called from inside the generator runs on a fiber of its own, and its await has to
+    // suspend that one, not the generator's, from a stack that is not the generator's.)
+    if (async_gen && async_gen->fiber_->co != nullptr && async_gen->fiber_->co == mco_running()) {
         Value expr_val = awaited;
 
         Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
