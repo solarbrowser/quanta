@@ -303,6 +303,16 @@ void Engine::shutdown() {
         }
         realm_->retire();
         global_context_->adopt_realm(std::move(realm_));
+        // Contexts that outlive the Engine must not name it: a function of the realm that is called later (a
+        // FinalizationRegistry's cleanup the collector found work for, a callback held by something alive) makes a
+        // Context of its own, which registers itself with the Engine of the one it is made from.
+        global_context_->rebind_engine(nullptr);
+        for (Context* ctx : survivor_contexts_) {
+            ctx->rebind_engine(nullptr);
+            // (What the Isolate is closing with is left to the process, as it was.)
+            if (!isolate_->closing()) isolate_->retired_contexts_.emplace_back(ctx);
+        }
+        survivor_contexts_.clear();
         isolate_->retired_contexts_.push_back(std::move(global_context_));
     } else {
         global_context_.reset();

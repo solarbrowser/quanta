@@ -2104,6 +2104,8 @@ bool FinalizationRegistry::unregister(Object* token_obj, Symbol* token_sym) {
 
 void FinalizationRegistry::enqueue_cleanup_job() {
     if (!context_) return;
+    // (A registry of a realm that was left has nobody to tell: its callback would run a dead page's code.)
+    if (context_->realm() && context_->realm()->dead()) return;
     FinalizationRegistry* self = this;
     context_->queue_microtask([self]() {
         auto& cells = self->cells_;
