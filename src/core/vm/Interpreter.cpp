@@ -708,6 +708,12 @@ inline bool typed_length_ok(Object* obj) {
     return ok;
 }
 
+// An embedder's object (a DOM node, a collection of them).
+inline bool is_host_object(const Object* o) {
+    return o->get_type() == Object::ObjectType::Custom &&
+           static_cast<const CustomObjectBase*>(o)->get_custom_kind() == CustomObjectBase::CustomKind::Host;
+}
+
 // Custom objects whose named reads are the plain object ones (a generator, an iterator, a host object with no hooks): their methods sit on the prototype and
 // nothing about the names is theirs, so a cached prototype entry is as good for them as for an ordinary object.
 inline bool plain_custom_named(const Object* o) {
@@ -9046,6 +9052,12 @@ QUANTA_HANDLER Value h_gen_GetKeyed(HANDLER_PARAMS) {
                         acc = typed->get_element_unchecked(index);
                         break;
                     }
+                    // A host object's index (children[i], childNodes[i]): the hook is asked for it, not the index made a string and parsed back.
+                    if (Object* host = as_object_like(recv); host && is_host_object(host)) {
+                        acc = host->get_element(index);
+                        CHECK_EXC();
+                        break;
+                    }
                 }
                 // The common case is already a string, and to_property_key()
                 // would only copy it byte-for-byte out of the cell it already
@@ -9109,6 +9121,11 @@ QUANTA_HANDLER Value h_GetKeyedWide(HANDLER_PARAMS) {
                 }
                 if (typed_element_slot(recv, index, typed)) {
                     acc = typed->get_element_unchecked(index);
+                    break;
+                }
+                if (Object* host = as_object_like(recv); host && is_host_object(host)) {
+                    acc = host->get_element(index);
+                    CHECK_EXC();
                     break;
                 }
             }

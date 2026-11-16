@@ -311,6 +311,20 @@ Value DOMObject::legacy_get_property(const std::string& key) const {
     return ordinary_get(key);
 }
 
+Value DOMObject::legacy_get_element(uint32_t index) const {
+    {
+        QUANTA_EXOTIC(get)
+        if (exotic_ctx) return exotic->get(*exotic_ctx, const_cast<DOMObject*>(this), std::to_string(index));
+    }
+    const DOMLegacyHooks* hooks = (type_ && g_ordinary_self != this) ? type_->legacy : nullptr;
+    Context* ctx = hooks && hooks->indexed_get ? hook_context() : nullptr;
+    if (!ctx) return legacy_get_property(std::to_string(index));
+    Value value;
+    if (hooks->indexed_get(*ctx, const_cast<DOMObject*>(this), index, &value)) return value;
+    // (An index the hook has no element for is not looked for among the named properties: the ordinary property of that name, if any.)
+    return ordinary_get(std::to_string(index));
+}
+
 bool DOMObject::legacy_set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
     {
         QUANTA_EXOTIC(set)

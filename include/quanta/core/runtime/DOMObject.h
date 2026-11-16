@@ -314,6 +314,8 @@ public:
     bool legacy_has_property(const std::string& key) const;
     bool legacy_has_own_property(const std::string& key) const;
     Value legacy_get_property(const std::string& key) const;
+    // The same for an index: the hook is asked for it directly, without the index being made a string to be read back as one.
+    Value legacy_get_element(uint32_t index) const;
     bool legacy_set_property(const std::string& key, const Value& value, PropertyAttributes attrs);
     bool legacy_delete_property(const std::string& key);
     std::vector<std::string> legacy_get_own_property_keys() const;

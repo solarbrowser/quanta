@@ -2100,7 +2100,7 @@ Value Object::get_element(uint32_t index) const {
     // A legacy platform object answers its indices itself.
     if (get_type() == ObjectType::Custom &&
         static_cast<const CustomObjectBase*>(this)->get_custom_kind() == CustomObjectBase::CustomKind::Host) {
-        return static_cast<const DOMObject*>(this)->legacy_get_property(std::to_string(index));
+        return static_cast<const DOMObject*>(this)->legacy_get_element(index);
     }
     // TypedArrayBase::get_element(size_t) is a different signature, not a virtual
     // override of this uint32_t one -- dispatch explicitly so generic Array.prototype
