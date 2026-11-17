@@ -310,6 +310,7 @@ void init_once() {
     if (const char* t = std::getenv("QUANTA_JIT_MODE")) g_cfg.mode = static_cast<uint32_t>(std::atoi(t));
     if (const char* t = std::getenv("QUANTA_JIT_MAXSLOW")) g_cfg.max_slow_per_entry = static_cast<uint32_t>(std::atoi(t));
     if (const char* t = std::getenv("QUANTA_JIT_THRESHOLD")) g_cfg.threshold = static_cast<uint32_t>(std::atoi(t));
+    if (const char* t = std::getenv("QUANTA_JIT_MAXMAPPED_MB")) g_cfg.max_mapped_bytes = static_cast<size_t>(std::atoi(t)) << 20;  // the machine code kept at once, in megabytes
     if (const char* d = std::getenv("QUANTA_JIT_DUMP")) g_cfg.dump_dir = d;
     if (const char* m = std::getenv("QUANTA_JIT_MAXBYTES")) g_cfg.max_chunk_bytes = static_cast<uint32_t>(std::atoi(m));
     if (const char* m = std::getenv("QUANTA_JIT_MAXCALLS")) g_cfg.max_call_percent = static_cast<uint32_t>(std::atoi(m));
