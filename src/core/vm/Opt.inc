@@ -1283,12 +1283,12 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         // the unit runs: it leaves once, the interpreter fills the entry, and from then on the unit has it.
         bool refresh = root && F().chunk->uses_lookup_cache;
         uint32_t form = 3;
-        if (ep->shadow_epoch == cur_epoch && (ep->dict_desc || ep->obj_shape || ep->slot)) {
-            form = ep->dict_desc ? 2 : ep->obj_shape ? 1 : 0;
+        if (ep->shadow_epoch == cur_epoch && (ep->dict_desc() || ep->obj_shape() || ep->slot())) {
+            form = ep->dict_desc() ? 2 : ep->obj_shape() ? 1 : 0;
             refresh = refresh && form != 0;
         } else if (const BytecodeChunk::LookupCacheEntry* sh = F().chunk->uses_lookup_cache ? &F().chunk->lookup_cache.data()[nidx] : nullptr;
-                   root && sh && sh->shadow_epoch == cur_epoch && (sh->dict_desc || sh->obj_shape)) {
-            form = sh->dict_desc ? 2 : 1;
+                   root && sh && sh->shadow_epoch == cur_epoch && (sh->dict_desc() || sh->obj_shape())) {
+            form = sh->dict_desc() ? 2 : 1;
         }
         const BytecodeChunk::LookupCacheEntry& e = *ep;
         const int32_t v = guarded(K::LoadLookup, Rep::Tagged, -1, -1, form | (root ? 0x100u : 0u) | (refresh ? 0x200u : 0u),
@@ -4298,7 +4298,7 @@ inline QUANTA_JIT_ABI uint64_t helper_lookup_refresh(VM::Frame* f, uint64_t byte
     const BytecodeChunk& chunk = *f->chunk;
     if (!chunk.uses_lookup_cache || idx >= chunk.lookup_cache.size()) return 0;
     const auto& shared = chunk.lookup_cache.data()[idx];
-    if (shared.shadow_epoch != Environment::binding_shadow_epoch() || !(shared.dict_desc || shared.obj_shape)) return 0;
+    if (shared.shadow_epoch != Environment::binding_shadow_epoch() || !(shared.dict_desc() || shared.obj_shape())) return 0;
     f->lookup_cache_data[idx] = shared;
     return 1;
 }
@@ -5964,28 +5964,24 @@ inline void Emitter::emit_node(int32_t id) {
         }
         if (form == 3) {
             // The form the entry has when the unit runs.
-            a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::dict_desc())), 0);
-            a_.jcc(CC_NE, form_dict);
-            a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())), 0);
-            a_.jcc(CC_NE, form_obj);
+            a_.cmp8_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::kind())), JitLookupLayout::kDict);
+            a_.jcc(CC_E, form_dict);
+            a_.cmp8_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::kind())), JitLookupLayout::kShape);
+            a_.jcc(CC_E, form_obj);
         }
         if (form == 0 || form == 3) {
+            a_.cmp8_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::kind())), JitLookupLayout::kSlot);
+            a_.jcc(CC_NE, dl);
             a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::slot())));
-            a_.test(RDX, RDX);
-            a_.jcc(CC_E, dl);
-            if (form == 0) {
-                a_.cmp_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())), 0);
-                a_.jcc(CC_NE, dl);
-            }
             a_.mov_load(d, mem(RDX));
             if (form == 3) a_.jmp(done);
         }
         if (form == 2 || form == 3) {
             // A global in dictionary mode: its value sits in a descriptor of the binding object.
             if (form == 3) a_.bind(form_dict);
+            a_.cmp8_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::kind())), JitLookupLayout::kDict);
+            a_.jcc(CC_NE, dl);
             a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::dict_desc())));
-            a_.test(RDX, RDX);
-            a_.jcc(CC_E, dl);
             a_.mov_load(R11, mem(RCX, static_cast<int32_t>(JitLookupLayout::env())));
             a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitEnvLayout::binding_object())));
             a_.test(R11, R11);
@@ -6006,9 +6002,9 @@ inline void Emitter::emit_node(int32_t id) {
         }
         if (form == 1 || form == 3) {
             if (form == 3) a_.bind(form_obj);
+            a_.cmp8_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::kind())), JitLookupLayout::kShape);
+            a_.jcc(CC_NE, dl);
             a_.mov_load(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_shape())));
-            a_.test(RDX, RDX);
-            a_.jcc(CC_E, dl);
             a_.mov_load(R11, mem(RCX, static_cast<int32_t>(JitLookupLayout::env())));
             a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitEnvLayout::binding_object())));
             a_.test(R11, R11);
@@ -6023,6 +6019,7 @@ inline void Emitter::emit_node(int32_t id) {
             a_.cmp_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::descriptor_epoch())));
             a_.jcc(CC_NE, (n.aux & 0x100) ? reval : dl);
             a_.mov_load32(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_slot_index())));
+            a_.and_imm(RDX, 0xFFFF);                 // the kind and the flag lie after the index
             a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitObjectLayout::butterfly())));
             a_.mov_load(d, mem_idx(R11, RDX, 8, 0));
         }

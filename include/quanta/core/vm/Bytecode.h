@@ -1034,39 +1034,57 @@ struct BytecodeChunk {
     // lookup_cache_data comment). See Environment::stable_binding_slot for
     // the guards.
     struct LookupCacheEntry {
+        // Which form the entry holds; the three are exclusive, so they share one pointer (32 bytes an entry,
+        // from 56: a chunk has one per name it mentions, and a page has hundreds of thousands of them).
+        //   KSlot - a binding of a declarative environment: `slot` points at its value.
+        //   KShape- the object-environment read form, for a global. The value lives in a shape slot of env's
+        //           binding object, whose ADDRESS moves when the object grows, so the INDEX is cached and
+        //           re-resolved through the object. Only LdaLookup takes it, since writing a global needs the
+        //           full [[Set]] path. Valid while the object still has this shape (a property add or delete
+        //           changes it) and descriptor_epoch has not moved (an accessor may have replaced the data
+        //           property without changing the shape).
+        //   KDict - a dictionary-mode global: an object past Shape::kMaxSlots has no shape and keeps every
+        //           value in a node of its descriptor map, which stays put until that key is erased (every
+        //           erase moves descriptor_epoch). Read through the descriptor so an in-place turn into an
+        //           accessor is still seen.
+        enum Kind : uint8_t { KNone = 0, KSlot = 1, KShape = 2, KDict = 3 };
         Environment* env = nullptr;
-        Value* slot = nullptr;
-        // Object-environment read form, for a global. The value lives in a
-        // shape slot of env's binding object, whose ADDRESS moves when the
-        // object grows, so the INDEX is cached and re-resolved through the
-        // object. A non-null obj_shape selects this form; only LdaLookup takes
-        // it, since writing a global needs the full [[Set]] path. Valid while
-        // the object still has this shape (a property add or delete changes
-        // it) and descriptor_epoch has not moved (an accessor may have
-        // replaced the data property without changing the shape).
-        Shape* obj_shape = nullptr;
+        union {
+            Value* slot_ = nullptr;
+            class Shape* shape_;
+            const PropertyDescriptor* dict_;
+        };
         uint64_t descriptor_epoch = 0;
-        uint32_t obj_slot_index = 0;
-        // A const binding's value never changes, which makes it MORE cacheable
-        // to read, not less -- but LdaLookup and StaLookup share this entry,
-        // and StaLookup's fast path stores through `slot` without asking
-        // anyone. So the entry records whether writing through it is allowed;
-        // a store to a non-writable one falls back to the slow path, which is
-        // where "Assignment to constant variable" is raised. Sits in the
-        // padding after obj_slot_index.
-        bool writable = false;
-        // A resolved name can be shadowed later by a binding created in a
-        // scope closer than this one -- Annex B's block function is the way
-        // that happens after code has already run. No shape or descriptor
-        // epoch shows it, so the entry carries the binding-shadow epoch and
-        // is refused once it moves. Sits in the padding after `writable`.
+        // A resolved name can be shadowed later by a binding created in a scope closer than this one -- Annex B's
+        // block function is the way that happens after code has already run. No shape or descriptor epoch shows
+        // it, so the entry carries the binding-shadow epoch and is refused once it moves.
         uint32_t shadow_epoch = 0;
-        // Dictionary-mode global: an object past Shape::kMaxSlots has no shape
-        // and keeps every value in a node of its descriptor map, which stays
-        // put until that key is erased (every erase moves descriptor_epoch).
-        // Selects this form (obj_shape stays null); read through the
-        // descriptor so an in-place turn into an accessor is still seen.
-        const PropertyDescriptor* dict_desc = nullptr;
+        uint16_t obj_slot_index = 0;     // Shape form (generated code reads this with the two bytes after it: it masks them off)
+        uint8_t kind = KNone;
+        // A const binding's value never changes, which makes it MORE cacheable to read, not less -- but LdaLookup
+        // and StaLookup share this entry, and StaLookup's fast path stores through `slot` without asking anyone.
+        // So the entry records whether writing through it is allowed; a store to a non-writable one falls back to
+        // the slow path, which is where "Assignment to constant variable" is raised.
+        bool writable = false;
+
+        Value* slot() const { return kind == KSlot ? slot_ : nullptr; }
+        class Shape* obj_shape() const { return kind == KShape ? shape_ : nullptr; }
+        const PropertyDescriptor* dict_desc() const { return kind == KDict ? dict_ : nullptr; }
+        static LookupCacheEntry make_slot(Environment* env, Value* slot, bool writable, uint32_t shadow) {
+            LookupCacheEntry e; e.env = env; e.slot_ = slot; e.kind = slot ? KSlot : KNone;
+            e.writable = writable; e.shadow_epoch = shadow; return e;
+        }
+        static LookupCacheEntry make_shape(Environment* env, class Shape* shape, uint64_t epoch, uint32_t index,
+                                           bool writable, uint32_t shadow) {
+            LookupCacheEntry e; e.env = env; e.shape_ = shape; e.kind = shape ? KShape : KNone;
+            e.descriptor_epoch = epoch; e.obj_slot_index = static_cast<uint16_t>(index);
+            e.writable = writable; e.shadow_epoch = shadow; return e;
+        }
+        static LookupCacheEntry make_dict(Environment* env, const PropertyDescriptor* dd, uint64_t epoch, bool writable,
+                                          uint32_t shadow) {
+            LookupCacheEntry e; e.env = env; e.dict_ = dd; e.kind = dd ? KDict : KNone;
+            e.descriptor_epoch = epoch; e.writable = writable; e.shadow_epoch = shadow; return e;
+        }
     };
     // Same frozen-length/mutable-contents profile as feedback above -- only
     // ever `= FixedArray<...>::filled(names.size(), ...)` once at compile
@@ -1106,6 +1124,7 @@ struct BytecodeChunk {
         uint32_t inl_depth = 0;
         const void* realm = nullptr;    // the realm the function belongs to
     };
+    static_assert(sizeof(LookupCacheEntry) == 32, "a lookup cache entry is 32 bytes (a chunk has one per name)");
     FixedArray<LookupCacheEntry> lookup_cache; // indexed by name id
     mutable const DirectCall* direct = nullptr;
     uint16_t register_count = 0;

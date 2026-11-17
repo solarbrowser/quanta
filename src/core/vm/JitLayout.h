@@ -249,12 +249,16 @@ struct JitLookupLayout {
     using E = BytecodeChunk::LookupCacheEntry;
     static constexpr size_t kSize = sizeof(E);
     static size_t env() { return offsetof(E, env); }
-    static size_t slot() { return offsetof(E, slot); }
-    static size_t obj_shape() { return offsetof(E, obj_shape); }
+    static size_t slot() { return offsetof(E, slot_); }
+    // The three pointer forms share one word; `kind` says which one it holds.
+    static size_t obj_shape() { return offsetof(E, shape_); }
+    static size_t kind() { return offsetof(E, kind); }
+    static_assert(offsetof(E, kind) == offsetof(E, obj_slot_index) + 2 && offsetof(E, writable) == offsetof(E, kind) + 1);
+    static constexpr uint8_t kSlot = E::KSlot, kShape = E::KShape, kDict = E::KDict;
     static size_t descriptor_epoch() { return offsetof(E, descriptor_epoch); }
     static size_t obj_slot_index() { return offsetof(E, obj_slot_index); }
     static size_t shadow_epoch() { return offsetof(E, shadow_epoch); }
-    static size_t dict_desc() { return offsetof(E, dict_desc); }
+    static size_t dict_desc() { return offsetof(E, dict_); }
 };
 
 struct JitEnvLayout {

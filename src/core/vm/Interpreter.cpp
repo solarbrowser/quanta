@@ -4174,23 +4174,23 @@ QUANTA_HANDLER Value h_gen_LdaLookup(HANDLER_PARAMS) {
                     const auto& entry = lookup_cache_data[name_idx];
                     if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
                         // a closer binding may have appeared since
-                    } else if (entry.dict_desc) {
+                    } else if (entry.dict_desc()) {
                         Object* bo = entry.env->get_binding_object();
                         if (bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
-                            entry.dict_desc->is_data_descriptor()) {
-                            acc = entry.dict_desc->get_value();
+                            entry.dict_desc()->is_data_descriptor()) {
+                            acc = entry.dict_desc()->get_value();
                             break;
                         }
-                    } else if (entry.obj_shape) {
+                    } else if (entry.obj_shape()) {
                         Object* bo = entry.env->get_binding_object();
-                        if (bo && bo->get_shape() == entry.obj_shape &&
+                        if (bo && bo->get_shape() == entry.obj_shape() &&
                             entry.descriptor_epoch == Object::descriptor_epoch()) {
                             if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
                                 acc = *s;
                                 break;
                             }
                         }
-                    } else if (entry.slot) { acc = *entry.slot; break; }
+                    } else if (entry.slot()) { acc = *entry.slot(); break; }
                 }
                 // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
                 const std::string* key = chunk.names[name_idx];
@@ -4236,20 +4236,15 @@ QUANTA_HANDLER Value h_gen_LdaLookup(HANDLER_PARAMS) {
                         // See the identical block in the main dispatch loop.
                         if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
                             env->mark_referenced();
-                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable,
-                                                          Environment::binding_shadow_epoch()};
+                            lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_slot(env, slot, slot_writable, Environment::binding_shadow_epoch());
                         } else if (bool obj_writable = false;
                                    env->cacheable_object_binding(name, obj_slot, &obj_writable)) {
                             env->mark_referenced();
-                            lookup_cache_data[name_idx] = {env, nullptr,
-                                env->get_binding_object()->get_shape(),
-                                Object::descriptor_epoch(), obj_slot, obj_writable,
-                                Environment::binding_shadow_epoch()};
+                            lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_shape(env, env->get_binding_object()->get_shape(), Object::descriptor_epoch(), obj_slot, obj_writable, Environment::binding_shadow_epoch());
                             if (chunk.uses_lookup_cache) chunk.lookup_cache.data()[name_idx] = lookup_cache_data[name_idx];
                         } else if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable)) {
                             env->mark_referenced();
-                            lookup_cache_data[name_idx] = {env, nullptr, nullptr,
-                                Object::descriptor_epoch(), 0, dict_writable, Environment::binding_shadow_epoch(), dd};
+                            lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_dict(env, dd, Object::descriptor_epoch(), dict_writable, Environment::binding_shadow_epoch());
                             if (chunk.uses_lookup_cache) chunk.lookup_cache.data()[name_idx] = lookup_cache_data[name_idx];
                         }
                     }
@@ -4288,23 +4283,23 @@ QUANTA_HANDLER Value h_LdaLookupWide(HANDLER_PARAMS) {
             {
                 const auto& entry = lookup_cache_data[name_idx];
                 if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
-                } else if (entry.dict_desc) {
+                } else if (entry.dict_desc()) {
                         Object* bo = entry.env->get_binding_object();
                         if (bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
-                            entry.dict_desc->is_data_descriptor()) {
-                            acc = entry.dict_desc->get_value();
+                            entry.dict_desc()->is_data_descriptor()) {
+                            acc = entry.dict_desc()->get_value();
                             break;
                         }
-                    } else if (entry.obj_shape) {
+                    } else if (entry.obj_shape()) {
                     Object* bo = entry.env->get_binding_object();
-                    if (bo && bo->get_shape() == entry.obj_shape &&
+                    if (bo && bo->get_shape() == entry.obj_shape() &&
                         entry.descriptor_epoch == Object::descriptor_epoch()) {
                         if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
                             acc = *s;
                             break;
                         }
                     }
-                } else if (entry.slot) { acc = *entry.slot; break; }
+                } else if (entry.slot()) { acc = *entry.slot(); break; }
             }
             const std::string* key = chunk.names[name_idx];
             const std::string& name = *key;
@@ -4335,19 +4330,14 @@ QUANTA_HANDLER Value h_LdaLookupWide(HANDLER_PARAMS) {
                     bool dict_writable = false;
                     if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
                         env->mark_referenced();
-                        lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable,
-                                                      Environment::binding_shadow_epoch()};
+                        lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_slot(env, slot, slot_writable, Environment::binding_shadow_epoch());
                     } else if (bool obj_writable = false;
                                env->cacheable_object_binding(name, obj_slot, &obj_writable)) {
                         env->mark_referenced();
-                        lookup_cache_data[name_idx] = {env, nullptr,
-                            env->get_binding_object()->get_shape(),
-                            Object::descriptor_epoch(), obj_slot, obj_writable,
-                            Environment::binding_shadow_epoch()};
+                        lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_shape(env, env->get_binding_object()->get_shape(), Object::descriptor_epoch(), obj_slot, obj_writable, Environment::binding_shadow_epoch());
                     } else if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable)) {
                         env->mark_referenced();
-                        lookup_cache_data[name_idx] = {env, nullptr, nullptr,
-                            Object::descriptor_epoch(), 0, dict_writable, Environment::binding_shadow_epoch(), dd};
+                        lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_dict(env, dd, Object::descriptor_epoch(), dict_writable, Environment::binding_shadow_epoch());
                     }
                 }
             } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
@@ -4411,10 +4401,10 @@ QUANTA_HANDLER Value h_gen_LdaLookupTypeof(HANDLER_PARAMS) {
 // is not refreshed here -- reading the descriptor takes the value from the slot.
 [[gnu::always_inline]] inline bool store_via_object_entry(const BytecodeChunk::LookupCacheEntry& entry, const Value& acc) {
     Object* bo = entry.env->get_binding_object();
-    if (entry.dict_desc) {
+    if (entry.dict_desc()) {
         // Dictionary-mode global: the value lives in the descriptor itself.
         // Checked per store rather than trusted from when the entry was made.
-        auto* pd = const_cast<PropertyDescriptor*>(entry.dict_desc);
+        auto* pd = const_cast<PropertyDescriptor*>(entry.dict_desc());
         if (!(bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
               pd->is_data_descriptor() && pd->is_writable() && !pd->value_cached())) {
             return false;
@@ -4423,7 +4413,7 @@ QUANTA_HANDLER Value h_gen_LdaLookupTypeof(HANDLER_PARAMS) {
         pd->set_value(acc);
         return true;
     }
-    if (!(bo && bo->get_shape() == entry.obj_shape &&
+    if (!(bo && bo->get_shape() == entry.obj_shape() &&
           entry.descriptor_epoch == Object::descriptor_epoch())) {
         return false;
     }
@@ -4456,8 +4446,7 @@ inline void cache_store_binding(Frame& f, Environment* env, const std::string& n
     Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable) : nullptr;
     if (slot && slot_writable && !env->is_per_call_scope()) {
         env->mark_referenced();  // see Op::LdaLookup's note
-        f.lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, true,
-                                         Environment::binding_shadow_epoch()};
+        f.lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_slot(env, slot, true, Environment::binding_shadow_epoch());
         return;
     }
     // A binding on an object environment -- a global `var` or function -- is
@@ -4468,16 +4457,13 @@ inline void cache_store_binding(Frame& f, Environment* env, const std::string& n
     if (beyond_frame && !env->is_per_call_scope() &&
         env->cacheable_object_binding(name, obj_slot, &obj_writable) && obj_writable) {
         env->mark_referenced();
-        f.lookup_cache_data[name_idx] = {env, nullptr, env->get_binding_object()->get_shape(),
-                                         Object::descriptor_epoch(), obj_slot, true,
-                                         Environment::binding_shadow_epoch()};
+        f.lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_shape(env, env->get_binding_object()->get_shape(), Object::descriptor_epoch(), obj_slot, true, Environment::binding_shadow_epoch());
         if (f.chunk->uses_lookup_cache) f.chunk->lookup_cache.data()[name_idx] = f.lookup_cache_data[name_idx];
     } else if (bool dict_writable = false; beyond_frame && !env->is_per_call_scope()) {
         if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable);
             dd && dict_writable) {
             env->mark_referenced();
-            f.lookup_cache_data[name_idx] = {env, nullptr, nullptr, Object::descriptor_epoch(), 0, true,
-                                             Environment::binding_shadow_epoch(), dd};
+            f.lookup_cache_data[name_idx] = BytecodeChunk::LookupCacheEntry::make_dict(env, dd, Object::descriptor_epoch(), true, Environment::binding_shadow_epoch());
             if (f.chunk->uses_lookup_cache) f.chunk->lookup_cache.data()[name_idx] = f.lookup_cache_data[name_idx];
         }
     }
@@ -4501,7 +4487,7 @@ QUANTA_HANDLER Value h_gen_StaLookup(HANDLER_PARAMS) {
                     // global needs [[Set]]'s readonly/setter handling. And a
                     // const binding is cached for reading only: storing here
                     // would skip the TypeError the slow path raises.
-                    if (entry.slot && !entry.obj_shape && entry.writable &&
+                    if (entry.slot() && !entry.obj_shape() && entry.writable &&
                         entry.shadow_epoch == Environment::binding_shadow_epoch()) {
                         // The barrier records "env gained a reference" for the
                         // remembered set -- storing a non-heap value can't.
@@ -4509,7 +4495,7 @@ QUANTA_HANDLER Value h_gen_StaLookup(HANDLER_PARAMS) {
                             acc.is_symbol() || acc.is_bigint()) {
                             Collector::write_barrier_env(entry.env);
                         }
-                        *entry.slot = acc;
+                        *entry.slot() = acc;
                         break;
                     }
                 }
@@ -4586,13 +4572,13 @@ QUANTA_HANDLER Value h_StaLookupWide(HANDLER_PARAMS) {
             pc += 5;
             {
                 const auto& entry = lookup_cache_data[sta_name_idx];
-                if (entry.slot && !entry.obj_shape && entry.writable &&
+                if (entry.slot() && !entry.obj_shape() && entry.writable &&
                     entry.shadow_epoch == Environment::binding_shadow_epoch()) {
                     if (acc.is_object() || acc.is_function() || acc.is_string() ||
                         acc.is_symbol() || acc.is_bigint()) {
                         Collector::write_barrier_env(entry.env);
                     }
-                    *entry.slot = acc;
+                    *entry.slot() = acc;
                     break;
                 }
             }
@@ -4817,16 +4803,16 @@ bool revalidate_global_entry(Frame& f, uint32_t idx) {
     auto& e = f.lookup_cache_data[idx];
     if (e.shadow_epoch != Environment::binding_shadow_epoch() || !e.env) return false;
     const std::string& name = *chunk.names[idx];
-    if (e.obj_shape) {
+    if (e.obj_shape()) {
         uint32_t slot = 0;
         bool writable = false;
         Object* bo = e.env->get_binding_object();
-        if (!bo || bo->get_shape() != e.obj_shape || !e.env->cacheable_object_binding(name, slot, &writable) || slot != e.obj_slot_index) return false;
-    } else if (e.dict_desc) {
+        if (!bo || bo->get_shape() != e.obj_shape() || !e.env->cacheable_object_binding(name, slot, &writable) || slot != e.obj_slot_index) return false;
+    } else if (e.dict_desc()) {
         bool writable = false;
         const PropertyDescriptor* dd = e.env->cacheable_object_dictionary_binding(name, &writable);
         if (!dd || !dd->is_data_descriptor()) return false;
-        e.dict_desc = dd;
+        e.dict_ = dd;
     } else {
         return false;
     }
@@ -4839,30 +4825,30 @@ QUANTA_HANDLER Value h_LdaLookupFast(HANDLER_PARAMS) {
     const auto& entry = f.lookup_cache_data[read_u16(code, pc + 1)];
     if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
         // fall through to the general path, which re-resolves and re-caches
-    } else if (entry.dict_desc) {
+    } else if (entry.dict_desc()) {
         Object* bo = entry.env->get_binding_object();
         if (LIKELY(bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
-                   entry.dict_desc->is_data_descriptor())) {
-            acc = entry.dict_desc->get_value();
+                   entry.dict_desc()->is_data_descriptor())) {
+            acc = entry.dict_desc()->get_value();
             FUSED_TAIL(3);
         }
-    } else if (LIKELY(entry.obj_shape)) {
+    } else if (LIKELY(entry.obj_shape())) {
         // A name bound on the global object, which is where a script's `var`
         // and its function declarations live -- so calling a top-level
         // function reaches its callee through here on every call.
         Object* bo = entry.env->get_binding_object();
-        if (LIKELY(bo && bo->get_shape() == entry.obj_shape &&
+        if (LIKELY(bo && bo->get_shape() == entry.obj_shape() &&
                    entry.descriptor_epoch == Object::descriptor_epoch())) {
             if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
                 acc = *s;
                 FUSED_TAIL(3);
             }
         }
-    } else if (LIKELY(entry.slot)) {
-        acc = *entry.slot;
+    } else if (LIKELY(entry.slot())) {
+        acc = *entry.slot();
         FUSED_TAIL(3);
     }
-    if (entry.shadow_epoch == Environment::binding_shadow_epoch() && (entry.obj_shape || entry.dict_desc) &&
+    if (entry.shadow_epoch == Environment::binding_shadow_epoch() && (entry.obj_shape() || entry.dict_desc()) &&
         entry.descriptor_epoch != Object::descriptor_epoch() && revalidate_global_entry(f, read_u16(code, pc + 1))) {
         [[clang::musttail]] return h_LdaLookupFast<Fused>(f, pc, acc, regs, code);
     }
@@ -4870,7 +4856,7 @@ QUANTA_HANDLER Value h_LdaLookupFast(HANDLER_PARAMS) {
     // (the scope chain's shape is the same for all of them) is taken from the chunk's shared entry instead of being looked for again.
     if (UNLIKELY(f.chunk->uses_lookup_cache) && entry.shadow_epoch != Environment::binding_shadow_epoch()) {
         const auto& shared = f.chunk->lookup_cache.data()[read_u16(code, pc + 1)];
-        if (shared.shadow_epoch == Environment::binding_shadow_epoch() && (shared.dict_desc || shared.obj_shape)) {
+        if (shared.shadow_epoch == Environment::binding_shadow_epoch() && (shared.dict_desc() || shared.obj_shape())) {
             const_cast<BytecodeChunk::LookupCacheEntry&>(entry) = shared;
             [[clang::musttail]] return h_LdaLookupFast<Fused>(f, pc, acc, regs, code);
         }
@@ -4880,17 +4866,17 @@ QUANTA_HANDLER Value h_LdaLookupFast(HANDLER_PARAMS) {
 
 QUANTA_HANDLER Value h_StaLookupFast(HANDLER_PARAMS) {
     const auto& entry = f.lookup_cache_data[read_u16(code, pc + 1)];
-    if (LIKELY(entry.slot && !entry.obj_shape && entry.writable &&
+    if (LIKELY(entry.slot() && !entry.obj_shape() && entry.writable &&
                entry.shadow_epoch == Environment::binding_shadow_epoch())) {
         if (acc.is_object() || acc.is_function() || acc.is_string() ||
             acc.is_symbol() || acc.is_bigint()) {
             Collector::write_barrier_env(entry.env);
         }
-        *entry.slot = acc;
+        *entry.slot() = acc;
         pc += 3;
         DISPATCH();
     }
-    if ((entry.obj_shape || entry.dict_desc) && entry.writable &&
+    if ((entry.obj_shape() || entry.dict_desc()) && entry.writable &&
         entry.shadow_epoch == Environment::binding_shadow_epoch() &&
         store_via_object_entry(entry, acc)) {
         pc += 3;
@@ -4899,7 +4885,7 @@ QUANTA_HANDLER Value h_StaLookupFast(HANDLER_PARAMS) {
     // (As LdaLookup's: a closure's empty cache takes the chunk's shared entry for a global.)
     if (UNLIKELY(f.chunk->uses_lookup_cache) && entry.shadow_epoch != Environment::binding_shadow_epoch()) {
         const auto& shared = f.chunk->lookup_cache.data()[read_u16(code, pc + 1)];
-        if (shared.shadow_epoch == Environment::binding_shadow_epoch() && (shared.dict_desc || shared.obj_shape) && shared.writable) {
+        if (shared.shadow_epoch == Environment::binding_shadow_epoch() && (shared.dict_desc() || shared.obj_shape()) && shared.writable) {
             const_cast<BytecodeChunk::LookupCacheEntry&>(entry) = shared;
             [[clang::musttail]] return h_StaLookupFast(f, pc, acc, regs, code);
         }
@@ -4986,15 +4972,15 @@ QUANTA_HANDLER Value h_gen_StaLookupChecked(HANDLER_PARAMS) {
 // through it, the same entry StaLookup's own fast path uses.
 QUANTA_HANDLER Value h_CheckLookupResolvableFast(HANDLER_PARAMS) {
     const auto& entry = f.lookup_cache_data[read_u16(code, pc + 1)];
-    if (LIKELY(entry.slot && !entry.obj_shape &&
+    if (LIKELY(entry.slot() && !entry.obj_shape() &&
                entry.shadow_epoch == Environment::binding_shadow_epoch())) {
         acc = Value(true);
         pc += 3;
         DISPATCH();
     }
-    if (entry.obj_shape && entry.shadow_epoch == Environment::binding_shadow_epoch()) {
+    if (entry.obj_shape() && entry.shadow_epoch == Environment::binding_shadow_epoch()) {
         Object* bo = entry.env->get_binding_object();
-        if (bo && bo->get_shape() == entry.obj_shape &&
+        if (bo && bo->get_shape() == entry.obj_shape() &&
             entry.descriptor_epoch == Object::descriptor_epoch() &&
             bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
             acc = Value(true);
@@ -5009,17 +4995,17 @@ QUANTA_HANDLER Value h_StaLookupCheckedFast(HANDLER_PARAMS) {
     const Value& resolved = regs[code[pc + 1]];
     const auto& entry = f.lookup_cache_data[read_u16(code, pc + 2)];
     if (LIKELY(resolved.is_boolean() && resolved.as_boolean() &&
-               entry.slot && !entry.obj_shape && entry.writable &&
+               entry.slot() && !entry.obj_shape() && entry.writable &&
                entry.shadow_epoch == Environment::binding_shadow_epoch())) {
         if (acc.is_object() || acc.is_function() || acc.is_string() ||
             acc.is_symbol() || acc.is_bigint()) {
             Collector::write_barrier_env(entry.env);
         }
-        *entry.slot = acc;
+        *entry.slot() = acc;
         pc += 4;
         DISPATCH();
     }
-    if (resolved.is_boolean() && resolved.as_boolean() && (entry.obj_shape || entry.dict_desc) && entry.writable &&
+    if (resolved.is_boolean() && resolved.as_boolean() && (entry.obj_shape() || entry.dict_desc()) && entry.writable &&
         entry.shadow_epoch == Environment::binding_shadow_epoch() &&
         store_via_object_entry(entry, acc)) {
         pc += 4;

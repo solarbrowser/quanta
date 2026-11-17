@@ -821,23 +821,23 @@ QUANTA_JIT_ABI int fast_lookup(Frame* f, uint32_t pc) noexcept {
     f->chunk->jit->slow++;
     const auto& entry = f->lookup_cache_data[read_u16(f->chunk->code.data(), pc + 1)];
     if (entry.shadow_epoch != Environment::binding_shadow_epoch()) return 0;
-    if (entry.dict_desc) {
+    if (entry.dict_desc()) {
         Object* bo = entry.env->get_binding_object();
         if (bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
-            entry.dict_desc->is_data_descriptor()) {
-            f->acc = entry.dict_desc->get_value();
+            entry.dict_desc()->is_data_descriptor()) {
+            f->acc = entry.dict_desc()->get_value();
             return 1;
         }
-    } else if (entry.obj_shape) {
+    } else if (entry.obj_shape()) {
         Object* bo = entry.env->get_binding_object();
-        if (bo && bo->get_shape() == entry.obj_shape && entry.descriptor_epoch == Object::descriptor_epoch()) {
+        if (bo && bo->get_shape() == entry.obj_shape() && entry.descriptor_epoch == Object::descriptor_epoch()) {
             if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
                 f->acc = *s;
                 return 1;
             }
         }
-    } else if (entry.slot) {
-        f->acc = *entry.slot;
+    } else if (entry.slot()) {
+        f->acc = *entry.slot();
         return 1;
     }
     return 0;
@@ -1309,14 +1309,14 @@ bool build_stubs() {
         a.mov_load32(RCX, mem(RCX));
         a.cmp32_load(RCX, mem(RAX, offsetof(LCE, shadow_epoch)));
         a.jcc(CC_NE, miss);
-        a.cmp_mem_imm(mem(RAX, offsetof(LCE, dict_desc)), 0);
-        a.jcc(CC_NE, global_dict);
-        a.mov_load(RDX, mem(RAX, offsetof(LCE, obj_shape)));
-        a.test(RDX, RDX);
-        a.jcc(CC_NE, global_object);
-        a.mov_load(RCX, mem(RAX, offsetof(LCE, slot)));
-        a.test(RCX, RCX);
-        a.jcc(CC_E, miss);
+        a.cmp8_mem_imm(mem(RAX, offsetof(LCE, kind)), LCE::KDict);
+        a.jcc(CC_E, global_dict);
+        a.mov_load(RDX, mem(RAX, offsetof(LCE, shape_)));
+        a.cmp8_mem_imm(mem(RAX, offsetof(LCE, kind)), LCE::KShape);
+        a.jcc(CC_E, global_object);
+        a.cmp8_mem_imm(mem(RAX, offsetof(LCE, kind)), LCE::KSlot);
+        a.jcc(CC_NE, miss);
+        a.mov_load(RCX, mem(RAX, offsetof(LCE, slot_)));
         a.mov_load(R13, mem(RCX));
         a.clc(); a.ret();
         a.bind(global_object);          // a data slot of the global object
@@ -1336,12 +1336,13 @@ bool build_stubs() {
         a.jcc(CC_NE, miss);
         stub_slots(a, RCX, miss);
         a.mov_load32(RDI, mem(RAX, offsetof(LCE, obj_slot_index)));
+        a.and_imm(RDI, 0xFFFF);                 // the kind and the flag lie after the index
         a.cmp32(RDI, RCX);
         a.jcc(CC_AE, miss);
         a.mov_load(R13, mem_idx(RSI, RDI, 8));
         a.clc(); a.ret();
         a.bind(global_dict);            // a global in dictionary mode (a script with many `var`s and functions): its value sits in a descriptor of the binding object
-        a.mov_load(RDX, mem(RAX, offsetof(LCE, dict_desc)));
+        a.mov_load(RDX, mem(RAX, offsetof(LCE, dict_)));
         a.mov_load(RCX, mem(RAX, offsetof(LCE, env)));
         a.test(RCX, RCX);
         a.jcc(CC_E, miss);
