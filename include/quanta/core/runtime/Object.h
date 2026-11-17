@@ -1186,7 +1186,7 @@ public:
 class PropertyDescriptor {
     friend struct JitObjectLayout;      // the optimizing tier reads a dictionary global's value directly
 public:
-    enum Type {
+    enum Type : uint8_t {
         Data,
         Accessor,
         Generic
@@ -1194,9 +1194,6 @@ public:
 
 private:
     Type type_;
-    Value value_;
-    Object* getter_;
-    Object* setter_;
     PropertyAttributes attributes_;
     bool has_value_ : 1;
     bool has_getter_ : 1;
@@ -1209,6 +1206,14 @@ private:
     // so a write to it needs to move the descriptor epoch only if some cache
     // is holding the copy -- see Object::note_descriptor_value_cached.
     mutable bool value_cached_ : 1 = false;
+    // A value, or a getter and a setter: nothing stored holds both (a data property has no accessors and the other way
+    // round), so they share the storage and a descriptor is 24 bytes and not 40 (a descriptor sits in every entry of an
+    // object's descriptor map, and a page has a hundred thousand of those maps). The has_* bits say which one is live;
+    // a descriptor built from a JS object with both `value` and `get` is refused before anything reads it.
+    union {
+        Value value_;
+        struct { Object* getter_; Object* setter_; };
+    };
 
 public:
     bool value_cached() const { return value_cached_; }
@@ -1222,13 +1227,14 @@ public:
     bool is_accessor_descriptor() const { return type_ == Accessor; }
     bool is_generic_descriptor() const { return type_ == Generic; }
 
-    const Value& get_value() const { return value_; }
+    const Value& get_value() const { return has_value_ ? value_ : undefined_value(); }
+    static const Value& undefined_value() { static const Value u; return u; }
     void set_value(const Value& value);
     
-    Object* get_getter() const { return getter_; }
+    Object* get_getter() const { return has_getter_ || has_setter_ ? getter_ : nullptr; }
     void set_getter(Object* getter);
     
-    Object* get_setter() const { return setter_; }
+    Object* get_setter() const { return has_getter_ || has_setter_ ? setter_ : nullptr; }
     void set_setter(Object* setter);
 
     PropertyAttributes get_attributes() const { return attributes_; }
@@ -1423,10 +1429,12 @@ private:
         PropertyDescriptor desc;
     };
     std::array<Entry, kInlineCapacity> inline_;
-    size_t inline_count_ = 0;
+    uint8_t inline_count_ = 0;
     std::unique_ptr<OverflowMap> overflow_;
     uint64_t key_bits_ = 0;
 };
+static_assert(sizeof(PropertyDescriptor) == 24, "a property descriptor is 24 bytes");
+static_assert(sizeof(HybridDescriptorMap) == 152, "an object's descriptor map is 152 bytes (the 160 size class)");
 
 // Internal engine slots parked on an object outside the property table (see
 // Object::set_internal_slot): Date's own [[DateValue]], a class's private-

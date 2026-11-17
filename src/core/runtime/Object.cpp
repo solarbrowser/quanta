@@ -4212,22 +4212,26 @@ PropertyDescriptor Object::create_data_descriptor(const Value& value, PropertyAt
 }
 
 
-PropertyDescriptor::PropertyDescriptor() : type_(Generic), getter_(nullptr), setter_(nullptr),
+PropertyDescriptor::PropertyDescriptor() : type_(Generic),
     attributes_(PropertyAttributes::None),
     has_value_(false), has_getter_(false), has_setter_(false),
-    has_writable_(false), has_enumerable_(false), has_configurable_(false) {
+    has_writable_(false), has_enumerable_(false), has_configurable_(false), value_() {
+    getter_ = nullptr;
+    setter_ = nullptr;
 }
 
 PropertyDescriptor::PropertyDescriptor(const Value& value, PropertyAttributes attrs)
-    : type_(Data), value_(value), getter_(nullptr), setter_(nullptr), attributes_(attrs),
+    : type_(Data), attributes_(attrs),
       has_value_(true), has_getter_(false), has_setter_(false),
-      has_writable_(true), has_enumerable_(true), has_configurable_(true) {
+      has_writable_(true), has_enumerable_(true), has_configurable_(true), value_(value) {
 }
 
 PropertyDescriptor::PropertyDescriptor(Object* getter, Object* setter, PropertyAttributes attrs)
-    : type_(Accessor), getter_(getter), setter_(setter), attributes_(attrs),
+    : type_(Accessor), attributes_(attrs),
       has_value_(false), has_getter_(true), has_setter_(true),
-      has_writable_(false), has_enumerable_(true), has_configurable_(true) {
+      has_writable_(false), has_enumerable_(true), has_configurable_(true), value_() {
+    getter_ = getter;
+    setter_ = setter;
 }
 
 void PropertyDescriptor::set_value(const Value& value) {
