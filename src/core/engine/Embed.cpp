@@ -564,6 +564,9 @@ void Isolate::SetTimerProvider(TimerProvider provider) {
 }
 
 Task Realm::EnqueueTask(const std::string& source, std::function<void()> fn, double delayMs) {
+    // A page that was left: what it still had on its way (a response, a message) finds nothing to run in. Its tasks ran against a global that was emptied,
+    // and said "window is not defined" for every one of them.
+    if (global_dropped_) return Task();
     if (auto* host = dynamic_cast<EmbedTimerHost*>(engine_->timer_host())) {
         return host->enqueue(source, std::move(fn), delayMs);
     }
@@ -641,6 +644,7 @@ Context& Realm::GetContext() {
 }
 
 void Realm::DropGlobalState() {
+    global_dropped_ = true;
     Context& ctx = GetContext();
     RealmScope realm_scope(ctx.realm());
     if (Object* global = ctx.get_global_object()) global->clear_properties();

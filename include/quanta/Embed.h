@@ -413,6 +413,7 @@ private:
 
     Isolate* isolate_;
     std::unique_ptr<Engine> engine_;
+    bool global_dropped_ = false;   // DropGlobalState ran: no task is queued for this realm any more
 };
 
 // A heap and an event loop, and the realms that run on them. A browser makes one per
