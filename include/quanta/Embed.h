@@ -363,6 +363,8 @@ public:
     // (as their closure context) from wherever a stray word on a stack or a held function finds one of them. What is
     // left of the realm is its skeleton. Do not call it for a realm anything alive may still use.
     void DropGlobalState();
+    // True once DropGlobalState has run: nothing is to be run in this realm.
+    bool GlobalDropped() const { return global_dropped_; }
 
     EvaluateResult Evaluate(std::string_view source, const std::string& filename = "<embed>");
     // Runs a script compiled earlier (Isolate::CompileScript) in this realm, as many times and in as many realms
