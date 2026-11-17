@@ -646,6 +646,7 @@ Context& Realm::GetContext() {
 void Realm::DropGlobalState() {
     global_dropped_ = true;
     Context& ctx = GetContext();
+    if (Quanta::Realm* dropped = ctx.realm()) dropped->set_dropped();
     RealmScope realm_scope(ctx.realm());
     if (Object* global = ctx.get_global_object()) global->clear_properties();
     if (Environment* lexical = ctx.get_script_global_lexical_env()) lexical->drop_all_bindings();

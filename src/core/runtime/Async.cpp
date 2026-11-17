@@ -1694,6 +1694,7 @@ void EventLoop::drop_realm(Realm* realm) {
 }
 
 void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive, Realm* realm) {
+    if (realm && realm->dropped()) return;   // a page that was left: a promise it was waiting on settles now, and its job would run against an emptied global
     microtask_queue_.push_back({std::move(task), std::move(keep_alive), realm});
 }
 
@@ -1711,6 +1712,7 @@ void EventLoop::drain_microtasks() {
         microtask_queue_.clear();
         for (auto& entry : draining_queue_) {
             if (!entry.task) continue;
+            if (entry.realm && entry.realm->dropped()) continue;
             RealmScope realm_scope(entry.realm ? entry.realm : g_current_realm);
             entry.task();
         }

@@ -42,6 +42,9 @@ public:
     Engine* engine() const { return engine_; }
     // Never reused, unlike the address: what says which realm a thing was made for once the realm may be gone.
     uint64_t id() const { return id_; }
+    // A realm the host let go of (a page that was left) but that is still in memory: no job is queued for it and none that was runs.
+    bool dropped() const { return dropped_; }
+    void set_dropped() { dropped_ = true; }
     // Bumped whenever a realm goes: a thing remembered for "the realm that was running" by address alone is
     // good only while this is what it was, since the address of a dead realm can be a new one's.
     static uint32_t death_epoch() { return death_epoch_; }
@@ -172,6 +175,7 @@ private:
 
     Engine* engine_;
     uint64_t id_;
+    bool dropped_ = false;
     static constinit thread_local uint32_t death_epoch_;
     static uint64_t next_id() {
         static std::atomic<uint64_t> counter{0};
