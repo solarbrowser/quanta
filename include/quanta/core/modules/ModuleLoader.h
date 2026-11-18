@@ -388,6 +388,11 @@ private:
     Value last_module_exception_;
 
 public:
+    // While the host's own request for a module (a script of the page) is being worked on, what it needs from the network is waited for: the walk of its graph is over when the call is. Evaluating the
+    // modules (script that asks for others with import()) is not that: those are got in the background, and their promises settle later.
+    bool sync_fetch() const { return sync_fetch_; }
+    void set_sync_fetch(bool on) { sync_fetch_ = on; }
+
     explicit ModuleLoader(Engine* engine);
     ~ModuleLoader() = default;
 
@@ -493,6 +498,7 @@ private:
     std::unordered_map<std::string, FetchEntry> fetched_;
     // Promises being settled, which nothing else may hold on to meanwhile.
     std::vector<Value> pinned_;
+    bool sync_fetch_ = false;  // the host that asked for the module wants its graph here when the call is over (see set_sync_fetch)
 
     static std::string fetch_key(const std::string& url, const std::string& type);
     void ensure_fetched(const std::string& url, const std::string& type, std::function<void()> then);

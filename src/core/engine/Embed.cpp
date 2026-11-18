@@ -205,12 +205,24 @@ public:
             return;
         }
         std::weak_ptr<EmbedModuleHost> self = shared_from_this();
-        hooks_->fetch(realm_, url, type, [self, done = std::move(done)](ModuleSource source) {
+        auto inside = std::make_shared<bool>(true);   // the host is still in its call to fetch: the answer is given as it is
+        hooks_->fetch(realm_, url, type, [self, inside, done = std::move(done)](ModuleSource source) {
             auto host = self.lock();
             if (!host) return;   // the realm is gone: nothing is waiting
-            // Called from wherever the host's fetch finished: the realm it continues in is this one.
-            host->realm_->Run([&] { done(to_content(std::move(source))); });
+            if (*inside) {
+                // Called from wherever the host's fetch finished: the realm it continues in is this one.
+                host->realm_->Run([&] { done(to_content(std::move(source))); });
+                return;
+            }
+            // An answer that comes later is a task of the realm, as any other: it does not run while another is on the stack.
+            auto shared = std::make_shared<std::pair<Completion, ModuleSource>>(std::move(done), std::move(source));
+            host->realm_->EnqueueTask("module fetch", [self, shared] {
+                auto host = self.lock();
+                if (!host) return;
+                host->realm_->Run([&] { shared->first(to_content(std::move(shared->second))); });
+            });
         });
+        *inside = false;
     }
 
     void init_import_meta(Context& ctx, Object* meta, const std::string& url) override {
@@ -596,9 +608,11 @@ Value Realm::EvaluateModule(std::string_view source, const std::string& url) {
     if (ctx.has_exception()) return Value();
     Promise* promise = static_cast<Promise*>(capability.promise.as_object());
     promise->mark_handled();
-    Run([&] { engine_->get_module_loader()->import_source(url, std::string(source), promise); });
+    Run([&] { engine_->get_module_loader()->set_sync_fetch(true); engine_->get_module_loader()->import_source(url, std::string(source), promise); engine_->get_module_loader()->set_sync_fetch(false); });
     return capability.promise;
 }
+
+bool Realm::ModuleFetchIsSync() const { return engine_ && engine_->get_module_loader() && engine_->get_module_loader()->sync_fetch(); }
 
 Value Realm::ImportModule(const std::string& specifier, const std::string& referrerUrl, const std::string& type) {
     Context& ctx = GetContext();
@@ -606,7 +620,7 @@ Value Realm::ImportModule(const std::string& specifier, const std::string& refer
     if (ctx.has_exception()) return Value();
     Promise* promise = static_cast<Promise*>(capability.promise.as_object());
     promise->mark_handled();
-    Run([&] { engine_->get_module_loader()->import_specifier(specifier, referrerUrl, type, promise); });
+    Run([&] { engine_->get_module_loader()->set_sync_fetch(true); engine_->get_module_loader()->import_specifier(specifier, referrerUrl, type, promise); engine_->get_module_loader()->set_sync_fetch(false); });
     return capability.promise;
 }
 

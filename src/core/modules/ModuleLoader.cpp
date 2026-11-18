@@ -1724,6 +1724,7 @@ void ModuleLoader::settle_import(Module* mod, Promise* result) {
 
 // The graph is in hand: prepare, link and evaluate it, reading what was fetched.
 void ModuleLoader::complete_import(const std::string& url, const std::string& type, Promise* result) {
+    sync_fetch_ = false;  // (what the modules do from here on is script's: its import() is not waited for)
     RealmScope realm_scope(engine_->realm());
     auto entry = fetched_.find(fetch_key(url, type));
     if (entry != fetched_.end() && !entry->second.failure.is_undefined() && !modules_.count(fetch_key(url, type))) {

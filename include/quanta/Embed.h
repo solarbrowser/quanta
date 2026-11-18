@@ -382,6 +382,10 @@ public:
     Value EvaluateModule(std::string_view source, const std::string& url);
     // The same for a module the hooks fetch: `import(specifier)` from the module at `referrerUrl`.
     Value ImportModule(const std::string& specifier, const std::string& referrerUrl = "", const std::string& type = "");
+    // True while the module graph of ImportModule / EvaluateModule is being got (the host waits for what it fetches); false for what script asks for with import(): the host may answer fetch later.
+    bool ModuleFetchIsSync() const;
+    // Expires with the realm: what the host keeps a pointer to the realm for, until later, looks at it first.
+    std::weak_ptr<bool> Life() const { return life_; }
 
     // For a host that compiles strings itself (its own setTimeout, an `eval`-like API): runs the realm's
     // code-generation hooks on `code`, which they may replace. False with an exception pending when they refuse it.
@@ -415,6 +419,7 @@ private:
 
     Isolate* isolate_;
     std::unique_ptr<Engine> engine_;
+    std::shared_ptr<bool> life_ = std::make_shared<bool>(true);
     bool global_dropped_ = false;   // DropGlobalState ran: no task is queued for this realm any more
 };
 
