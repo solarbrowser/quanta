@@ -2002,6 +2002,13 @@ bool Object::delete_property_default(const std::string& key) {
             ensure_deleted_elements().insert(index);
             deleted = true;
         }
+        // An index past the elements (an object used as a map by a big number, a chunk id) lives in the sparse overflow.
+        if (auto* so = sparse_overflow()) {
+            if (so->erase(key) > 0) {
+                erase_extra_property_order(key);
+                deleted = true;
+            }
+        }
         return deleted || had_descriptor;
     }
 
