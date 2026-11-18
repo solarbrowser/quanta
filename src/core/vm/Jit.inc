@@ -231,7 +231,7 @@ bool selfcheck() {
 namespace prof {
 // Everything the report needs is copied when a function is first sampled: the collector may free it before
 // the report prints, and a signal handler can read the executable but not allocate.
-struct Slot { Function* fn; uint32_t jit, interp, bytes; int entry; char name[40]; };
+struct Slot { Function* fn; uint32_t jit, interp, bytes; int entry; char name[40]; char file[56]; };
 inline Slot g_slots[16384];
 inline uintptr_t g_lo = ~uintptr_t(0), g_hi = 0;
 inline uint32_t g_total = 0, g_total_jit = 0, g_idle = 0;
@@ -240,11 +240,14 @@ inline void handler(int, siginfo_t*, void* uc_) {
     auto* uc = static_cast<ucontext_t*>(uc_);
     const uintptr_t rip = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
     const bool in_jit = rip >= g_lo && rip < g_hi;
-    CallStack& cs = CallStack::established();
+    CallStack* csp = CallStack::current_or_null();
     g_total++;
     if (in_jit) g_total_jit++;
-    if (cs.depth() == 0) { g_idle++; return; }
+    if (!csp || csp->depth() == 0) { g_idle++; return; }
+    CallStack& cs = *csp;
     Function* fn = cs.frames()[cs.depth() - 1].function_ptr;
+    if (!fn) { g_idle++; return; }
+    const std::string* filename = cs.frames()[cs.depth() - 1].filename;
     uint32_t h = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fn) >> 4) * 2654435761u >> 18;
     for (uint32_t i = 0; i < 16384; i++) {
         Slot& sl = g_slots[(h + i) & 16383];
@@ -256,6 +259,10 @@ inline void handler(int, siginfo_t*, void* uc_) {
             sl.entry = c ? static_cast<int>(c->opt_entry) : -1;
             const std::string& nm = fn->get_name();
             std::memcpy(sl.name, nm.data(), std::min(nm.size(), sizeof sl.name - 1));
+            if (filename) {
+                const size_t n = std::min(filename->size(), sizeof sl.file - 1);
+                std::memcpy(sl.file, filename->data() + (filename->size() - n), n);  // (the end of the address: the file)
+            }
         }
         if (sl.fn == fn) { (in_jit ? sl.jit : sl.interp)++; return; }
     }
@@ -288,6 +295,7 @@ inline void print() {
         const FunctionExecutable* pe = sl.fn->get_executable().get();
         std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  chunk=%p  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
                      sl.jit, sl.interp, sl.bytes, sl.entry, pe ? static_cast<const void*>(pe->bytecode_chunk.get()) : nullptr, sl.name);
+        std::fprintf(stderr, "[prof]          in %s\n", sl.file);
     }
 }
 }  // namespace prof

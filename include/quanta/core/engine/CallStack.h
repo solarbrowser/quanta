@@ -82,6 +82,8 @@ public:
     // thread already (nothing ever replaces or clears it). The lazy-start branch behind
     // instance() is a call, and a call is enough to give its caller a frame to build.
     static CallStack& established() { return *instance_; }
+    // The stack of this thread, or null on a thread that never ran script (a signal handler may land on any thread of the process).
+    static CallStack* current_or_null() { return instance_; }
     static void set_instance(CallStack* stack);
     
     // Inline, and deliberately so: a frame is two pointers, but reaching a
