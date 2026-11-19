@@ -2596,7 +2596,7 @@ void RegExp::do_compile() {
     if (!re) {
         // JS-valid but PCRE2-unsupported: huge quantifier (105), empty [] (106),
         // variable lookbehind (125), \u in PCRE2 ctx (137), string properties (147).
-        if (errcode == 105 || errcode == 125 || errcode == 137 || errcode == 147 || errcode == 187) {
+        if (errcode == 105 || (errcode == 106 && pat.find("[]") != std::string::npos) || errcode == 125 || errcode == 137 || errcode == 147 || errcode == 187) {
             static const char16_t always_fail[] = u"(?!)";
             re = pcre2_compile(
                 reinterpret_cast<PCRE2_SPTR>(always_fail),

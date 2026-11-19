@@ -132,11 +132,20 @@ namespace {
 // reasons it was (a getter with no setter, a read-only data property, a
 // closed object), and what the object is called ("#<Foo>").
 std::string object_label(Object* obj) {
+    // Read without running anything: a getter, a proxy trap or a module
+    // namespace (whose lookups can evaluate the module) must not be woken up
+    // by the building of an error message.
     std::string who = "#<Object>";
-    Value c = obj->get_property("constructor");
-    if (c.is_function()) {
-        const std::string& n = c.as_function()->get_name();
-        if (!n.empty()) who = "#<" + n + ">";
+    for (Object* o = obj; o; o = o->get_prototype()) {
+        const auto t = o->get_type();
+        if (t == Object::ObjectType::Proxy || t == Object::ObjectType::Custom) break;
+        if (!o->has_own_property("constructor")) continue;
+        PropertyDescriptor d = o->get_property_descriptor("constructor");
+        if (d.is_data_descriptor() && d.get_value().is_function()) {
+            const std::string& n = d.get_value().as_function()->get_name();
+            if (!n.empty()) who = "#<" + n + ">";
+        }
+        break;
     }
     return who;
 }
@@ -144,6 +153,8 @@ std::string object_label(Object* obj) {
 std::string strict_store_failure(Object* obj, const std::string& name) {
     const std::string who = object_label(obj);
     for (Object* o = obj; o; o = o->get_prototype()) {
+        const auto ot = o->get_type();
+        if (ot == Object::ObjectType::Proxy || ot == Object::ObjectType::Custom) break;
         if (!o->has_own_property(name)) continue;
         PropertyDescriptor d = o->get_property_descriptor(name);
         if (d.is_accessor_descriptor())
