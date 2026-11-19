@@ -160,7 +160,7 @@ Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver, 
     }
 
     if (json_string.empty()) {
-        ctx.throw_syntax_error("JSON.parse: unexpected end of input");
+        ctx.throw_syntax_error("Unexpected end of JSON input");
         return Value();
     }
 
@@ -202,7 +202,7 @@ Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver, 
 
         return result;
     } catch (const std::exception& e) {
-        ctx.throw_syntax_error("JSON.parse error: " + std::string(e.what()));
+        ctx.throw_syntax_error(std::string(e.what()));
         return Value();
     } catch (...) {
         ctx.throw_syntax_error("JSON.parse: unknown parsing error");
@@ -348,7 +348,7 @@ Value JSON::Parser::parse() {
 
     skip_whitespace();
     if (!at_end()) {
-        throw_syntax_error("Unexpected token after JSON value");
+        fail_at("Unexpected non-whitespace character after JSON");
     }
 
     return result;
@@ -386,7 +386,7 @@ Value JSON::Parser::parse_value() {
         case '5': case '6': case '7': case '8': case '9':
             return parse_number();
         default:
-            throw_syntax_error("Unexpected token: " + std::string(1, ch));
+            fail_token();
     }
 }
 
@@ -408,18 +408,20 @@ Value JSON::Parser::parse_object() {
         return Value(obj.release());
     }
 
+    bool first_key = true;
     while (true) {
         skip_whitespace();
 
         if (current_char() != '"') {
-            throw_syntax_error("Expected string key in object");
+            fail_at(first_key ? "Expected property name or '}'" : "Expected double-quoted property name");
         }
 
+        first_key = false;
         std::string key = parse_string_literal();
 
         skip_whitespace();
         if (current_char() != ':') {
-            throw_syntax_error("Expected ':' after object key");
+            fail_at("Expected ':' after property name");
         }
         advance();
 
@@ -453,11 +455,11 @@ Value JSON::Parser::parse_object() {
                     advance();
                     break;
                 } else {
-                    throw_syntax_error("Trailing comma not allowed");
+                    fail_at("Expected double-quoted property name");
                 }
             }
         } else {
-            throw_syntax_error("Expected ',' or '}' in object");
+            fail_at("Expected ',' or '}' after property value");
         }
     }
     
@@ -506,11 +508,11 @@ Value JSON::Parser::parse_array() {
                     advance();
                     break;
                 } else {
-                    throw_syntax_error("Trailing comma not allowed");
+                    fail_token();
                 }
             }
         } else {
-            throw_syntax_error("Expected ',' or ']' in array");
+            fail_at("Expected ',' or ']' after array element");
         }
     }
     
@@ -534,12 +536,12 @@ std::string JSON::Parser::parse_string_literal() {
         if (ch == '\\') {
             advance();
             if (at_end()) {
-                throw_syntax_error("Unterminated string");
+                fail_at("Unterminated string");
             }
             
             result += parse_escape_sequence();
         } else if (static_cast<unsigned char>(ch) < 0x20) {
-            throw_syntax_error("Unescaped control character in string");
+            fail_at("Bad control character in string literal");
         } else {
             result += ch;
             advance();
@@ -547,7 +549,7 @@ std::string JSON::Parser::parse_string_literal() {
     }
     
     if (at_end()) {
-        throw_syntax_error("Unterminated string");
+        fail_at("Unterminated string");
     }
     
     advance();
@@ -587,7 +589,7 @@ std::string JSON::Parser::parse_escape_sequence() {
             return encode_utf16_unit(unit);
         }
         default:
-            throw_syntax_error("Invalid escape sequence: \\" + std::string(1, ch));
+            fail_at("Bad escaped character");
     }
 }
 
@@ -596,7 +598,7 @@ uint32_t JSON::Parser::parse_unicode_escape() {
     
     for (int i = 0; i < 4; i++) {
         if (at_end() || !is_hex_digit(current_char())) {
-            throw_syntax_error("Invalid unicode escape sequence");
+            fail_at("Bad Unicode escape");
         }
         
         char ch = current_char();
@@ -637,7 +639,7 @@ double JSON::Parser::parse_number_literal() {
             advance();
         }
     } else {
-        throw_syntax_error("Invalid number");
+        fail_at("No number after minus sign");
     }
     
     if (!at_end() && current_char() == '.') {
@@ -645,7 +647,7 @@ double JSON::Parser::parse_number_literal() {
         advance();
         
         if (at_end() || !is_digit(current_char())) {
-            throw_syntax_error("Invalid number");
+            fail_at("Unterminated fractional number");
         }
         
         while (!at_end() && is_digit(current_char())) {
@@ -664,7 +666,7 @@ double JSON::Parser::parse_number_literal() {
         }
         
         if (at_end() || !is_digit(current_char())) {
-            throw_syntax_error("Invalid number");
+            fail_at("Exponent part is missing a number");
         }
         
         while (!at_end() && is_digit(current_char())) {
@@ -691,7 +693,7 @@ Value JSON::Parser::parse_boolean() {
         column_ += 5;
         return Value(false);
     } else {
-        throw_syntax_error("Invalid boolean value");
+        fail_token();
     }
 }
 
@@ -701,7 +703,7 @@ Value JSON::Parser::parse_null() {
         column_ += 4;
         return Value::null();
     } else {
-        throw_syntax_error("Invalid null value");
+        fail_token();
     }
 }
 
@@ -738,9 +740,32 @@ bool JSON::Parser::at_end() const {
     return position_ >= json_.length();
 }
 
+void JSON::Parser::fail_at(const std::string& what) {
+    const bool says_where = what.rfind("Expected", 0) == 0 || what.rfind("Unterminated", 0) == 0 || what.rfind("No number", 0) == 0 || what.rfind("Exponent", 0) == 0 || what.rfind("Bad", 0) == 0 || what.rfind("Unexpected non-whitespace", 0) == 0;
+    if (at_end() && !says_where) throw std::runtime_error("Unexpected end of JSON input");
+    std::ostringstream oss;
+    oss << what << (what.size() >= 4 && what.compare(what.size() - 4, 4, "JSON") == 0 ? " at position " : " in JSON at position ") << position_ << " (line " << line_ << " column " << column_ << ")";
+    throw std::runtime_error(oss.str());
+}
+
+void JSON::Parser::fail_token() {
+    if (at_end()) throw std::runtime_error("Unexpected end of JSON input");
+    const size_t length = json_.size();
+    const char token = json_[position_];
+    std::string text;
+    if (length < 21) {
+        text = "\"" + json_ + "\"";
+    } else {
+        const size_t from = position_ > 10 ? position_ - 10 : 0;
+        const size_t to = std::min(length, position_ + 10);
+        text = std::string(from > 0 ? "..." : "") + "\"" + json_.substr(from, to - from) + "\"" + std::string(to < length ? "..." : "");
+    }
+    throw std::runtime_error("Unexpected token '" + std::string(1, token) + "', " + text + " is not valid JSON");
+}
+
 void JSON::Parser::throw_syntax_error(const std::string& message) {
     std::ostringstream oss;
-    oss << "JSON parse error at line " << line_ << ", column " << column_ << ": " << message;
+    oss << message;
     throw std::runtime_error(oss.str());
 }
 

@@ -1181,7 +1181,7 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
         // step 3a: strict mode throws ReferenceError, otherwise return undefined.
         if (!binding_object_->has_property(name)) {
             if (ctx && ctx->is_strict_mode()) {
-                ctx->throw_reference_error("'" + name + "' is not defined");
+                ctx->throw_reference_error(name + " is not defined");
             }
             return Value();
         }
@@ -1243,7 +1243,7 @@ bool Environment::set_binding_direct(const std::string& name, const Value& value
         // SetMutableBinding step 2-3: strict mode throws if the binding vanished (e.g. a `with` getter deleted it mid-update).
         bool still_exists = binding_object_->has_property(name);
         if (!still_exists && ctx && ctx->is_strict_mode()) {
-            ctx->throw_reference_error("'" + name + "' is not defined");
+            ctx->throw_reference_error(name + " is not defined");
             return false;
         }
         return binding_object_->set_property(name, value);

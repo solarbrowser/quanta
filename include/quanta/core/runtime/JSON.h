@@ -106,6 +106,10 @@ private:
         bool at_end() const;
         
         [[noreturn]] void throw_syntax_error(const std::string& message);
+        // The messages V8 gives (what a page that looks at the engine's own words, or a program that reads them, finds): `<what> in JSON at position N (line L column C)`, and for a character that has no place
+        // `Unexpected token 'c', "<the text, or the part of it around that>" is not valid JSON`.
+        [[noreturn]] void fail_at(const std::string& what);
+        [[noreturn]] void fail_token();
         
         std::string parse_string_literal();
         std::string parse_escape_sequence();

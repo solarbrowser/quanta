@@ -11,6 +11,7 @@
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
 
@@ -172,6 +173,39 @@ void register_error_builtins(Context& ctx) {
 
             return Value(error_obj.release());
         });
+
+    // V8's Error.captureStackTrace(target[, constructorOpt]) and Error.stackTraceLimit: libraries and anything that reads the shape of a V8 engine look for them.
+    {
+        auto capture = ObjectFactory::create_native_function("captureStackTrace",
+            [](Context& ctx, std::span<const Value> args, Value) -> Value {
+                if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
+                    ctx.throw_type_error("Invalid argument");
+                    return Value();
+                }
+                Object* target = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
+                std::string name = "Error", message;
+                Value name_value = target->get_property("name");
+                if (!name_value.is_undefined()) name = name_value.to_string();
+                Value message_value = target->get_property("message");
+                if (!message_value.is_undefined()) message = message_value.to_string();
+                std::string trace = message.empty() ? name : (name.empty() ? message : name + ": " + message);
+                try {
+                    CallStack& stack = CallStack::instance();
+                    // (The frame of captureStackTrace itself is not part of what it captures.)
+                    size_t skip = 0;
+                    if (stack.depth() > 0 && stack.top().function_ptr && stack.top().function_ptr->is_native()) skip = 1;
+                    const std::string frames = stack.generate_stack_trace(10, skip);
+                    if (!frames.empty()) trace += "\n" + frames;
+                } catch (...) {}
+                PropertyDescriptor stack_desc(Value(trace), PropertyAttributes::BuiltinFunction);
+                target->set_property_descriptor("stack", stack_desc);
+                return Value();
+            }, 2);
+        PropertyDescriptor capture_desc(Value(capture.release()), PropertyAttributes::BuiltinFunction);
+        error_constructor->set_property_descriptor("captureStackTrace", capture_desc);
+        PropertyDescriptor limit_desc(Value(10.0), PropertyAttributes::Default);
+        error_constructor->set_property_descriptor("stackTraceLimit", limit_desc);
+    }
 
     auto error_isError = ObjectFactory::create_native_function("isError", Error::isError);
     {
@@ -559,7 +593,7 @@ void register_error_builtins(Context& ctx) {
 
             if (has_message) {
                 error_obj->set_property_descriptor("message",
-                    PropertyDescriptor(Value(message), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+                    PropertyDescriptor(Value(message), PropertyAttributes::BuiltinFunction));
             }
 
             auto errors_array = ObjectFactory::create_array(static_cast<uint32_t>(errors_list.size()));
@@ -569,7 +603,7 @@ void register_error_builtins(Context& ctx) {
             Engine::fixup_new_array_realm(errors_array.get(), Engine::find_realm_owning_object(error_obj.get(), "AggregateError"));
             for (size_t i = 0; i < errors_list.size(); i++) errors_array->set_element(static_cast<uint32_t>(i), errors_list[i]);
             error_obj->set_property_descriptor("errors",
-                PropertyDescriptor(Value(errors_array.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+                PropertyDescriptor(Value(errors_array.release()), PropertyAttributes::BuiltinFunction));
 
             if (args.size() > 2 && args[2].is_object()) {
                 Object* options = args[2].as_object();
@@ -577,7 +611,7 @@ void register_error_builtins(Context& ctx) {
                     Value cause = options->get_property("cause");
                     if (ctx.has_exception()) return Value();
                     error_obj->set_property_descriptor("cause",
-                        PropertyDescriptor(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+                        PropertyDescriptor(cause, PropertyAttributes::BuiltinFunction));
                 }
             }
 
@@ -638,10 +672,10 @@ void register_error_builtins(Context& ctx) {
             error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, suppressed_proto_ptr, "SuppressedError"));
             // Insertion order matters (order-of-args-evaluation): message, then error, then suppressed.
             if (has_message) {
-                error_obj->set_property("message", Value(message), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                error_obj->set_property("message", Value(message), PropertyAttributes::BuiltinFunction);
             }
-            error_obj->set_property("error", args.size() > 0 ? args[0] : Value(), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-            error_obj->set_property("suppressed", args.size() > 1 ? args[1] : Value(), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            error_obj->set_property("error", args.size() > 0 ? args[0] : Value(), PropertyAttributes::BuiltinFunction);
+            error_obj->set_property("suppressed", args.size() > 1 ? args[1] : Value(), PropertyAttributes::BuiltinFunction);
             return Value(error_obj.release());
         }, 3);
 

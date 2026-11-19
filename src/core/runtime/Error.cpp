@@ -101,7 +101,7 @@ void Error::generate_stack_trace() {
                 const CallStackFrame& top = stack.top();
                 if (top.function_ptr && top.function_ptr->is_native() && top.name() == type_to_name(error_type_)) skip = 1;
             }
-            std::string stack_frames = stack.generate_stack_trace(20, skip);
+            std::string stack_frames = stack.generate_stack_trace(10, skip);
 
             if (!stack_frames.empty()) {
                 trace += "\n";

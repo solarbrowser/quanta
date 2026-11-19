@@ -4252,7 +4252,7 @@ QUANTA_HANDLER Value h_gen_LdaLookup(HANDLER_PARAMS) {
                     acc = lex->get_binding(name);
                     CHECK_EXC();
                 } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                     CHECK_EXC();
                 }
                 break;
@@ -4344,7 +4344,7 @@ QUANTA_HANDLER Value h_LdaLookupWide(HANDLER_PARAMS) {
                 acc = lex->get_binding(name);
                 CHECK_EXC();
             } else {
-                ctx.throw_reference_error("'" + name + "' is not defined");
+                ctx.throw_reference_error(name + " is not defined");
                 CHECK_EXC();
             }
             break;
@@ -4520,7 +4520,7 @@ QUANTA_HANDLER Value h_gen_StaLookup(HANDLER_PARAMS) {
                 CHECK_EXC();
                 if (!env) {
                     if (ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        ctx.throw_reference_error(name + " is not defined");
                         CHECK_EXC();
                         break;
                     }
@@ -4532,7 +4532,7 @@ QUANTA_HANDLER Value h_gen_StaLookup(HANDLER_PARAMS) {
                 if (env->get_type() == Environment::Type::Object && env->get_binding_object()) {
                     Object* bobj = env->get_binding_object();
                     if (!bobj->has_own_property(name) && ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        ctx.throw_reference_error(name + " is not defined");
                         CHECK_EXC();
                         break;
                     }
@@ -4598,7 +4598,7 @@ QUANTA_HANDLER Value h_StaLookupWide(HANDLER_PARAMS) {
             CHECK_EXC();
             if (!env) {
                 if (ctx.is_strict_mode()) {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                     CHECK_EXC();
                     break;
                 }
@@ -4609,7 +4609,7 @@ QUANTA_HANDLER Value h_StaLookupWide(HANDLER_PARAMS) {
             if (env->get_type() == Environment::Type::Object && env->get_binding_object()) {
                 Object* bobj = env->get_binding_object();
                 if (!bobj->has_own_property(name) && ctx.is_strict_mode()) {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                     CHECK_EXC();
                     break;
                 }
@@ -4670,7 +4670,7 @@ QUANTA_HANDLER Value h_gen_LdaResolvedEnv(HANDLER_PARAMS) {
     do {
         Environment* env = f.resolved_envs[slot];
         if (!env) {
-            ctx.throw_reference_error("'" + name + "' is not defined");
+            ctx.throw_reference_error(name + " is not defined");
             break;
         }
         if (env->binding_in_tdz(name)) {
@@ -4697,7 +4697,7 @@ QUANTA_HANDLER Value h_gen_StaResolvedEnv(HANDLER_PARAMS) {
             // Unresolvable when the reference was made, and that verdict stands
             // even if the right side has since created the binding.
             if (ctx.is_strict_mode()) {
-                ctx.throw_reference_error("'" + name + "' is not defined");
+                ctx.throw_reference_error(name + " is not defined");
                 break;
             }
             if (Object* global = ctx.get_global_object()) global->set_property(name, acc);
@@ -4710,7 +4710,7 @@ QUANTA_HANDLER Value h_gen_StaResolvedEnv(HANDLER_PARAMS) {
         if (env->get_type() == Environment::Type::Object && env->get_binding_object()) {
             Object* bobj = env->get_binding_object();
             if (!bobj->has_own_property(name) && ctx.is_strict_mode()) {
-                ctx.throw_reference_error("'" + name + "' is not defined");
+                ctx.throw_reference_error(name + " is not defined");
                 break;
             }
             if (!bobj->set_property(name, acc) &&
@@ -4911,7 +4911,7 @@ QUANTA_HANDLER Value h_gen_StaLookupChecked(HANDLER_PARAMS) {
                     // `x = (this.x = 1)`): PutValue resolves before GetValue
                     // of the RHS, spec 13.15.2 step 1-4.
                     if (ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        ctx.throw_reference_error(name + " is not defined");
                         CHECK_EXC();
                         break;
                     }
@@ -4948,7 +4948,7 @@ QUANTA_HANDLER Value h_gen_StaLookupChecked(HANDLER_PARAMS) {
                     // binding (e.g. `x = (delete global.x, 2)`) --
                     // SetMutableBinding's own HasBinding check now fails.
                     if (ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        ctx.throw_reference_error(name + " is not defined");
                         CHECK_EXC();
                         break;
                     }
@@ -5128,7 +5128,7 @@ QUANTA_HANDLER Value h_gen_LdaEnv(HANDLER_PARAMS) {
                     } else if (from_object) {
                         acc = object_value;
                     } else if (r == Environment::kNotBound) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        ctx.throw_reference_error(name + " is not defined");
                     }
                     CHECK_EXC();
                     break;
@@ -5147,7 +5147,7 @@ QUANTA_HANDLER Value h_gen_LdaEnv(HANDLER_PARAMS) {
                 if (env) {
                     acc = env->get_binding_direct(name, &ctx);
                 } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -5187,7 +5187,7 @@ QUANTA_HANDLER Value h_gen_StaEnv(HANDLER_PARAMS) {
                         CHECK_EXC();
                     }
                 } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -5283,7 +5283,7 @@ QUANTA_HANDLER Value h_gen_LdaEnvSlot(HANDLER_PARAMS) {
                 if (env) {
                     acc = env->get_binding_direct_interned(key, &ctx);
                 } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -5350,7 +5350,7 @@ QUANTA_HANDLER Value h_gen_StaEnvSlot(HANDLER_PARAMS) {
                         CHECK_EXC();
                     }
                 } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -5452,7 +5452,7 @@ QUANTA_HANDLER Value h_gen_LdaEnvSlotAt(HANDLER_PARAMS) {
                 } else if (from_object) {
                     acc = object_value;
                 } else if (r == Environment::kNotBound) {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -5517,7 +5517,7 @@ QUANTA_HANDLER Value h_gen_StaEnvSlotAt(HANDLER_PARAMS) {
                         CHECK_EXC();
                     }
                 } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -9861,7 +9861,7 @@ QUANTA_HANDLER Value h_gen_LdaWith(HANDLER_PARAMS) {
         }
         if (!found) {
             acc = Value();
-            if (!for_typeof) ctx.throw_reference_error("'" + *key + "' is not defined");
+            if (!for_typeof) ctx.throw_reference_error(*key + " is not defined");
         }
     } while (0);
     CHECK_EXC_TAIL();
@@ -9919,7 +9919,7 @@ QUANTA_HANDLER Value h_gen_LdaWithResolved(HANDLER_PARAMS) {
                 if (still_exists) {
                     acc = target.as_object()->get_property(name);
                 } else if (ctx.is_strict_mode()) {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 } else {
                     acc = Value();
                 }
@@ -9957,7 +9957,7 @@ QUANTA_HANDLER Value h_gen_StaWithResolved(HANDLER_PARAMS) {
             const bool still_exists = target.as_object()->has_property(name);
             if (!ctx.has_exception()) {
                 if (!still_exists && ctx.is_strict_mode()) {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    ctx.throw_reference_error(name + " is not defined");
                 } else {
                     target.as_object()->set_property(name, acc);
                 }
@@ -9982,7 +9982,7 @@ QUANTA_HANDLER Value h_gen_StaWithResolved(HANDLER_PARAMS) {
             break;
         }
         if (ctx.is_strict_mode()) {
-            ctx.throw_reference_error("'" + name + "' is not defined");
+            ctx.throw_reference_error(name + " is not defined");
             break;
         }
         if (Object* g = ctx.get_global_object()) g->set_property(name, acc);
