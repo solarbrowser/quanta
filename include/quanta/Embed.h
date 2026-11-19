@@ -489,6 +489,11 @@ public:
     // interpreter's safepoints. Inside a NoCollect pause it is asked for instead and runs when the outermost pause ends.
     void CollectGarbage();
 
+    // What the engine put off for a moment when nothing is running (the allocators' return of every idle page to the system, which costs milliseconds and so is
+    // not done in the pause that ends a collection): true if there was some. Call it on the Isolate's thread, between frames. A program that never has such a
+    // moment gets the work done by the collector itself after three seconds.
+    bool RunIdleWork();
+
     // Collecting is paused from BeginNoCollect() to the matching EndNoCollect(): no cell is freed in between, so the host
     // can read pointers to cells (a layout pass over committed objects) without a collection running under it. Script
     // and the host go on allocating and the write barrier goes on working; the safepoint, CollectGarbage() and the

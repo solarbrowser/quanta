@@ -866,6 +866,11 @@ void Isolate::CollectGarbage() {
     Collector::collect_or_defer();
 }
 
+bool Isolate::RunIdleWork() {
+    HeapScope heap_scope(isolate_->heap());
+    return Heap::run_deferred_trim();
+}
+
 void Isolate::BeginNoCollect() { Collector::begin_no_collect(); }
 
 void Isolate::EndNoCollect() {

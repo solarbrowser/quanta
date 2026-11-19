@@ -232,6 +232,9 @@ public:
     // Full idle-chunk scan (see BlockAllocator::decommit_idle_chunks) --
     // major-collection-only housekeeping, not part of the minor pause budget.
     static void decommit_idle_memory();
+    // What decommit_idle_memory put off for a moment when nothing is running (the allocators' forced return of every idle page): true if there was any. Call it on the
+    // thread of the heap, between frames.
+    static bool run_deferred_trim();
 
     // Allocation-triggered GC request; the interpreter's safepoint consumes it.
     static bool gc_requested() { return gc_requested_; }

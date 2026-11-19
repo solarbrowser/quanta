@@ -602,6 +602,39 @@ size_t Heap::update_allocation_candidates_after_minor() {
     return live_bytes;
 }
 
+namespace {
+using TrimClock = std::chrono::steady_clock;
+// The part of giving memory back that costs the most (the allocators asked to return every idle page they have: up to 14 ms on a heap that has just shrunk) is not
+// done in the pause that ends a major collection: it is asked for here, and done when the host has a moment (Heap::run_deferred_trim), or at the end of a major
+// once it has waited three seconds, as a program that is never quiet still gets its memory back.
+thread_local bool g_trim_due = false;
+thread_local TrimClock::time_point g_trim_due_since{};
+thread_local TrimClock::time_point g_last_forced_trim{};
+
+void do_forced_trim() {
+    static const bool prof = std::getenv("QUANTA_GC_PROFILE") != nullptr;
+    const auto t0 = TrimClock::now();
+    g_trim_due = false;
+    g_last_forced_trim = t0;
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
+    const auto t1 = TrimClock::now();
+    mi_collect(true);
+    if (prof) {
+        const auto t2 = TrimClock::now();
+        auto us = [](auto a, auto b) { return static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count()); };
+        std::fprintf(stderr, "[gc-prof] trim malloc_trim=%ldus mi_collect=%ldus\n", us(t0, t1), us(t1, t2));
+    }
+}
+}  // namespace
+
+bool Heap::run_deferred_trim() {
+    if (!g_trim_due) return false;
+    do_forced_trim();
+    return true;
+}
+
 void Heap::decommit_idle_memory() {
     for (Heap* heap : thread_heaps()) {
         heap->block_allocator_.decommit_idle_chunks();
@@ -619,16 +652,12 @@ void Heap::decommit_idle_memory() {
     // many a second and each found the same footprint, so the walk was about a twelfth of a
     // tree-building benchmark's time for ten megabytes of peak footprint. A program whose heap
     // really shrinks still returns the memory within the second.
-    using Clock = std::chrono::steady_clock;
-    static thread_local Clock::time_point last_forced{};
-    const Clock::time_point now = Clock::now();
-    if (now - last_forced >= std::chrono::seconds(1)) {
-        last_forced = now;
-#ifdef __GLIBC__
-        malloc_trim(0);
-#endif
-        mi_collect(true);
+    const auto now = TrimClock::now();
+    if (!g_trim_due && now - g_last_forced_trim >= std::chrono::seconds(1)) {
+        g_trim_due = true;
+        g_trim_due_since = now;
     }
+    if (g_trim_due && now - g_trim_due_since >= std::chrono::seconds(3)) do_forced_trim();
     // Same idle-capacity problem as the block allocator above, for the
     // small-map/vector free lists SmallMapAllocator-backed containers
     // (Environment/Shape/Object overflow maps, per-instance lookup caches)

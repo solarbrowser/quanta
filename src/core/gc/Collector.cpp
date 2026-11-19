@@ -261,6 +261,7 @@ public:
         std::unique_lock<std::mutex> round(round_mutex_, std::try_to_lock);
         if (!round.owns_lock()) return false;
         ensure_threads();
+        finish_trim();
         const int participants = helpers_ + 1;
         for (auto& m : markers_) { m->reset(); m->clear_remembered = clear_remembered; }
         main_heaps_ = Heap::heaps_of_this_thread();
@@ -310,6 +311,7 @@ public:
     void release_excess_capacity() {
         std::unique_lock<std::mutex> round(round_mutex_, std::try_to_lock);
         if (!round.owns_lock() || !started_) return;
+        finish_trim();   // (one that was begun at the end of the last major, and nothing has marked since)
         bool big = shared_.capacity() > kWorthTrimming;
         for (auto& m : markers_) big = big || m->local.capacity() > kWorthTrimming || m->deferred.capacity() > kWorthTrimming ||
                                        m->contexts.capacity() > kWorthTrimming || m->environments.capacity() > kWorthTrimming;
@@ -317,20 +319,31 @@ public:
         {
             std::lock_guard<std::mutex> lock(m_);
             trim_only_ = true;
+            trim_inflight_ = true;
             finished_ = 0;
             generation_++;
         }
         cv_work_.notify_all();
-        trim_markers(*markers_[0]);
-        std::unique_lock<std::mutex> lock(m_);
-        cv_done_.wait(lock, [&] { return finished_ == helpers_; });
-        trim_only_ = false;
+        // The helpers go on by themselves, each in its own thread, and the collecting thread does not wait for them: the end of a major is a pause of the page, and
+        // the wait was most of it. The next round (run) or trim (here) finishes this one first. The collecting thread frees its own lists and leaves the allocator's
+        // idle pages to Heap::decommit_idle_memory, which hands them back (at most once a second) -- a mi_collect(true) of its own here cost up to 14 ms.
+        trim_markers(*markers_[0], /*collect=*/false);
         std::vector<Heap::ProbeResult> fresh;
         fresh.reserve(65536);
         shared_.swap(fresh);
     }
 
 private:
+    // Waits for the helpers of a trim that was begun and not waited for (see release_excess_capacity), and ends it. Called with the round mutex held.
+    void finish_trim() {
+        std::unique_lock<std::mutex> lock(m_);
+        if (!trim_inflight_) return;
+        cv_done_.wait(lock, [&] { return finished_ == helpers_; });
+        trim_only_ = false;
+        trim_inflight_ = false;
+    }
+    bool trim_inflight_ = false;   // (guarded by m_)
+
     ParallelMarkPool() {
         const char* env = std::getenv("QUANTA_GC_THREADS");
         if (env && *env) {
@@ -441,7 +454,7 @@ private:
     // (A trim is a round of its own and walks the allocator's pages: only when a list is past half a megabyte, and only at the end of a major.)
     static constexpr size_t kWorthTrimming = 32768;
     // Run by the thread that owns the lists: frees what is past kKeepEntries, and hands the thread's idle allocator pages back.
-    void trim_markers(ParMarker& me) {
+    void trim_markers(ParMarker& me, bool collect = true) {
         // Replaced by a list of the size they start with, so that no round has to allocate.
         const auto shed = [](auto& list, size_t keep) {
             if (list.capacity() > keep) {
@@ -451,7 +464,7 @@ private:
             }
         };
         shed(me.local, 16384); shed(me.deferred, 4096); shed(me.contexts, 0); shed(me.environments, 0);
-        mi_collect(true);
+        if (collect) mi_collect(true);
     }
 
     void signal_stop() {
@@ -1951,14 +1964,22 @@ void finish_major_cycle(MarkVisitor& v) {
         Heap::reset_dirty_blocks();
         const size_t live_after = Heap::rebuild_allocation_candidates();
         fm6 = std::chrono::steady_clock::now();
+        const auto fa = std::chrono::steady_clock::now();
         Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
         Heap::note_major_done(live_after);
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
         g_expect_major = v.marked_cells;
+        const auto fb = std::chrono::steady_clock::now();
         v.release_excess_capacity();
+        const auto fc = std::chrono::steady_clock::now();
         ParallelMarkPool::instance().release_excess_capacity();
+        const auto fd = std::chrono::steady_clock::now();
         Heap::decommit_idle_memory();
         fm7 = std::chrono::steady_clock::now();
+        if (prof) {
+            auto us2 = [](auto a, auto b) { return static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count()); };
+            std::fprintf(stderr, "[gc-prof] major tail retune+yield=%ldus visitor_release=%ldus pool_release=%ldus decommit=%ldus\n", us2(fa, fb), us2(fb, fc), us2(fc, fd), us2(fd, fm7));
+        }
     }
     if (prof) {
         auto us = [](auto a, auto b) { return static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count()); };
