@@ -2063,7 +2063,22 @@ private:
     size_t i_ = 0;
 
     [[noreturn]] void fail(const std::string& msg) {
-        throw std::runtime_error("Invalid regular expression: " + msg);
+        static const std::pair<const char*, const char*> kV8[] = {
+            {"unmatched ')'", "Unmatched ')'"}, {"unterminated group", "Unterminated group"},
+            {"unterminated character class", "Unterminated character class"},
+            {"pattern ends with \\", "\\ at end of pattern"}, {"nothing to repeat", "Nothing to repeat"},
+            {"incomplete quantifier", "Incomplete quantifier"},
+            {"quantifier range out of order", "numbers out of order in {} quantifier"},
+            {"character class range out of order", "Range out of order in character class"},
+            {"invalid \\u escape", "Invalid Unicode escape"}, {"invalid \\u{} escape", "Invalid Unicode escape"},
+            {"invalid \\x escape", "Invalid escape"}, {"invalid group", "Invalid group"},
+            {"invalid backreference", "Invalid escape"}, {"invalid decimal escape", "Invalid decimal escape"},
+            {"lone quantifier bracket", "Lone quantifier brackets"}, {"quantifier after assertion", "Nothing to repeat"},
+            {"invalid character class range", "Invalid character class"},
+        };
+        std::string text = msg;
+        for (const auto& kv : kV8) if (msg == kv.first) { text = kv.second; break; }
+        throw std::runtime_error("Invalid regular expression: /" + p_ + "/" + (v_ ? "v" : "u") + ": " + text);
     }
 
     bool eof() const { return i_ >= p_.size(); }
@@ -2581,7 +2596,7 @@ void RegExp::do_compile() {
     if (!re) {
         // JS-valid but PCRE2-unsupported: huge quantifier (105), empty [] (106),
         // variable lookbehind (125), \u in PCRE2 ctx (137), string properties (147).
-        if (errcode == 105 || errcode == 106 || errcode == 125 || errcode == 137 || errcode == 147 || errcode == 187) {
+        if (errcode == 105 || errcode == 125 || errcode == 137 || errcode == 147 || errcode == 187) {
             static const char16_t always_fail[] = u"(?!)";
             re = pcre2_compile(
                 reinterpret_cast<PCRE2_SPTR>(always_fail),
@@ -2594,7 +2609,18 @@ void RegExp::do_compile() {
             for (size_t k = 0; k < 256 && errbuf[k]; k++) msg += static_cast<char>(errbuf[k]);
             // The pattern as the engine got it (after the rewrites above) and where it stopped: what a page's
             // regular expression was is not otherwise findable in a minified script.
-            throw std::runtime_error("Invalid regular expression: /" + pat + "/: " + msg + " at " + std::to_string(erroffset));
+            // V8's words for the common mistakes; the rest keep PCRE2's text.
+            switch (errcode) {
+                case 114: msg = "Unterminated group"; break;
+                case 122: msg = "Unmatched ')'"; break;
+                case 109: msg = "Nothing to repeat"; break;
+                case 101: msg = "\\ at end of pattern"; break;
+                case 106: case 107: msg = "Unterminated character class"; break;
+                case 108: msg = "Range out of order in character class"; break;
+                case 143: msg = "Duplicate capture group name"; break;
+                default: msg += " at " + std::to_string(erroffset); break;
+            }
+            throw std::runtime_error("Invalid regular expression: /" + pat + "/: " + msg);
         }
     } else if (!g_regexp_validation_only) {
         pcre2_jit_compile(re, PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT);

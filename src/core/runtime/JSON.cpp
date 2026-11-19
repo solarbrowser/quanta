@@ -313,7 +313,9 @@ Value JSON::js_stringify(Context& ctx, std::span<const Value> args, Value receiv
         if (result.empty() || result == "undefined_sentinel") return Value();
         return Value(result);
     } catch (const std::exception& e) {
-        ctx.throw_type_error(std::string(e.what()));
+        std::string m = e.what();
+        if (m.rfind("TypeError: ", 0) == 0) m.erase(0, 11);
+        ctx.throw_type_error(m);
         return Value();
     }
 }

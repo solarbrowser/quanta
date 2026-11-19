@@ -1007,12 +1007,12 @@ Value Proxy::proxy_constructor(Context& ctx, std::span<const Value> args, Value 
         return Value();
     }
     if (args.size() < 2) {
-        ctx.throw_type_error("Proxy constructor requires target and handler arguments");
+        ctx.throw_type_error("Cannot create proxy with a non-object as target or handler");
         return Value();
     }
     
     if ((!args[0].is_object() && !args[0].is_function()) || !args[1].is_object()) {
-        ctx.throw_type_error("Proxy constructor requires object arguments");
+        ctx.throw_type_error("Cannot create proxy with a non-object as target or handler");
         return Value();
     }
 

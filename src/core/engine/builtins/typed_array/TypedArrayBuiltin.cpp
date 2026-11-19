@@ -220,7 +220,7 @@ static double to_index_checked(Context& ctx, const Value& v) {
     if (std::isnan(number) || number == 0) return 0;
     double integer = (number < 0) ? std::ceil(number) : std::floor(number);
     if (integer < 0 || integer > 9007199254740991.0) {
-        ctx.throw_range_error("Invalid index");
+        ctx.throw_range_error("Invalid typed array length: " + v.to_string());
         return 0;
     }
     return integer;

@@ -1922,7 +1922,7 @@ void register_string_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
             if (std::isnan(count_d)) count_d = 0;
             count_d = std::floor(count_d);
-            if (count_d < 0 || std::isinf(count_d)) { ctx.throw_range_error("Invalid count value"); return Value(); }
+            if (count_d < 0 || std::isinf(count_d)) { ctx.throw_range_error("Invalid count value: " + args[0].to_string()); return Value(); }
             int count = static_cast<int>(count_d);
             if (count == 0 || str.empty()) return Value(std::string(""));
             std::string result;
@@ -1967,7 +1967,7 @@ void register_string_builtins(Context& ctx) {
             } else if (form == "NFKD") {
                 output = utf8proc_NFKD(input);
             } else {
-                ctx.throw_range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD");
+                ctx.throw_range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD.");
                 return Value();
             }
 

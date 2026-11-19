@@ -1582,7 +1582,7 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
             if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsert"); return Value(); }
             WeakMap* wm = static_cast<WeakMap*>(obj);
             Value key = args.empty() ? Value() : args[0];
-            if (!can_hold_weakly(key)) { ctx.throw_type_error("WeakMap key must be held weakly"); return Value(); }
+            if (!can_hold_weakly(key)) { ctx.throw_type_error("Invalid value used as weak map key"); return Value(); }
             Value val = args.size() > 1 ? args[1] : Value();
             if (key.is_symbol()) {
                 Symbol* sym = key.as_symbol();
@@ -1604,7 +1604,7 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
             if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsertComputed"); return Value(); }
             WeakMap* wm = static_cast<WeakMap*>(obj);
             Value key = args.empty() ? Value() : args[0];
-            if (!can_hold_weakly(key)) { ctx.throw_type_error("WeakMap key must be held weakly"); return Value(); }
+            if (!can_hold_weakly(key)) { ctx.throw_type_error("Invalid value used as weak map key"); return Value(); }
             if (args.size() < 2 || !args[1].is_function()) { ctx.throw_type_error("callbackFn is not a function"); return Value(); }
             Symbol* sym = key.is_symbol() ? key.as_symbol() : nullptr;
             Object* key_obj = sym ? nullptr
@@ -1784,7 +1784,7 @@ Value WeakMap::weakmap_set(Context& ctx, std::span<const Value> args, Value rece
         weakmap->set_symbol(args[0].as_symbol(), args[1]);
         return Value(this_obj);
     } else {
-        ctx.throw_type_error("WeakMap key must be an object or unregistered Symbol");
+        ctx.throw_type_error("Invalid value used as weak map key");
         return Value();
     }
 }
@@ -1934,7 +1934,7 @@ Value WeakSet::weakset_add(Context& ctx, std::span<const Value> args, Value rece
         weakset->add_symbol(args[0].as_symbol());
         return Value(this_obj);
     } else {
-        ctx.throw_type_error("WeakSet value must be an object or unregistered Symbol");
+        ctx.throw_type_error("Invalid value used in weak set");
         return Value();
     }
 }

@@ -244,7 +244,7 @@ void register_promise_builtins(Context& ctx) {
                 return Value();
             }
             if (args.empty() || !args[0].is_function()) {
-                ctx.throw_type_error("Promise executor must be a function");
+                ctx.throw_type_error("Promise resolver " + (args.empty() ? std::string("undefined") : (args[0].is_object() ? std::string("#<Object>") : args[0].to_string())) + " is not a function");
                 return Value();
             }
 

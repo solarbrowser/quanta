@@ -454,7 +454,7 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
                         return Value(result);
                     }
                 }
-                ctx.throw_type_error("Right-hand side of instanceof is not callable");
+                ctx.throw_type_error((right_value.is_object() || right_value.is_function()) ? "Right-hand side of 'instanceof' is not callable" : "Right-hand side of 'instanceof' is not an object");
                 return Value(false);
             }
             // OrdinaryHasInstance step 3: if O is not Object, return false (no prototype check needed)

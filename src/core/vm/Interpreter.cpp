@@ -128,6 +128,36 @@ namespace VM {
 
 namespace {
 
+// What V8 says when a strict-mode store is refused: which of the three
+// reasons it was (a getter with no setter, a read-only data property, a
+// closed object), and what the object is called ("#<Foo>").
+std::string object_label(Object* obj) {
+    std::string who = "#<Object>";
+    Value c = obj->get_property("constructor");
+    if (c.is_function()) {
+        const std::string& n = c.as_function()->get_name();
+        if (!n.empty()) who = "#<" + n + ">";
+    }
+    return who;
+}
+
+std::string strict_store_failure(Object* obj, const std::string& name) {
+    const std::string who = object_label(obj);
+    for (Object* o = obj; o; o = o->get_prototype()) {
+        if (!o->has_own_property(name)) continue;
+        PropertyDescriptor d = o->get_property_descriptor(name);
+        if (d.is_accessor_descriptor())
+            return "Cannot set property " + name + " of " + who + " which has only a getter";
+        return "Cannot assign to read only property '" + name + "' of object '" + who + "'";
+    }
+    return "Cannot add property " + name + ", object is not extensible";
+}
+
+std::string set_on_nullish_message(const Value& recv, const std::string& key) {
+    return std::string("Cannot set properties of ") + (recv.is_null() ? "null" : "undefined") +
+           " (setting '" + key + "')";
+}
+
 using BinOp = BinaryExpression::Operator;
 
 // Operands are stored little-endian, one byte after another. On a little-endian host a
@@ -1384,8 +1414,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
                const Value& value, FeedbackSlot* fb_slot, Function* owner, bool rooted) {
     FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (receiver.is_null() || receiver.is_undefined()) {
-        ctx.throw_type_error(std::string("Cannot set properties of ") +
-            (receiver.is_null() ? "null" : "undefined"));
+        ctx.throw_type_error(set_on_nullish_message(receiver, name));
         return;
     }
     Object* obj = as_object_like(receiver);
@@ -1395,7 +1424,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (obj->get_type() == Object::ObjectType::Custom && DOMObject::exotic_of(obj)) {
         bool ok = obj->set_property(name, value);
         if (ctx.has_exception()) return;
-        if (!ok && ctx.is_strict_mode()) ctx.throw_type_error("Cannot assign to read only property '" + name + "'");
+        if (!ok && ctx.is_strict_mode()) ctx.throw_type_error(strict_store_failure(obj, name));
         return;
     }
     bool ordinary_recv = shape_fast_path_ok(obj->get_type());
@@ -1533,7 +1562,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     bool ok = obj->ordinary_set(name, value, &learned_holder, &learned_setter);
     if (ctx.has_exception()) return;
     if (!ok && ctx.is_strict_mode()) {
-        ctx.throw_type_error("Cannot assign to read only property '" + name + "'");
+        ctx.throw_type_error(strict_store_failure(obj, name));
         return;
     }
     // Learn the inherited setter this call actually used, so the next write
@@ -4538,14 +4567,14 @@ QUANTA_HANDLER Value h_gen_StaLookup(HANDLER_PARAMS) {
                     }
                     bool ok = bobj->set_property(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        ctx.throw_type_error("Assignment to constant variable.");
                     } else if (ok) {
                         cache_store_binding(f, env, name, sta_name_idx);
                     }
                 } else {
                     bool ok = env->set_binding(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        ctx.throw_type_error("Assignment to constant variable.");
                     } else if (ok) {
                         cache_store_binding(f, env, name, sta_name_idx);
                     }
@@ -4615,14 +4644,14 @@ QUANTA_HANDLER Value h_StaLookupWide(HANDLER_PARAMS) {
                 }
                 bool ok = bobj->set_property(name, acc);
                 if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    ctx.throw_type_error("Assignment to constant variable.");
                 } else if (ok) {
                     cache_store_binding(f, env, name, sta_name_idx);
                 }
             } else {
                 bool ok = env->set_binding(name, acc);
                 if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    ctx.throw_type_error("Assignment to constant variable.");
                 } else if (ok) {
                     cache_store_binding(f, env, name, sta_name_idx);
                 }
@@ -4715,13 +4744,13 @@ QUANTA_HANDLER Value h_gen_StaResolvedEnv(HANDLER_PARAMS) {
             }
             if (!bobj->set_property(name, acc) &&
                 (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                ctx.throw_type_error("Assignment to constant variable.");
             }
             break;
         }
         if (!env->set_binding(name, acc) &&
             (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+            ctx.throw_type_error("Assignment to constant variable.");
         }
     } while (0);
     CHECK_EXC_TAIL();
@@ -4936,7 +4965,7 @@ QUANTA_HANDLER Value h_gen_StaLookupChecked(HANDLER_PARAMS) {
                 if (env) {
                     bool ok = env->set_binding(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        ctx.throw_type_error("Assignment to constant variable.");
                     } else if (ok) {
                         cache_store_binding(f, env, name, name_idx);
                     }
@@ -5183,7 +5212,7 @@ QUANTA_HANDLER Value h_gen_StaEnv(HANDLER_PARAMS) {
                 if (env) {
                     if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        ctx.throw_type_error("Assignment to constant variable.");
                         CHECK_EXC();
                     }
                 } else {
@@ -5321,7 +5350,7 @@ QUANTA_HANDLER Value h_gen_StaEnvSlot(HANDLER_PARAMS) {
                     // const write here vanished instead of raising.
                     if (!e->slot.mutable_flag) {
                         if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
-                            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                            ctx.throw_type_error("Assignment to constant variable.");
                             CHECK_EXC();
                         }
                         break;
@@ -5346,7 +5375,7 @@ QUANTA_HANDLER Value h_gen_StaEnvSlot(HANDLER_PARAMS) {
                 if (env) {
                     if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        ctx.throw_type_error("Assignment to constant variable.");
                         CHECK_EXC();
                     }
                 } else {
@@ -5488,7 +5517,7 @@ QUANTA_HANDLER Value h_gen_StaEnvSlotAt(HANDLER_PARAMS) {
                         }
                         if (!e->slot.mutable_flag) {
                             if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
-                                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                                ctx.throw_type_error("Assignment to constant variable.");
                                 CHECK_EXC();
                             }
                             break;
@@ -5513,7 +5542,7 @@ QUANTA_HANDLER Value h_gen_StaEnvSlotAt(HANDLER_PARAMS) {
                 if (found) {
                     if (!found->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        ctx.throw_type_error("Assignment to constant variable.");
                         CHECK_EXC();
                     }
                 } else {
@@ -9150,8 +9179,7 @@ QUANTA_HANDLER Value h_gen_SetKeyed(HANDLER_PARAMS) {
                 pc += 4;
                 const Value& recv = regs[obj_reg];
                 if (recv.is_null() || recv.is_undefined()) {
-                    ctx.throw_type_error(std::string("Cannot set properties of ") +
-                        (recv.is_null() ? "null" : "undefined"));
+                    ctx.throw_type_error(set_on_nullish_message(recv, regs[key_reg].is_object() || regs[key_reg].is_function() ? std::string("[object Object]") : regs[key_reg].to_string()));
                     CHECK_EXC();
                     break;
                 }
@@ -9207,8 +9235,7 @@ QUANTA_HANDLER Value h_SetKeyedWide(HANDLER_PARAMS) {
             pc += 7;
             const Value& recv = regs[obj_reg];
             if (recv.is_null() || recv.is_undefined()) {
-                ctx.throw_type_error(std::string("Cannot set properties of ") +
-                    (recv.is_null() ? "null" : "undefined"));
+                ctx.throw_type_error(set_on_nullish_message(recv, regs[key_reg].is_object() || regs[key_reg].is_function() ? std::string("[object Object]") : regs[key_reg].to_string()));
                 CHECK_EXC();
                 break;
             }
@@ -9294,7 +9321,7 @@ QUANTA_HANDLER Value h_gen_DeleteNamed(HANDLER_PARAMS) {
                 }
                 CHECK_EXC();
                 if (!deleted && ctx.is_strict_mode()) {
-                    ctx.throw_type_error("Cannot delete property '" + property_name + "'");
+                    ctx.throw_type_error("Cannot delete property '" + property_name + "' of " + object_label(obj));
                     CHECK_EXC();
                     break;
                 }
@@ -9354,7 +9381,7 @@ QUANTA_HANDLER Value h_gen_DeleteKeyed(HANDLER_PARAMS) {
                 }
                 CHECK_EXC();
                 if (!deleted && ctx.is_strict_mode()) {
-                    ctx.throw_type_error("Cannot delete property '" + property_name + "'");
+                    ctx.throw_type_error("Cannot delete property '" + property_name + "' of " + object_label(obj));
                     CHECK_EXC();
                     break;
                 }
@@ -9977,7 +10004,7 @@ QUANTA_HANDLER Value h_gen_StaWithResolved(HANDLER_PARAMS) {
             }
             if (!found->set_binding_direct(name, acc, &ctx) &&
                 (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                ctx.throw_type_error("Assignment to constant variable.");
             }
             break;
         }

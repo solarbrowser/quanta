@@ -42,7 +42,7 @@ static double to_index_checked(Context& ctx, const Value& v) {
     double integer = to_integer_or_infinity_checked(ctx, v);
     if (ctx.has_exception()) return 0.0;
     if (integer < 0 || integer > 9007199254740991.0) {
-        ctx.throw_range_error("Invalid index: out of range");
+        ctx.throw_range_error("Invalid array buffer length");
         return 0.0;
     }
     return integer;

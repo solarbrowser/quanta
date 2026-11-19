@@ -956,7 +956,7 @@ void register_object_builtins(Context& ctx) {
     auto setPrototypeOf_fn = ObjectFactory::create_native_function("setPrototypeOf",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.size() < 2) {
-                ctx.throw_type_error("Object.setPrototypeOf requires 2 arguments");
+                ctx.throw_type_error("Object prototype may only be an Object or null: undefined");
                 return Value();
             }
 

@@ -2215,7 +2215,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 Value Function::construct(Context& ctx, std::span<const Value> args) {
     // Check if this function is a constructor
     if (UNLIKELY_NATIVE(!is_constructor_)) {
-        ctx.throw_exception(Value("TypeError: " + get_name() + " is not a constructor"));
+        ctx.throw_exception(Value("TypeError: " + (get_name().empty() ? std::string("(intermediate value)") : get_name()) + " is not a constructor"));
         return Value();
     }
     // new.target is this function already when the `new` came from the VM, which

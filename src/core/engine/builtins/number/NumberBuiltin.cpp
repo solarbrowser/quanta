@@ -483,7 +483,7 @@ void register_number_builtins(Context& ctx) {
             if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
 
             if (has_frac && (frac_int < 0 || frac_int > 100)) {
-                ctx.throw_range_error("toExponential() precision out of range");
+                ctx.throw_range_error("toExponential() argument must be between 0 and 100");
                 return Value();
             }
 
@@ -553,7 +553,7 @@ void register_number_builtins(Context& ctx) {
                 // ToIntegerOrInfinity: NaN->0, then check [0,100]
                 double int_frac = std::isnan(frac) ? 0.0 : std::trunc(frac);
                 if (int_frac < 0 || int_frac > 100) {
-                    ctx.throw_range_error("toFixed() precision out of range");
+                    ctx.throw_range_error("toFixed() digits argument must be between 0 and 100");
                     return Value();
                 }
                 precision = static_cast<int>(int_frac);
@@ -603,7 +603,7 @@ void register_number_builtins(Context& ctx) {
             if (!std::isfinite(num)) return Value(std::isnan(num) ? std::string("NaN") : (num > 0 ? std::string("Infinity") : std::string("-Infinity")));
             int precision = static_cast<int>(prec_int);
             if (prec_int < 1 || prec_int > 100) {
-                ctx.throw_range_error("toPrecision() precision out of range");
+                ctx.throw_range_error("toPrecision() argument must be between 1 and 100");
                 return Value();
             }
 

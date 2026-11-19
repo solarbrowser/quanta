@@ -375,7 +375,7 @@ void register_function_builtins(Context& ctx) {
             // Check the raw this value (get_this_binding returns stale Object* for primitive this).
             Value raw_this = receiver;
             if (!raw_this.is_object() && !raw_this.is_function()) {
-                ctx.throw_type_error("Function.prototype.bind called on non-function");
+                ctx.throw_type_error("Bind must be called on a function");
                 return Value();
             }
             Object* function_obj = receiver.as_object_or_null();
@@ -390,7 +390,7 @@ void register_function_builtins(Context& ctx) {
                 }
             }
             if (!target_func) {
-                ctx.throw_type_error("Function.prototype.bind called on non-function");
+                ctx.throw_type_error("Bind must be called on a function");
                 return Value();
             }
 
