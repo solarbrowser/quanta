@@ -288,12 +288,15 @@ void Object::erase_extra_property_order(const std::string& key) {
         [&](const auto& p) { return p.first == key; }), order.end());
 }
 
-void Object::note_descriptor_value_cached(const std::string& key) {
+bool Object::note_descriptor_value_cached(const std::string& key) {
     PropertyDescriptor* d = find_descriptor_override(key);
-    if (!d || !d->is_data_descriptor() || d->value_cached()) return;
+    if (!d || !d->is_data_descriptor()) return true;
+    if (d->value_volatile()) return false;
+    if (d->value_cached()) return true;
     if (const Value* slot = find_shape_slot(key)) d->set_value(*slot);
     d->mark_value_cached();
     bump_descriptor_epoch();
+    return true;
 }
 
 const PropertyDescriptor* Object::cacheable_dictionary_data(const std::string& key, bool* writable) const {
@@ -821,7 +824,9 @@ void Object::set_prototype(Object* prototype) {
     // The engine's single [[Prototype]]-CHANGE choke point, so bumping here
     // covers every caller (setPrototypeOf, __proto__, class extends, ...).
     initialize_prototype(prototype);
-    Object::bump_proto_epoch();
+    // Only what a chain passes through can change what a read of it finds: an object that is nobody's prototype has no cache of a read through it, and the caches of
+    // reads OF it compare its prototype itself (a different one is a miss). Every other place that moves the epoch asks the same of the object it changes.
+    if (used_as_prototype()) Object::bump_proto_epoch();
 }
 
 bool Object::has_prototype(Object* prototype) const {
@@ -1805,7 +1810,7 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
                     // time a script assigned a global `var`. A dictionary-mode
                     // global's own read cache reads the descriptor in place, so it
                     // needs no bump.
-                    if (dit->value_cached()) bump_descriptor_epoch();
+                    if (dit->value_cached()) { bump_descriptor_epoch(); dit->retire_value_cached(); }
                     dit->set_value(value);
                 }
             }
@@ -2784,6 +2789,16 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
     // any of which affects blocker status; a failed call bumping too is
     // safe, just an occasional over-invalidation.
     if (used_as_prototype()) bump_proto_epoch();
+    // A brand-new plain data property carrying exactly the default attributes is what an assignment creates: it goes into the shape, and no descriptor of any
+    // object changes, so no cache that holds one has anything to be told (JSON.parse, spread and the arrays that map and filter make define every member this way:
+    // each used to retire every cached getter and method of the page).
+    if (get_type() == ObjectType::Ordinary && desc.is_data_descriptor() && desc.has_value() &&
+        desc.has_writable() && desc.is_writable() && desc.has_enumerable() && desc.is_enumerable() &&
+        desc.has_configurable() && desc.is_configurable() && !is_array_index(key) && !has_own_property(key)) {
+        if (!is_extensible()) return false;
+        store_in_overflow(key, desc.get_value());
+        return true;
+    }
     // Same reasoning for descriptor_epoch_: this function is the only place
     // an own defineProperty call can introduce a descriptors_ override,
     // rare enough in practice that bumping unconditionally here (rather

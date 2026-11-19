@@ -958,7 +958,8 @@ public:
     // paths that write only the slot leave it behind). Moves the epoch itself
     // when it marks, so that a store cache made while the descriptor was
     // unmarked, which skips that bump, is dropped.
-    void note_descriptor_value_cached(const std::string& key);
+    // False when the property is one that moves (see PropertyDescriptor::value_volatile): no cache is to hold a copy of it.
+    bool note_descriptor_value_cached(const std::string& key);
 
     // SetNamed's transition-cache fast path: adds `key` using an
     // already-resolved destination shape, skipping both Shape::transition(key)'s
@@ -1206,6 +1207,9 @@ private:
     // so a write to it needs to move the descriptor epoch only if some cache
     // is holding the copy -- see Object::note_descriptor_value_cached.
     mutable bool value_cached_ : 1 = false;
+    // A value that was written after a cache copied it is one no cache is to copy again: it moves, and each write to a cached one has to retire every cache of the page
+    // (the fields of a big object that a script keeps assigning, as a graphics engine's state is).
+    mutable bool value_volatile_ : 1 = false;
     // A value, or a getter and a setter: nothing stored holds both (a data property has no accessors and the other way
     // round), so they share the storage and a descriptor is 24 bytes and not 40 (a descriptor sits in every entry of an
     // object's descriptor map, and a page has a hundred thousand of those maps). The has_* bits say which one is live;
@@ -1218,6 +1222,9 @@ private:
 public:
     bool value_cached() const { return value_cached_; }
     void mark_value_cached() const { value_cached_ = true; }
+    bool value_volatile() const { return value_volatile_; }
+    // The write that found a copy held: the caches are retired by the epoch, and nothing is to hold a copy of this value again.
+    void retire_value_cached() const { value_cached_ = false; value_volatile_ = true; }
     PropertyDescriptor();
     explicit PropertyDescriptor(const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     PropertyDescriptor(Object* getter, Object* setter, PropertyAttributes attrs = PropertyAttributes::Default);

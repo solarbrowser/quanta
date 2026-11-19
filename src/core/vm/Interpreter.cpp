@@ -467,12 +467,13 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
         fb = &fb_slot->ensure();
         Collector::write_barrier(owner);
         mark_owner_feedback_dirty(owner);
-        if (!desc.is_accessor_descriptor()) proto_obj->note_descriptor_value_cached(name);
-        fb->rare().prim_proto = proto_obj;
-        fb->rare().prim_is_getter = desc.is_accessor_descriptor();
-        fb->rare().prim_value = fb->prim_is_getter() ? Value(desc.get_getter()) : desc.get_value();
-        fb->rare().prim_desc_epoch = Object::descriptor_epoch();
-        fb->rare().prim_valid = true;
+        if (desc.is_accessor_descriptor() || proto_obj->note_descriptor_value_cached(name)) {
+            fb->rare().prim_proto = proto_obj;
+            fb->rare().prim_is_getter = desc.is_accessor_descriptor();
+            fb->rare().prim_value = fb->prim_is_getter() ? Value(desc.get_getter()) : desc.get_value();
+            fb->rare().prim_desc_epoch = Object::descriptor_epoch();
+            fb->rare().prim_valid = true;
+        }
     }
     if (desc.is_accessor_descriptor()) {
         if (!desc.has_getter()) return Value();
@@ -1252,10 +1253,11 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 // The copy is about to be cached, so writes to it have to be
                 // heard: this marks the descriptor (and refreshes its copy from
                 // the slot, which the store paths skip) before the value is read.
-                obj->note_descriptor_value_cached(name);
-                learned.rare().own_desc_receiver = obj;
-                learned.rare().own_desc_value = obj->find_descriptor_override(name)->get_value();
-                learned.rare().own_desc_epoch = Object::descriptor_epoch();
+                if (obj->note_descriptor_value_cached(name)) {
+                    learned.rare().own_desc_receiver = obj;
+                    learned.rare().own_desc_value = obj->find_descriptor_override(name)->get_value();
+                    learned.rare().own_desc_epoch = Object::descriptor_epoch();
+                }
             }
             return desc.get_value();
         }
@@ -1337,14 +1339,16 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                             learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), proto,
                                         static_cast<uint32_t>(hidx), Object::proto_epoch(), owner);
                         } else if (!proto_desc.is_accessor_descriptor() && proto_desc.has_value()) {
-                            proto->note_descriptor_value_cached(name);
                             // The holder keeps it in its descriptor map, which is
                             // where every builtin prototype method lives. Cache
-                            // the value and let the descriptor epoch invalidate.
-                            learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), proto,
-                                        0, Object::proto_epoch(), owner,
-                                        /*from_descriptor=*/true, proto_desc.get_value(),
-                                        Object::descriptor_epoch());
+                            // the value and let the descriptor epoch invalidate
+                            // (unless it is a value that moves: nothing holds a copy of that).
+                            if (proto->note_descriptor_value_cached(name)) {
+                                learn_proto(fb_slot, obj, obj->get_shape(), obj->get_prototype(), proto,
+                                            0, Object::proto_epoch(), owner,
+                                            /*from_descriptor=*/true, proto_desc.get_value(),
+                                            Object::descriptor_epoch());
+                            }
                         }
                     }
                     // The walk already has the value. Falling through to
@@ -1413,10 +1417,11 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         Collector::write_barrier(owner);
         mark_owner_feedback_dirty(owner);
         FeedbackBody& learned = fb_slot->ensure();
-        obj->note_descriptor_value_cached(name);
-        learned.rare().own_desc_receiver = obj;
-        learned.rare().own_desc_value = result;
-        learned.rare().own_desc_epoch = Object::descriptor_epoch();
+        if (obj->note_descriptor_value_cached(name)) {
+            learned.rare().own_desc_receiver = obj;
+            learned.rare().own_desc_value = result;
+            learned.rare().own_desc_epoch = Object::descriptor_epoch();
+        }
     }
     return result;
 }

@@ -225,7 +225,7 @@ static bool regexp_write_last_index(Object* r, double value, bool& ok) {
             // Only a cache that holds a copy of the value (note_descriptor_value_cached) needs the
             // epoch moved, as in the general write path. Moving it for every global exec retired
             // every descriptor-keyed cache in the program each time.
-            if (d->value_cached()) Object::bump_descriptor_epoch();
+            if (d->value_cached()) { Object::bump_descriptor_epoch(); d->retire_value_cached(); }
             d->set_value(Value(value));
         }
     }
