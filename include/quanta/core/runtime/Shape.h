@@ -158,7 +158,7 @@ public:
     // them across the thread is bounded (kDeepShapeBudget), which keeps a program that fills many objects with computed
     // keys at the old behaviour once the budget is spent.
     static constexpr uint32_t kMaxChainSlots = 1024;
-    static constexpr uint32_t kDeepShapeBudget = 4096;
+    static constexpr uint32_t kDeepShapeBudget = 65536;
 
 private:
     static constinit thread_local Shape* root_instance_;
