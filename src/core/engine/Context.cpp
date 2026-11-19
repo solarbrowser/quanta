@@ -485,6 +485,20 @@ bool Context::delete_binding(const std::string& name) {
 }
 
 void Context::throw_exception(const Value& exception, bool raw) {
+    // QUANTA_TRACE_THROW=1: every exception as it is thrown, for finding what a
+    // script swallows (a page's own try/catch hides what it probed and failed).
+    static const bool trace_throw = std::getenv("QUANTA_TRACE_THROW") != nullptr;
+    if (__builtin_expect(trace_throw, 0)) {
+        std::string what = exception.is_string() ? exception.to_string() : std::string("(value)");
+        if (exception.is_object()) {
+            Object* o = exception.as_object();
+            Value m = o->get_property("message");
+            Value n = o->get_property("name");
+            if (has_exception()) clear_exception();
+            what = (n.is_string() ? n.to_string() : std::string("Error")) + ": " + (m.is_string() ? m.to_string() : std::string());
+        }
+        fprintf(stderr, "THROW %s\n", what.substr(0, 300).c_str());
+    }
     if (exception.is_string() && !raw) {
         std::string error_msg = exception.to_string();
 
