@@ -18,6 +18,70 @@
 
 namespace Quanta {
 
+// ---- What a call that finds no function says of its callee (V8's words) ----
+// `o.foo is not a function`, `a.b.c is not a function`, `o[k] is not a function`, `f(...).x is not a function`, `(intermediate value).foo is not a function`: the text of the callee as V8's call
+// printer writes it, worked out when the call is compiled and kept as the name the call instruction holds for its diagnostics.
+namespace {
+std::string callee_text_tape(TapeView tape, size_t index);
+std::string callee_text_ast(const ASTNode* node);
+
+std::string number_text(double v) {
+    if (v == static_cast<double>(static_cast<long long>(v)) && v > -1e15 && v < 1e15) return std::to_string(static_cast<long long>(v));
+    std::ostringstream out;
+    out << v;
+    return out.str();
+}
+
+std::string callee_text_tape(TapeView tape, size_t index) {
+    if (index >= tape.size()) return "(intermediate value)";
+    const TapeEntry& e = tape[index];
+    switch (e.tag) {
+        case TapeTag::Identifier: return NamePool::text(e.name_id);
+        case TapeTag::Number: return number_text(e.number_value);
+        case TapeTag::Member: {
+            const size_t object = index + 1;
+            if (object >= tape.size()) return "(intermediate value)";
+            std::string out = callee_text_tape(tape, object);
+            if (e.call_argc == 0) return out + "." + NamePool::text(e.name_id);
+            const size_t key = object + tape[object].span;
+            if (key < tape.size() && tape[key].tag == TapeTag::Identifier) return out + "[" + NamePool::text(tape[key].name_id) + "]";
+            if (key < tape.size() && tape[key].tag == TapeTag::Number) return out + "[" + number_text(tape[key].number_value) + "]";
+            return out + "[...]";
+        }
+        case TapeTag::Call: return callee_text_tape(tape, index + 1) + "(...)";
+        default: return "(intermediate value)";
+    }
+}
+
+std::string callee_text_ast(const ASTNode* node) {
+    if (!node) return "(intermediate value)";
+    switch (node->get_type()) {
+        case ASTNode::Type::IDENTIFIER: return static_cast<const Identifier*>(node)->get_name();
+        case ASTNode::Type::NUMBER_LITERAL: return number_text(static_cast<const NumberLiteral*>(node)->get_value());
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* member = static_cast<const MemberExpression*>(node);
+            std::string object = callee_text_ast(member->get_object());
+            const ASTNode* property = member->get_property();
+            if (!member->is_computed()) {
+                if (property && property->get_type() == ASTNode::Type::IDENTIFIER) return object + "." + static_cast<const Identifier*>(property)->get_name();
+                return object + ".(intermediate value)";
+            }
+            if (property && property->get_type() == ASTNode::Type::IDENTIFIER) return object + "[" + static_cast<const Identifier*>(property)->get_name() + "]";
+            if (property && property->get_type() == ASTNode::Type::NUMBER_LITERAL) return object + "[" + number_text(static_cast<const NumberLiteral*>(property)->get_value()) + "]";
+            if (property && property->get_type() == ASTNode::Type::STRING_LITERAL) return object + "." + static_cast<const StringLiteral*>(property)->get_value();
+            return object + "[...]";
+        }
+        case ASTNode::Type::CALL_EXPRESSION: return callee_text_ast(static_cast<const CallExpression*>(node)->get_callee()) + "(...)";
+        case ASTNode::Type::TAPED_EXPRESSION: {
+            const TapeView tape = static_cast<const TapedExpression*>(node)->tape();
+            return tape.empty() ? std::string("(intermediate value)") : callee_text_tape(tape, 0);
+        }
+        default: return "(intermediate value)";
+    }
+}
+}  // namespace
+
+
 // From call.cpp: the site's frozen template object, the one the tree-walker
 // hands a tag. Asked for once while compiling and parked in the constants, so
 // the chunk keeps the object rather than the node it was built from.
@@ -12746,7 +12810,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     emit_u8(static_cast<uint8_t>(func_reg));
                     emit_u8(static_cast<uint8_t>(obj_reg));
                     emit_u8(static_cast<uint8_t>(args_reg));
-                    emit_u16(add_name(method_name));
+                    emit_u16(add_name(callee_text_ast(callee)));
                     free_temp(args_reg);
                     free_temp(temp_base);
                     return !failed_;
@@ -12773,7 +12837,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(args_start));
                 emit_u8(argc);
-                emit_u16(add_name(method_name));
+                emit_u16(add_name(callee_text_ast(callee)));
                 free_temp(temp_base);
                 return !failed_;
             }
@@ -12896,7 +12960,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             emit_u8(static_cast<uint8_t>(callee_reg));
             emit_u8(static_cast<uint8_t>(args_start));
             emit_u8(argc);
-            emit_u16(add_name(callee_name));
+            emit_u16(add_name(named_callee ? callee_name : callee_text_ast(callee)));
             free_temp(callee_reg);
             return !failed_;
         }
@@ -12925,7 +12989,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit(Op::ConstructSpread);
                 emit_u8(static_cast<uint8_t>(ctor_reg));
                 emit_u8(static_cast<uint8_t>(args_reg));
-                emit_u16(add_name(expr->get_constructor()->to_string()));
+                emit_u16(add_name(callee_text_ast(expr->get_constructor())));
                 free_temp(args_reg);
                 free_temp(ctor_reg);
                 return !failed_;
@@ -12950,7 +13014,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             emit_u8(static_cast<uint8_t>(callee_reg));
             emit_u8(static_cast<uint8_t>(args_start));
             emit_u8(static_cast<uint8_t>(new_args.size()));
-            emit_u16(add_name(expr->get_constructor()->to_string()));
+            emit_u16(add_name(callee_text_ast(expr->get_constructor())));
             free_temp(callee_reg);
             return !failed_;
         }
@@ -13759,7 +13823,7 @@ size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool dis
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(args_start));
                 emit_u8(e.call_argc);
-                emit_u16(add_name(computed ? std::string("<computed>") : prop));
+                emit_u16(add_name(callee_text_tape(tape, callee_idx)));
                 free_temp(temp_base);
                 return failed_ ? 0 : index + e.span;
             }
@@ -13790,7 +13854,7 @@ size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool dis
             emit_u8(static_cast<uint8_t>(callee_reg));
             emit_u8(static_cast<uint8_t>(args_start));
             emit_u8(e.call_argc);
-            emit_u16(add_name(callee_name));
+            emit_u16(add_name(callee_name.empty() ? callee_text_tape(tape, callee_idx) : callee_name));
             free_temp(callee_reg);
             return failed_ ? 0 : index + e.span;
         }
