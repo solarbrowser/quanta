@@ -1075,7 +1075,7 @@ Value Reflect::reflect_get(Context& ctx, std::span<const Value> args, Value rece
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.get");
     if (!target) {
         return Value();
     }
@@ -1234,7 +1234,7 @@ Value Reflect::reflect_set(Context& ctx, std::span<const Value> args, Value rece
         return Value();
     }
 
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.set");
     if (!target) {
         return Value(false);
     }
@@ -1264,7 +1264,7 @@ Value Reflect::reflect_has(Context& ctx, std::span<const Value> args, Value rece
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.has");
     if (!target) {
         return Value(false);
     }
@@ -1280,7 +1280,7 @@ Value Reflect::reflect_delete_property(Context& ctx, std::span<const Value> args
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.deleteProperty");
     if (!target) {
         return Value(false);
     }
@@ -1307,7 +1307,7 @@ Value Reflect::reflect_own_keys(Context& ctx, std::span<const Value> args, Value
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.ownKeys");
     if (!target) {
         return Value();
     }
@@ -1389,7 +1389,7 @@ Value Reflect::reflect_get_prototype_of(Context& ctx, std::span<const Value> arg
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.getPrototypeOf");
     if (!target) {
         return Value();
     }
@@ -1406,7 +1406,7 @@ Value Reflect::reflect_set_prototype_of(Context& ctx, std::span<const Value> arg
         return Value();
     }
 
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.setPrototypeOf");
     if (!target) return Value();
 
     if (!args[1].is_null() && !args[1].is_object() && !args[1].is_function()) {
@@ -1431,7 +1431,7 @@ Value Reflect::reflect_is_extensible(Context& ctx, std::span<const Value> args, 
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.isExtensible");
     if (!target) {
         return Value(false);
     }
@@ -1452,7 +1452,7 @@ Value Reflect::reflect_prevent_extensions(Context& ctx, std::span<const Value> a
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.preventExtensions");
     if (!target) {
         return Value(false);
     }
@@ -1640,7 +1640,7 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const
         return Value();
     }
     
-    Object* target = to_object(args[0], ctx);
+    Object* target = to_object(args[0], ctx, "Reflect.getOwnPropertyDescriptor");
     if (!target) {
         return Value();
     }
@@ -1657,7 +1657,7 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const
 }
 
 Value Reflect::reflect_define_property(Context& ctx, std::span<const Value> args, Value receiver) {
-    Object* target = to_object(args.empty() ? Value() : args[0], ctx);
+    Object* target = to_object(args.empty() ? Value() : args[0], ctx, "Reflect.defineProperty");
     if (!target) return Value(false);
 
     std::string key = to_property_key(args.size() > 1 ? args[1] : Value());
@@ -1745,14 +1745,14 @@ void Reflect::setup_reflect(Context& ctx) {
     ctx.register_built_in_object("Reflect", reflect_obj.release());
 }
 
-Object* Reflect::to_object(const Value& value, Context& ctx) {
+Object* Reflect::to_object(const Value& value, Context& ctx, const char* who) {
     if (value.is_object()) {
         return value.as_object();
     }
     if (value.is_function()) {
         return static_cast<Object*>(value.as_function());
     }
-    ctx.throw_type_error("Reflect operation requires an object");
+    ctx.throw_type_error(std::string(who ? who : "Reflect operation") + " called on non-object");
     return nullptr;
 }
 

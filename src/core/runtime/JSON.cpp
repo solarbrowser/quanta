@@ -1005,14 +1005,36 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     }
 }
 
+void JSON::Stringifier::throw_circular(const Object* again) const {
+    auto ctor_of = [](const Object* o) {
+        std::string n = "Object";
+        Value c = const_cast<Object*>(o)->get_property("constructor");
+        if (c.is_function() && !c.as_function()->get_name().empty()) n = c.as_function()->get_name();
+        return n;
+    };
+    auto key_text = [&](const Object* parent, const std::string& key) {
+        if (parent && parent->get_type() == Object::ObjectType::Array) return "index " + key;
+        return "property '" + key + "'";
+    };
+    size_t start = 0;
+    for (size_t i = 0; i < path_.size(); i++) if (path_[i].first == again) { start = i; break; }
+    std::string m = "Converting circular structure to JSON\n    --> starting at object with constructor '" + ctor_of(again) + "'";
+    for (size_t j = start + 1; j < path_.size(); j++)
+        m += "\n    |     " + key_text(path_[j - 1].first, path_[j].second) + " -> object with constructor '" + ctor_of(path_[j].first) + "'";
+    m += "\n    --- " + key_text(path_.empty() ? nullptr : path_.back().first, current_key_) + " closes the circle";
+    throw std::runtime_error(m);
+}
+
 std::string JSON::Stringifier::stringify_object(const Object* obj) {
     if (!obj) return "null";
 
     if (visited_.find(obj) != visited_.end()) {
-        throw std::runtime_error("TypeError: Converting circular structure to JSON");
+        throw_circular(obj);
     }
 
     visited_.insert(obj);
+    path_.emplace_back(obj, current_key_);
+    struct PathPop { std::vector<std::pair<const Object*, std::string>>& p; ~PathPop() { p.pop_back(); } } path_pop{path_};
     depth_++;  // Increase depth for nested objects
 
     std::string result = "{";
@@ -1146,10 +1168,12 @@ std::string JSON::Stringifier::stringify_array(const Object* arr) {
     if (!arr) return "null";
 
     if (visited_.find(arr) != visited_.end()) {
-        throw std::runtime_error("TypeError: Converting circular structure to JSON");
+        throw_circular(arr);
     }
 
     visited_.insert(arr);
+    path_.emplace_back(arr, current_key_);
+    struct PathPop { std::vector<std::pair<const Object*, std::string>>& p; ~PathPop() { p.pop_back(); } } path_pop{path_};
     depth_++;  // Increase depth for nested arrays
 
     std::string result = "[";

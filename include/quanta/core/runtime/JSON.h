@@ -130,6 +130,10 @@ private:
         StringifyOptions options_;
         size_t depth_;
         std::set<const Object*> visited_;
+        // The objects being written, each with the key it was reached by: what a
+        // circular structure's message names (V8 prints the loop).
+        std::vector<std::pair<const Object*, std::string>> path_;
+        [[noreturn]] void throw_circular(const Object* again) const;
         Context* context_;
         // The realm the replacer-function wrapper object's own [[Prototype]]
         // must come from (register_json_builtins's home_ctx) -- distinct from

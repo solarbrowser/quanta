@@ -2174,11 +2174,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             // Fall through to error
             [[fallthrough]];
         default: {
-            std::string tok_val = token_string(token).empty()
-                ? Token::token_type_name(token.get_type())
-                : "'" + token_string(token) + "'";
-            std::string error_msg = "SyntaxError: Unexpected token " + tok_val;
-            add_error(error_msg, token.get_start());
+            add_error(unexpected_token_message(token), token.get_start());
             advance();
             return nullptr;
         }
@@ -2967,8 +2963,10 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
 
     // Full engine-side validation (shared with the RegExp constructor) so literal
     // and constructor behavior can never disagree.
-    if (!RegExp::is_valid_unicode_pattern(pattern, flags)) {
-        add_error("SyntaxError: Invalid regular expression: " + pattern);
+    std::string why;
+    if (!RegExp::is_valid_unicode_pattern(pattern, flags, &why)) {
+        add_error(why.rfind("Invalid regular expression", 0) == 0 ? "SyntaxError: " + why
+                                                                   : "SyntaxError: Invalid regular expression: " + pattern);
         return nullptr;
     }
 
@@ -3382,13 +3380,107 @@ Position Parser::get_current_position() const {
 }
 
 
-void Parser::add_error(const std::string& message) {
+// V8's words for a token the grammar did not expect there.
+std::string Parser::unexpected_token_message(const Token& token) const {
+    switch (token.get_type()) {
+        case TokenType::EOF_TOKEN: return "SyntaxError: Unexpected end of input";
+        case TokenType::NUMBER: case TokenType::BIGINT_LITERAL: return "SyntaxError: Unexpected number";
+        case TokenType::STRING: return "SyntaxError: Unexpected string";
+        case TokenType::TEMPLATE_LITERAL: case TokenType::TEMPLATE_START:
+        case TokenType::TEMPLATE_MIDDLE: case TokenType::TEMPLATE_END: return "SyntaxError: Unexpected template string";
+        case TokenType::IDENTIFIER: return "SyntaxError: Unexpected identifier '" + token_string(token) + "'";
+        default: break;
+    }
+    static const std::pair<TokenType, const char*> kPunct[] = {
+        {TokenType::PLUS, "+"}, {TokenType::MINUS, "-"}, {TokenType::MULTIPLY, "*"}, {TokenType::DIVIDE, "/"},
+        {TokenType::MODULO, "%"}, {TokenType::EXPONENT, "**"}, {TokenType::ASSIGN, "="}, {TokenType::PLUS_ASSIGN, "+="},
+        {TokenType::MINUS_ASSIGN, "-="}, {TokenType::MULTIPLY_ASSIGN, "*="}, {TokenType::DIVIDE_ASSIGN, "/="},
+        {TokenType::MODULO_ASSIGN, "%="}, {TokenType::EXPONENT_ASSIGN, "**="}, {TokenType::INCREMENT, "++"},
+        {TokenType::DECREMENT, "--"}, {TokenType::EQUAL, "=="}, {TokenType::NOT_EQUAL, "!="},
+        {TokenType::STRICT_EQUAL, "==="}, {TokenType::STRICT_NOT_EQUAL, "!=="}, {TokenType::LESS_THAN, "<"},
+        {TokenType::GREATER_THAN, ">"}, {TokenType::LESS_EQUAL, "<="}, {TokenType::GREATER_EQUAL, ">="},
+        {TokenType::LOGICAL_AND, "&&"}, {TokenType::LOGICAL_OR, "||"}, {TokenType::LOGICAL_NOT, "!"},
+        {TokenType::BITWISE_AND, "&"}, {TokenType::BITWISE_OR, "|"}, {TokenType::BITWISE_XOR, "^"},
+        {TokenType::BITWISE_NOT, "~"}, {TokenType::LEFT_SHIFT, "<<"}, {TokenType::RIGHT_SHIFT, ">>"},
+        {TokenType::UNSIGNED_RIGHT_SHIFT, ">>>"}, {TokenType::LEFT_PAREN, "("}, {TokenType::RIGHT_PAREN, ")"},
+        {TokenType::LEFT_BRACE, "{"}, {TokenType::RIGHT_BRACE, "}"}, {TokenType::LEFT_BRACKET, "["},
+        {TokenType::RIGHT_BRACKET, "]"}, {TokenType::SEMICOLON, ";"}, {TokenType::COMMA, ","}, {TokenType::DOT, "."},
+        {TokenType::COLON, ":"}, {TokenType::QUESTION, "?"}, {TokenType::HASH, "#"}, {TokenType::AT, "@"},
+        {TokenType::ARROW, "=>"}, {TokenType::ELLIPSIS, "..."}, {TokenType::OPTIONAL_CHAINING, "?."},
+        {TokenType::NULLISH_COALESCING, "??"}, {TokenType::NULLISH_ASSIGN, "??="}, {TokenType::LOGICAL_AND_ASSIGN, "&&="},
+        {TokenType::LOGICAL_OR_ASSIGN, "||="}, {TokenType::BITWISE_AND_ASSIGN, "&="}, {TokenType::BITWISE_OR_ASSIGN, "|="},
+        {TokenType::BITWISE_XOR_ASSIGN, "^="}, {TokenType::LEFT_SHIFT_ASSIGN, "<<="}, {TokenType::RIGHT_SHIFT_ASSIGN, ">>="},
+        {TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN, ">>>="},
+    };
+    for (const auto& p : kPunct)
+        if (p.first == token.get_type()) return std::string("SyntaxError: Unexpected token '") + p.second + "'";
+    const std::string text = token_string(token);
+    if (!text.empty()) return "SyntaxError: Unexpected token '" + text + "'";
+    return "SyntaxError: Unexpected token " + Token::token_type_name(token.get_type());
+}
 
-    errors_.emplace_back(message, get_current_position());
+namespace {
+// A parser message that only says what was wanted ("Expected ')'") is, in V8's
+// words, the token that was there instead.
+bool says_what_was_expected(const std::string& message) {
+    size_t at = message.rfind("SyntaxError: ", 0) == 0 ? 13 : 0;
+    if (message.compare(at, 9, "Expected ") == 0) return true;
+    return message.compare(at, std::string::npos, "Unexpected token - missing semicolon") == 0;
+}
+std::string v8_wording(const std::string& message) {
+    size_t at = message.rfind("SyntaxError: ", 0) == 0 ? 13 : 0;
+    struct Pair { const char* from; const char* to; };
+    static const Pair kMap[] = {
+        {"Expected function name", "Function statements require a function name"},
+        {"Illegal continue statement", "Illegal continue statement: no surrounding iteration statement"},
+        {"Invalid left-hand side in postfix operation", "Invalid left-hand side expression in postfix operation"},
+        {"Invalid left-hand side in prefix operation", "Invalid left-hand side expression in prefix operation"},
+        {"const declarations must have an initializer", "Missing initializer in const declaration"},
+        {"Duplicate parameter name not allowed in strict mode", "Duplicate parameter name not allowed in this context"},
+        {"'with' statements are not allowed in strict mode", "Strict mode code may not include a with statement"},
+        {"Duplicate label", ""},
+        {"Getter must have no formal parameters", "Getter must not have any formal parameters."},
+        {"Setter must have exactly one formal parameter", "Setter must have exactly one formal parameter."},
+        {"Generator declarations are not allowed in single-statement context", "Generators can only be declared at the top level or inside a block"},
+        {"import declarations are not allowed in scripts", "Cannot use import statement outside a module"},
+        {"Private names are not allowed outside class bodies", ""},
+    };
+    const std::string body = message.substr(at);
+    for (const auto& p : kMap) {
+        if (!*p.to) continue;
+        if (body == p.from) return "SyntaxError: " + std::string(p.to);
+    }
+    if (body.rfind("'eval' cannot be used", 0) == 0 || body.rfind("'arguments' cannot be used", 0) == 0)
+        return "SyntaxError: Unexpected eval or arguments in strict mode";
+    if (body.rfind("Duplicate label '", 0) == 0) {
+        return "SyntaxError: Label '" + body.substr(17, body.size() - 18) + "' has already been declared";
+    }
+    if (body.rfind("Private name '", 0) == 0 && body.find("has already been declared") != std::string::npos)
+        return "SyntaxError: Identifier " + body.substr(13);
+    return message;
+}
+}  // namespace
+
+void Parser::add_error(const std::string& message) {
+    add_error(message, get_current_position());
 }
 
 void Parser::add_error(const std::string& message, const Position& position) {
-    errors_.emplace_back(message, position);
+    const std::string worded = v8_wording(message);
+    if (worded != message || !says_what_was_expected(message) || current_token_index_ >= tokens_.size()) {
+        errors_.emplace_back(worded, position);
+        return;
+    }
+    // `await x` outside an async function reads as the name `await` followed by x.
+    if (current_token_index_ > 0 && previous_token().get_type() == TokenType::AWAIT) {
+        switch (current_token().get_type()) {
+            case TokenType::NUMBER: case TokenType::STRING: case TokenType::IDENTIFIER: case TokenType::TEMPLATE_LITERAL:
+                errors_.emplace_back("SyntaxError: await is only valid in async functions and the top level bodies of modules", position);
+                return;
+            default: break;
+        }
+    }
+    errors_.emplace_back(unexpected_token_message(current_token()), position);
 }
 
 void Parser::skip_to_statement_boundary() {

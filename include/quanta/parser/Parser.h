@@ -775,6 +775,7 @@ public:
     bool validate_object_destructuring(ObjectLiteral* obj);
     
     void add_error(const std::string& message);
+    std::string unexpected_token_message(const Token& token) const;
     void add_error(const std::string& message, const Position& position);
     const std::vector<ParseError>& get_errors() const { return errors_; }
     bool has_errors() const { return !errors_.empty(); }

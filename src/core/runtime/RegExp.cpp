@@ -3392,7 +3392,7 @@ void RegExp::compile(const std::string& pattern, const std::string& flags) {
     do_compile();
 }
 
-bool RegExp::is_valid_unicode_pattern(const std::string& pattern, const std::string& flags) {
+bool RegExp::is_valid_unicode_pattern(const std::string& pattern, const std::string& flags, std::string* why) {
     // Delegate to the real compilation pipeline so literal validation and
     // RegExp-constructor validation can never disagree. JIT is skipped: the probe
     // never matches anything.
@@ -3400,6 +3400,9 @@ bool RegExp::is_valid_unicode_pattern(const std::string& pattern, const std::str
     bool ok = true;
     try {
         RegExp probe(pattern, flags);
+    } catch (const std::exception& e) {
+        ok = false;
+        if (why) *why = e.what();
     } catch (...) {
         ok = false;
     }

@@ -168,7 +168,7 @@ public:
     int get_last_index() const { return last_index_; }
     void set_last_index(int index) { last_index_ = index; }
 
-    static bool is_valid_unicode_pattern(const std::string& pattern, const std::string& flags);
+    static bool is_valid_unicode_pattern(const std::string& pattern, const std::string& flags, std::string* why = nullptr);
 
 private:
     void parse_flags(const std::string& flags);

@@ -74,7 +74,7 @@ void append_spread_values(Context& ctx, const Value& spread_value, std::vector<V
                     : Value();
                 if (ctx.has_exception()) return;
                 if (iter_method.is_undefined() || iter_method.is_null()) {
-                    ctx.throw_type_error("Spread syntax requires an iterable");
+                    ctx.throw_type_error("Spread syntax requires ...iterable[Symbol.iterator] to be a function");
                     return;
                 }
                 if (!iter_method.is_function()) {
@@ -119,11 +119,11 @@ void append_spread_values(Context& ctx, const Value& spread_value, std::vector<V
                 }
             } else if (!spread_value.is_null() && !spread_value.is_undefined()) {
                 // Non-iterable, non-null: TypeError
-                ctx.throw_type_error("Spread syntax requires an iterable");
+                ctx.throw_type_error("Spread syntax requires ...iterable[Symbol.iterator] to be a function");
                 return;
             } else {
                 // null/undefined in call spread: TypeError (unlike object spread)
-                ctx.throw_type_error("Spread syntax requires an iterable, got " +
+                ctx.throw_type_error("Spread syntax requires ...iterable[Symbol.iterator] to be a function, got " +
                     std::string(spread_value.is_null() ? "null" : "undefined"));
                 return;
             }

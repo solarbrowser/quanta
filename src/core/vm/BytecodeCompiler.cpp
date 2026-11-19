@@ -22,7 +22,7 @@ namespace Quanta {
 // `o.foo is not a function`, `a.b.c is not a function`, `o[k] is not a function`, `f(...).x is not a function`, `(intermediate value).foo is not a function`: the text of the callee as V8's call
 // printer writes it, worked out when the call is compiled and kept as the name the call instruction holds for its diagnostics.
 namespace {
-std::string callee_text_tape(TapeView tape, size_t index);
+std::string callee_text_tape(TapeView tape, size_t index, const std::string* src = nullptr);
 std::string callee_text_ast(const ASTNode* node);
 
 std::string number_text(double v) {
@@ -32,7 +32,7 @@ std::string number_text(double v) {
     return out.str();
 }
 
-std::string callee_text_tape(TapeView tape, size_t index) {
+std::string callee_text_tape(TapeView tape, size_t index, const std::string* src) {
     if (index >= tape.size()) return "(intermediate value)";
     const TapeEntry& e = tape[index];
     switch (e.tag) {
@@ -41,14 +41,16 @@ std::string callee_text_tape(TapeView tape, size_t index) {
         case TapeTag::Member: {
             const size_t object = index + 1;
             if (object >= tape.size()) return "(intermediate value)";
-            std::string out = callee_text_tape(tape, object);
+            std::string out = callee_text_tape(tape, object, src);
             if (e.call_argc == 0) return out + "." + NamePool::text(e.name_id);
             const size_t key = object + tape[object].span;
             if (key < tape.size() && tape[key].tag == TapeTag::Identifier) return out + "[" + NamePool::text(tape[key].name_id) + "]";
             if (key < tape.size() && tape[key].tag == TapeTag::Number) return out + "[" + number_text(tape[key].number_value) + "]";
+            if (key < tape.size() && tape[key].tag == TapeTag::String && src && tape[key].name_id + tape[key].str_len <= src->size())
+                return out + "." + src->substr(tape[key].name_id, tape[key].str_len);
             return out + "[...]";
         }
-        case TapeTag::Call: return callee_text_tape(tape, index + 1) + "(...)";
+        case TapeTag::Call: return callee_text_tape(tape, index + 1, src) + "(...)";
         default: return "(intermediate value)";
     }
 }
@@ -13823,7 +13825,7 @@ size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool dis
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(args_start));
                 emit_u8(e.call_argc);
-                emit_u16(add_name(callee_text_tape(tape, callee_idx)));
+                emit_u16(add_name(callee_text_tape(tape, callee_idx, tape_source_)));
                 free_temp(temp_base);
                 return failed_ ? 0 : index + e.span;
             }
@@ -13854,7 +13856,7 @@ size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool dis
             emit_u8(static_cast<uint8_t>(callee_reg));
             emit_u8(static_cast<uint8_t>(args_start));
             emit_u8(e.call_argc);
-            emit_u16(add_name(callee_name.empty() ? callee_text_tape(tape, callee_idx) : callee_name));
+            emit_u16(add_name(callee_name.empty() ? callee_text_tape(tape, callee_idx, tape_source_) : callee_name));
             free_temp(callee_reg);
             return failed_ ? 0 : index + e.span;
         }

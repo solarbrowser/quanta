@@ -2145,12 +2145,15 @@ std::string Lexer::parse_unicode_escape() {
 }
 
 void Lexer::add_error(const std::string& message) {
-    if (message.find("SyntaxError:") == 0) {
-        errors_.push_back(message);
-    } else {
-        std::string error = "Lexer error at " + current_position_.to_string() + ": " + message;
-        errors_.push_back(error);
-    }
+    // What V8 calls these; a message nobody has a better word for keeps its own.
+    std::string m = message.find("SyntaxError:") == 0 ? message.substr(12) : message;
+    while (!m.empty() && m[0] == ' ') m.erase(0, 1);
+    if (m == "Unterminated string literal" || m.rfind("Numeric literal must not be immediately followed", 0) == 0 ||
+        m.rfind("Unexpected character", 0) == 0 || m.rfind("Invalid character", 0) == 0)
+        m = "Invalid or unexpected token";
+    else if (m == "Unterminated regex literal") m = "Invalid regular expression: missing /";
+    else if (m == "Invalid BigInt literal") m = "Invalid BigInt syntax";
+    errors_.push_back(m);
 }
 
 bool Lexer::can_be_regex_literal() const {

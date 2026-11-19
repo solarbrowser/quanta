@@ -109,7 +109,7 @@ public:
     static void setup_reflect(Context& ctx);
     
 private:
-    static Object* to_object(const Value& value, Context& ctx);
+    static Object* to_object(const Value& value, Context& ctx, const char* who = nullptr);
     static std::string to_property_key(const Value& value);
     static PropertyDescriptor to_property_descriptor(const Value& value);
     static Value from_property_descriptor(const PropertyDescriptor& desc, Context* realm_hint = nullptr);
