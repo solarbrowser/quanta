@@ -163,6 +163,7 @@ struct JitCode {
         std::unique_ptr<JitRt> rt = std::make_unique<JitRt>();
         std::unique_ptr<BytecodeChunk::DirectCall> direct;   // what the chunk's direct call enters this unit with (BytecodeChunk::direct points here)
         std::vector<std::unique_ptr<JitCallIC>> call_ics;   // one per K::CallFn site
+        uint32_t native_slim_off = 0;                        // the same entry for calls from generated code, which saves what it needs itself (see Emitter::emit_native_entry)
         uint32_t native_off = 0;                             // the native offset of the entry a native caller calls (0: none), see Emitter::emit_native_entry
         bool leaf = false;                                   // a unit that only reads (see DirectCall::leaf)
         uint8_t leaf_regs = 0;

@@ -135,6 +135,9 @@ struct Config {
 };
 Config g_cfg;
 thread_local char g_thread_marker;
+#if !defined(QUANTA_JIT_ARCH_A64) && !defined(QUANTA_JIT_WIN64) && defined(__x86_64__)
+#define QUANTA_NATIVE_SLIM 1
+#endif
 inline const bool g_native_test = [] { const char* e = std::getenv("QUANTA_NATIVE"); return !(e && e[0] == '0'); }();      // QUANTA_NATIVE=0: no native units for hot callees
 inline const int g_native_at = [] { const char* e = std::getenv("QUANTA_NATIVE_AT"); return e ? std::atoi(e) : 300; }();
 // The exception a helper caught on its way out of generated code, to be rethrown by whatever drives the outermost unit. One per thread, not one per chunk:
@@ -2772,7 +2775,8 @@ struct NativeThunk {
     ValueVectorRoot root{&held};
     std::unique_ptr<BytecodeChunk> chunk;
     std::unique_ptr<Frame> tmpl;      // the frame of a call, but for what the call decides
-    uint64_t (QUANTA_JIT_ABI *entry)(Frame*, uint64_t, uint64_t, const uint64_t*) noexcept = nullptr;
+    uint64_t (QUANTA_JIT_ABI *entry)(Frame*, uint64_t, uint64_t, const uint64_t*) noexcept = nullptr;      // for C++ (keeps every callee-saved register)
+    void* slim = nullptr;                                                                                       // for generated code
     uint32_t argc = 0;
     bool ok = false;
     uint32_t deopts = 0;
@@ -3505,6 +3509,7 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
         for (const auto& d : made.rtdescs) if (d->owner) t->held.push_back(Value(d->owner));
 
         t->entry = reinterpret_cast<decltype(t->entry)>(made.base + made.native_off);
+        t->slim = made.base + made.native_slim_off;
         jc->opt_units.push_back(std::move(made));
         t->ok = true;
     }

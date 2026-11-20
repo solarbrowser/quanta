@@ -4169,7 +4169,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     if (__builtin_expect(g_native_test, 1)) {
         const FunctionExecutable* ex = fn->get_executable().get();
         const BytecodeChunk* nc0 = ex ? ex->bytecode_chunk.get() : nullptr;
-        auto* nch = nc0 ? nc0->ic_feedback.get() : nullptr;      // (a chunk that is hot has its feedback)
+        auto* nch = nc0 ? &const_cast<BytecodeChunk*>(nc0)->ensure_ic_feedback() : nullptr;
         if (nch && nch->native_state != 2 && !(meta & 0x30)) {
             const void* id = nc0->uses_lookup_cache ? static_cast<const void*>(fn) : static_cast<const void*>(ex);
             const uint64_t key = (reinterpret_cast<uint64_t>(id) << 3) ^ argc;
@@ -4196,7 +4196,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                     for (int w = 0; w < JitCallIC::kWays; w++) if (ic->fn_bits[w] == fn_bits) have = true;
                     if (!have) {
                         const int w = ic->next++ % JitCallIC::kWays;
-                        ic->entry[w] = reinterpret_cast<void*>(it->second->entry);
+                        ic->entry[w] = reinterpret_cast<void*>(it->second->slim);
                         ic->fn_bits[w] = fn_bits;
                         it->second->ics.push_back({ic, w});
                         ic->any = 1;
@@ -4488,6 +4488,7 @@ public:
     struct NativeInfo { const VM::Frame* tmpl = nullptr; JitRt* rt = nullptr; uint32_t argc = 0; uint32_t nregs = 0; };
     void set_native(const NativeInfo* n) { native_ = n; }
     uint32_t native_entry_off() const { return native_entry_off_; }
+    uint32_t native_slim_off() const { return native_slim_off_; }
     // For each state a guard can deoptimize to: its pc and the kind of the first guard that uses it.
     std::vector<std::tuple<uint32_t, const char*, int32_t>> guard_kinds;
 
@@ -4516,6 +4517,7 @@ private:
     const NativeInfo* native_ = nullptr;
     int32_t native_off_ = 0;            // where the frame of a native entry lives in the unit's native frame
     uint32_t native_entry_off_ = 0;
+    uint32_t native_slim_off_ = 0;
     void emit_native_entry();
     void emit_native_tail(Label& restore);
     std::vector<int32_t> fused_cmp_;       // per block: the integer comparison its branch is made of (emitted by the branch, not as a value), or -1
@@ -4560,8 +4562,14 @@ private:
     // The same for a store into the environment whose address is in RAX.
     void emit_env_barrier_check(int32_t val_node, Reg v);
     void emit_deopt_stub(int32_t state);
-    void save_live(int32_t& bytes);
-    void restore_live(int32_t bytes);
+    // The registers a call into C++ has to keep: all the caller-saved ones the unit uses (a cold path, or anything that does not say), or the ones whose values live across the
+    // node being emitted (cur_ls_: not the operands the node ends, not its result, but what a deoptimization after it still reads).
+    struct LiveSet { uint32_t gm = 0, xm = 0; bool valid = false; bool callee_saved = false; };
+    LiveSet cur_ls_;
+    LiveSet live_across(int32_t id) const;
+    std::vector<int32_t> ivl_start_, ivl_end_;
+    void save_live(int32_t& bytes, const LiveSet* ls = nullptr);
+    void restore_live(int32_t bytes, const LiveSet* ls = nullptr);
     void emit_prologue_epilogue();
     // A call into C++: the target in RAX, and the shadow space the Microsoft convention wants below the arguments.
     void call_c(const void* fn) {
@@ -4718,6 +4726,8 @@ inline bool Emitter::allocate() {
         for (int32_t sc : g_.b[blk].succs) for (int32_t o : phi_operand(sc, blk)) weight[o] += w;
     }
 
+    ivl_start_ = start;
+    ivl_end_ = end;
     loc_.assign(nn, Loc{});
     std::sort(ids.begin(), ids.end(), [&](int32_t x, int32_t y) { return start[x] != start[y] ? start[x] < start[y] : x < y; });
     std::vector<int32_t> active_g, active_x;
@@ -4977,30 +4987,58 @@ inline void Emitter::emit_deopt_stub(int32_t state) {
 }
 
 // Saves the registers the allocator uses that a C call would clobber, onto the stack, keeping it 16-aligned.
-inline void Emitter::save_live(int32_t& bytes) {
-    int n = 0;
-    uint32_t gm = 0;
+inline Emitter::LiveSet Emitter::live_across(int32_t id) const {
+    LiveSet ls;
+    ls.valid = true;
+    const int32_t p = pos_[id];
+    auto add = [&](int32_t v) {
+        if (v < 0 || loc_[v].kind == kNone) return;
+        const Loc& l = loc_[v];
+        if (l.kind == kGpr) {
+            for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++)
+                if (kGprPool[i] == l.reg) { ls.gm |= 1u << i; break; }
+        } else if (l.kind == kXmm) ls.xm |= 1u << l.reg;
+    };
+    for (size_t v = 0; v < loc_.size(); v++) {
+        if (static_cast<int32_t>(v) == id || loc_[v].kind == kNone) continue;
+        if (ivl_start_[v] < p && ivl_end_[v] > p) add(static_cast<int32_t>(v));
+    }
+    const Node& n = g_.n[id];
+    if (n.state >= 0) for (auto& [var, d] : g_.states[n.state].defs) add(d);      // (read by the deoptimization that follows a call that did not take)
+    return ls;
+}
+
+inline void Emitter::save_live(int32_t& bytes, const LiveSet* ls) {
+    uint32_t gm = 0, xm = used_xmm_;
     for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) {
         const Reg r = kGprPool[i];
         if ((used_gpr_ >> i & 1) && (r == RSI || r == RDI || r == R8 || r == R9 || r == R10 || r == R11)) gm |= 1u << i;
     }
-    n = __builtin_popcount(gm) + __builtin_popcount(used_xmm_);
+    if (ls && ls->valid) {
+        gm &= ls->gm; xm &= ls->xm;
+        if (ls->callee_saved) for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) if ((used_gpr_ >> i & 1) && (ls->gm >> i & 1)) gm |= 1u << i;
+    }
+    const int n = __builtin_popcount(gm) + __builtin_popcount(xm);
     bytes = ((n * 8 + 15) / 16) * 16;
     if (bytes) a_.sub_imm(RSP, bytes);
     int k = 0;
     for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) if (gm >> i & 1) a_.mov_store(mem(RSP, 8 * k++), kGprPool[i]);
-    for (int r = 0; r < 16; r++) if (used_xmm_ >> r & 1) a_.movsd_store(mem(RSP, 8 * k++), static_cast<Xmm>(r));
+    for (int r = 0; r < 16; r++) if (xm >> r & 1) a_.movsd_store(mem(RSP, 8 * k++), static_cast<Xmm>(r));
 }
 
-inline void Emitter::restore_live(int32_t bytes) {
-    uint32_t gm = 0;
+inline void Emitter::restore_live(int32_t bytes, const LiveSet* ls) {
+    uint32_t gm = 0, xm = used_xmm_;
     for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) {
         const Reg r = kGprPool[i];
         if ((used_gpr_ >> i & 1) && (r == RSI || r == RDI || r == R8 || r == R9 || r == R10 || r == R11)) gm |= 1u << i;
     }
+    if (ls && ls->valid) {
+        gm &= ls->gm; xm &= ls->xm;
+        if (ls->callee_saved) for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) if ((used_gpr_ >> i & 1) && (ls->gm >> i & 1)) gm |= 1u << i;
+    }
     int k = 0;
     for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) if (gm >> i & 1) a_.mov_load(kGprPool[i], mem(RSP, 8 * k++));
-    for (int r = 0; r < 16; r++) if (used_xmm_ >> r & 1) a_.movsd_load(static_cast<Xmm>(r), mem(RSP, 8 * k++));
+    for (int r = 0; r < 16; r++) if (xm >> r & 1) a_.movsd_load(static_cast<Xmm>(r), mem(RSP, 8 * k++));
     if (bytes) a_.add_imm(RSP, bytes);
 }
 
@@ -5460,13 +5498,13 @@ inline void Emitter::emit_node(int32_t id) {
             }
         }
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.mov(abi::A0, RBX);
         a_.mov_imm64(abi::A1, n.imm);
         a_.mov_load(abi::A2, mem(RSP, bytes + area + 16));
         a_.lea(abi::A3, mem(RSP, bytes + area));
         call_c(reinterpret_cast<const void*>(&helper_call_native));
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.cmp_imm(RAX, -1);
         a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
@@ -5564,13 +5602,13 @@ inline void Emitter::emit_node(int32_t id) {
         if (n.a >= 0) { const Reg r = use_g(n.a, RAX); a_.mov_store(mem(RSP, area), r); }
         if (n.b >= 0) { const Reg r = use_g(n.b, RAX); a_.mov_store(mem(RSP, area + 8), r); }
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.mov(abi::A0, RBX);
         if (n.a >= 0) a_.mov_load(abi::A1, mem(RSP, bytes + area));
         if (n.b >= 0) a_.mov_load(abi::A2, mem(RSP, bytes + area + 8));
         a_.mov_imm64(abi::A3, n.imm);
         call_c(kRtHelpers[n.aux]);
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.cmp_imm(RAX, -1);
         {
             Label& threw = new_label();
@@ -5621,7 +5659,7 @@ inline void Emitter::emit_node(int32_t id) {
         a_.push(RAX);                     // the callee survives the live-register save below (two slots keep the stack aligned)
         a_.push(RAX);
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.mov(abi::A0, RBX);
         a_.mov_load(abi::A1, mem(RSP, bytes));
         a_.mov_load(abi::A2, mem(RSP, bytes + 2 * kPushBytes + area + 32));
@@ -5659,31 +5697,31 @@ inline void Emitter::emit_node(int32_t id) {
         } else {
             call_c(reinterpret_cast<const void*>(&helper_call_fn));
         }
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.pop(RCX);
         a_.pop(RCX);
-        a_.cmp_imm(RAX, -1);
         {
-            Label& threw = new_label();
-            a_.jcc(CC_E, threw);
-            cold_.push_back([this, &threw]() {
+            // The three sentinels (threw, rethrow, not a function) are the three largest words; no Value is one of them.
+            Label& special = new_label();
+            a_.cmp_imm(RAX, -3);
+            a_.jcc(CC_AE, special);
+            cold_.push_back([this, &special, dl = &dl]() {
+                Label& threw = new_label();
+                Label& rethrow = new_label();
+                a_.bind(special);
+                a_.cmp_imm(RAX, -1);
+                a_.jcc(CC_E, threw);
+                a_.cmp_imm(RAX, -2);
+                a_.jcc(CC_E, rethrow);
+                a_.jmp(*dl);
                 a_.bind(threw);
                 a_.mov_imm32(RAX, static_cast<uint32_t>(kStepFinished));
                 a_.jmp(step_exit_);
-            });
-        }
-        a_.cmp_imm(RAX, -2);
-        {
-            Label& rethrow = new_label();
-            a_.jcc(CC_E, rethrow);
-            cold_.push_back([this, &rethrow]() {
                 a_.bind(rethrow);
                 a_.mov_imm32(RAX, static_cast<uint32_t>(kStepRethrow));
                 a_.jmp(step_exit_);
             });
         }
-        a_.cmp_imm(RAX, -3);
-        a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
         if (d != RAX) a_.mov(d, RAX);
         commit_g(id, d);
@@ -5692,11 +5730,11 @@ inline void Emitter::emit_node(int32_t id) {
     case K::NewLiteral: {
         Label& dl = deopt_label(n.state);
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.mov_imm64(abi::A0, n.imm);
         a_.mov_load(abi::A1, mem(RBX, static_cast<int32_t>(kOffCtx)));
         call_c(reinterpret_cast<const void*>(&helper_new_literal));
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.test(RAX, RAX);
         a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
@@ -5707,11 +5745,11 @@ inline void Emitter::emit_node(int32_t id) {
     case K::NewArray: {
         Label& dl = deopt_label(n.state);
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.mov_imm64(abi::A0, n.aux);
         a_.mov_load(abi::A1, mem(RBX, static_cast<int32_t>(kOffCtx)));
         call_c(reinterpret_cast<const void*>(&helper_new_array));
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.test(RAX, RAX);
         a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
@@ -5722,12 +5760,12 @@ inline void Emitter::emit_node(int32_t id) {
     case K::NewArrayConst: {
         Label& dl = deopt_label(n.state);
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.mov_imm64(abi::A0, n.imm);
         a_.mov_imm64(abi::A1, n.aux);
         a_.mov_load(abi::A2, mem(RBX, static_cast<int32_t>(kOffCtx)));
         call_c(reinterpret_cast<const void*>(&helper_new_array_const));
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.test(RAX, RAX);
         a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
@@ -5740,14 +5778,14 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg o = use_g(n.a, RAX);
         const Reg v = use_g(n.b, RDX);
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.push(o);
         a_.push(v);
         a_.pop(abi::A2);
         a_.pop(abi::A0);
         a_.mov_imm64(abi::A1, n.aux);
         call_c(reinterpret_cast<const void*>(&helper_define_elem));
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.test(RAX, RAX);
         a_.jcc(CC_E, dl);
         return;
@@ -5771,11 +5809,11 @@ inline void Emitter::emit_node(int32_t id) {
         a_.push(fr);
         a_.push(RCX);
         int32_t bytes;
-        save_live(bytes);
+        save_live(bytes, &cur_ls_);
         a_.mov_load(abi::A1, mem(RSP, bytes));
         a_.mov_load(abi::A0, mem(RSP, bytes + kPushBytes));
         call_c(reinterpret_cast<const void*>(&helper_new_object));
-        restore_live(bytes);
+        restore_live(bytes, &cur_ls_);
         a_.pop(RCX);
         a_.pop(RCX);
         a_.test(RAX, RAX);
@@ -6593,12 +6631,28 @@ inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
 // A3 the arguments. The unit's prologue, then the frame this call runs on is made in the native frame from the thunk's template, the registers of the thunk (the callee,
 // the receiver, the arguments) are written, and control goes to the unit's entry for pc 0. The value comes back in rax (the tail below), or one of the sentinels of helper_call_fn.
 inline void Emitter::emit_native_entry() {
+#ifdef QUANTA_NATIVE_SLIM
+    // Two doors into the same code. The one generated code calls keeps only the two registers the unit itself depends on (the allocator's are the caller's to save, and the
+    // call site does for the values that live across it); the one C++ calls (the helper) keeps every callee-saved register, as a C function must.
+    Label& common = new_label();
+    native_slim_off_ = static_cast<uint32_t>(a_.size());
+    a_.push(RBX); a_.push(R14);
+    a_.mov_imm32(R11, 1);
+    a_.jmp(common);
     native_entry_off_ = static_cast<uint32_t>(a_.size());
+    a_.push(RBP); a_.push(RBX); a_.push(R12); a_.push(R13); a_.push(R14); a_.push(R15);
+    a_.mov_imm32(R11, 2);
+    a_.bind(common);
+#else
+    native_entry_off_ = static_cast<uint32_t>(a_.size());
+    native_slim_off_ = native_entry_off_;
 #ifdef QUANTA_JIT_ARCH_A64
     a_.enter_frame();
 #else
     a_.push(RBP); a_.push(RBX); a_.push(R12); a_.push(R13); a_.push(R14); a_.push(R15);
     if (abi::kPreservesRdiRsi) { a_.push(RDI); a_.push(RSI); }
+#endif
+    a_.mov_imm32(R11, 2);
 #endif
     if (frame_bytes_) a_.sub_imm(RSP, frame_bytes_);
 #ifdef QUANTA_JIT_WIN64
@@ -6646,7 +6700,7 @@ inline void Emitter::emit_native_entry() {
     a_.bind(have_base);
     a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::base)), RAX);
     a_.mov_store(mem(RAX, static_cast<int32_t>(FrameOff::active)), RBX);
-    a_.mov_store8_imm(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), 1);
+    a_.mov_store8(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), R11);
     a_.mov_imm64(R14, reinterpret_cast<uint64_t>(native_->rt));
     for (int32_t blk : order_)
         if (g_.b[blk].synthetic && g_.b[blk].osr_pc == 0) { a_.jmp(*blk_label_[blk]); return; }
@@ -6654,7 +6708,13 @@ inline void Emitter::emit_native_entry() {
 }
 
 // What a unit entered through its native entry does at the end: the value (or an exception pending, or a finish the interpreter has to do) goes to the native caller.
-inline void Emitter::emit_native_tail(Label& restore) {
+inline void Emitter::emit_native_tail(Label& restore_full) {
+#ifdef QUANTA_NATIVE_SLIM
+    Label& restore = new_label();
+    Label& restore_slim = new_label();
+#else
+    Label& restore = restore_full;
+#endif
     Label& cold = new_label();
     Label& unlink = new_label();
     a_.test(RAX, RAX);                        // kStatusFinished
@@ -6681,6 +6741,15 @@ inline void Emitter::emit_native_tail(Label& restore) {
     a_.bind(threw);
     a_.mov_imm64(RAX, ~0ull);                  // helper_call_fn's "threw"
     a_.jmp(unlink);
+#ifdef QUANTA_NATIVE_SLIM
+    a_.bind(restore);
+    a_.cmp8_mem_imm(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), 1);
+    a_.jcc(CC_NE, restore_full);
+    a_.bind(restore_slim);
+    if (frame_bytes_) a_.add_imm(RSP, frame_bytes_);
+    a_.pop(R14); a_.pop(RBX);
+    a_.ret();
+#endif
 }
 
 inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint32_t, uint32_t>>& entries) {
@@ -6713,6 +6782,16 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
         for (int32_t id : g_.b[blk].nodes) {
             if (g_.n[id].dead) continue;
             if (id == fused_cmp_[blk]) continue;
+            switch (g_.n[id].op) {
+            case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject:
+                cur_ls_ = live_across(id);
+                // (A native entry does not keep the allocator's registers: the call site keeps the ones that live across it.)
+                cur_ls_.callee_saved = g_.n[id].op == K::CallFn;
+                break;
+            default:
+                cur_ls_ = LiveSet();
+                break;
+            }
             emit_node(id);
             if (why_) break;
         }
@@ -6914,7 +6993,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     unit.code_bytes = bytes.size();
     unit.base = start;
     unit.entry = reinterpret_cast<decltype(unit.entry)>(start);
-    if (native) unit.native_off = em.native_entry_off();
+    if (native) { unit.native_off = em.native_entry_off(); unit.native_slim_off = em.native_slim_off(); }
     unit.rt->sp_counter = g_cfg.safepoint_reload;
     unit.rt->stress = static_cast<int32_t>(config().stress);
     unit.rt->opt_pc = pc;
