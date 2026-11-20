@@ -1263,19 +1263,22 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         return true;
     }
     case Op::StaEnvSlotAt: {
-        if (cf_ != 0) return false;
-        const uint32_t hops = reg(pc + 1), slot = reg(pc + 2), nidx = u16(pc + 3);
+        uint32_t hops = code[pc + 1];
+        // An inlined callee's variables are found from the function it was called as (its closure's scope chain), as a load's are.
+        if (cf_ != 0 && !callee_env_hops(hops, true)) return false;
+        const uint32_t slot = code[pc + 2], nidx = u16(pc + 3);
         if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
         const int32_t val = tagged(value(acc()));
-        guarded(K::StoreEnv, Rep::None, val, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        guarded(K::StoreEnv, Rep::None, val, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         return true;
     }
     case Op::StaEnvSlot: {
-        if (cf_ != 0) return false;
-        const uint32_t slot = reg(pc + 1), nidx = u16(pc + 2);
+        uint32_t no_hops = 0;
+        if (cf_ != 0 && !callee_env_hops(no_hops, false)) return false;
+        const uint32_t slot = code[pc + 1], nidx = u16(pc + 2);
         if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
         const int32_t val = tagged(value(acc()));
-        guarded(K::StoreEnv, Rep::None, val, -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        guarded(K::StoreEnv, Rep::None, val, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         return true;
     }
 
@@ -5896,7 +5899,7 @@ inline void Emitter::emit_node(int32_t id) {
         const bool store = n.op == K::StoreEnv;
         // A load with an operand reads the scope chain captured by that function (an inlined callee's variables from the
         // enclosing functions): anything unusual about the chain leaves through the deopt path.
-        const bool from_fn = !store && n.a >= 0;
+        const bool from_fn = store ? n.b >= 0 : n.a >= 0;
         Label& dl = deopt_label(n.state);
         Label& via_ctx = new_label();
         Label& have = new_label();
@@ -5904,7 +5907,7 @@ inline void Emitter::emit_node(int32_t id) {
         Label& done = new_label();
         const Reg v = store ? use_g(n.a, RDX) : RDX;
         if (from_fn) {
-            const Reg fr = use_g(n.a, RAX);
+            const Reg fr = use_g(store ? n.b : n.a, RAX);
             a_.mov(RAX, fr);
             a_.shl_imm(RAX, 16);
             a_.shr_imm(RAX, 16);
