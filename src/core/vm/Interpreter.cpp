@@ -1026,15 +1026,6 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     if (fb && obj == fb->own_desc_receiver() && fb->own_desc_epoch() == cur_epoch) {
         return fb->own_desc_value();
     }
-    if (fb) {
-        // An own accessor of the receiver's descriptor map: its getter is called without the map being asked for it (every read of what a bundler exports from a module).
-        if (obj == fb->own_acc_receiver() && fb->own_acc_epoch() == cur_epoch) {
-            Function* getter_fn = as_function(fb->own_acc_getter());
-            return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
-        }
-        // An own data property of a dictionary-mode object, read where it is.
-        if (obj == fb->dict_receiver() && fb->dict_epoch() == cur_epoch) return fb->dict_desc()->get_value();
-    }
 
     // Asked before the receiver's own descriptor is built, not after: that
     // query walks own properties and, on an Array, recomputes length -- all of
@@ -1233,17 +1224,6 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             }
             if (!desc.has_getter()) return Value();
             Function* getter_fn = as_function(desc.get_getter());
-            // An own accessor that is in the descriptor map (not a shape slot) is remembered by the receiver and its getter: defining one is rare, and the epoch moves when
-            // it is.
-            if (override_desc && fb_slot && rooted && getter_fn &&
-                (obj->get_type() == Object::ObjectType::Ordinary || obj->get_type() == Object::ObjectType::Function)) {
-                Collector::write_barrier(owner);
-                mark_owner_feedback_dirty(owner);
-                FeedbackBody& learned = fb_slot->ensure();
-                learned.rare().own_acc_receiver = obj;
-                learned.rare().own_acc_getter = getter_fn;
-                learned.rare().own_acc_epoch = Object::descriptor_epoch();
-            }
             return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
         }
         // `desc` already fully answers "is this an own property, and if so
@@ -1266,17 +1246,6 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // Learn only what the descriptor map itself answered. A shape-slot
             // value belongs to the entries above, which track it through shape
             // changes this entry knows nothing about.
-            else if (override_desc && fb_slot && rooted && !obj_shape && obj->get_type() == Object::ObjectType::Ordinary &&
-                     obj->cacheable_dictionary_data(name, nullptr) == override_desc) {
-                // A dictionary-mode object keeps the value in the descriptor and nowhere else, so the descriptor is what is read, in place: no copy is held, and a write has
-                // no cache to retire.
-                Collector::write_barrier(owner);
-                mark_owner_feedback_dirty(owner);
-                FeedbackBody& learned = fb_slot->ensure();
-                learned.rare().dict_receiver = obj;
-                learned.rare().dict_desc = override_desc;
-                learned.rare().dict_epoch = Object::descriptor_epoch();
-            }
             else if (override_desc && fb_slot && rooted) {
                 Collector::write_barrier(owner);
                 mark_owner_feedback_dirty(owner);
@@ -11291,11 +11260,6 @@ void jit_trace(const JitCode* code, Visitor& v) {
         v.visit_object(ic.holder);
         v.visit(ic.value);
     }
-    // The optimizing tier's property accesses through the runtime learn into the feedback of the function they were compiled in, an inlined callee's included: the unit keeps
-    // those functions alive (and so the executables that hold the feedback, which is traced through them).
-    for (const auto& unit : code->opt_units)
-        for (const auto& desc : unit.rtdescs)
-            if (desc->owner) v.visit_object(static_cast<Object*>(desc->owner));
 }
 }
 

@@ -1761,7 +1761,6 @@ void run_minor_collection() {
         if (g_prof_cost) { std::fprintf(stderr, "[gc-prof] minor ctx/env: contexts=%llu (%llu us) envs=%llu (%llu us)\n", (unsigned long long)g_ctx_n, (unsigned long long)g_ctx_ns / 1000, (unsigned long long)g_env_n, (unsigned long long)g_env_ns / 1000); g_ctx_n = g_ctx_ns = g_env_n = g_env_ns = 0; }
         std::fprintf(stderr, "[gc-prof] minor survivors rooted=%zu skipped=%zu\n", rooted_survivors, skipped_survivors);
         std::fprintf(stderr, "[gc-prof] minor drain split: first=%ldus survivors+second=%ldus remembered=%zu rooted_survivors=%zu skipped=%zu\n", static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(t2b - t2).count()), static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2b).count()), remembered_n, rooted_survivors, skipped_survivors);
-        std::fprintf(stderr, "[gc-prof] epochs proto=%llu descriptor=%llu\n", static_cast<unsigned long long>(Object::proto_epoch()), static_cast<unsigned long long>(Object::descriptor_epoch()));
         std::fprintf(stderr, "[gc-prof] minor scan_stacks=%ldus roots=%ldus drain=%ldus ephemeron=%ldus verify=%ldus sweep+rebuild=%ldus marked=%zu\n",
                      us(t0,t1), us(t1,t2), us(t2,t3), us(t3,t4), us(t4,t5), us(t5,t6), v.marked_cells);
     }

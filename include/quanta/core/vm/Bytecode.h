@@ -749,16 +749,6 @@ struct FeedbackBody {
         Object* own_desc_receiver = nullptr;
         Value own_desc_value;
         uint64_t own_desc_epoch = 0;
-        // An own accessor that lives in the receiver's descriptor map (an ES module's exports as a bundler defines them, a class's static accessors): the receiver and its
-        // getter, retired by the same epoch as the value above. Read only by get_named, so the tiers that fold own_desc_value as a constant never see it.
-        Object* own_acc_receiver = nullptr;
-        Object* own_acc_getter = nullptr;
-        uint64_t own_acc_epoch = 0;
-        // An own data property of a dictionary-mode object, read in place from the descriptor in its map (that node keeps its address while the key stays): a write moves
-        // nothing, so a field that a script keeps assigning is as cheap to read as one that is not, and no copy of it is held to be retired.
-        Object* dict_receiver = nullptr;
-        const PropertyDescriptor* dict_desc = nullptr;
-        uint64_t dict_epoch = 0;
     };
     std::unique_ptr<Rare> rare_;
     Rare& rare() { if (!rare_) rare_ = std::make_unique<Rare>(); return *rare_; }
@@ -773,12 +763,6 @@ struct FeedbackBody {
     Object* own_desc_receiver() const { return rare_ ? rare_->own_desc_receiver : nullptr; }
     const Value& own_desc_value() const { return rare_ ? rare_->own_desc_value : kNoValue; }
     uint64_t own_desc_epoch() const { return rare_ ? rare_->own_desc_epoch : 0; }
-    Object* own_acc_receiver() const { return rare_ ? rare_->own_acc_receiver : nullptr; }
-    Object* own_acc_getter() const { return rare_ ? rare_->own_acc_getter : nullptr; }
-    uint64_t own_acc_epoch() const { return rare_ ? rare_->own_acc_epoch : 0; }
-    Object* dict_receiver() const { return rare_ ? rare_->dict_receiver : nullptr; }
-    const PropertyDescriptor* dict_desc() const { return rare_ ? rare_->dict_desc : nullptr; }
-    uint64_t dict_epoch() const { return rare_ ? rare_->dict_epoch : 0; }
 };
 
 // One cache site. Empty until the site learns something; see FeedbackBody.
