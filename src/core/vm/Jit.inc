@@ -2926,6 +2926,13 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         // compiles it later, compile_chunk carries the optimized units over to the new JitCode.
         if (!jc) jc = opt::ensure_jitcode(chunk);
         jc->opt_units.push_back(std::move(made));
+        // What the unit's property accesses learn at run time goes into the feedback of the functions they were compiled in, an inlined callee's included. The unit keeps those
+        // functions alive (jit_trace), and the collector is told now that this chunk has more to trace than the last time it looked: without that, a minor collection that
+        // does not look at this chunk again frees a function that a later trace is going to visit.
+        if (f.owner) {
+            Collector::write_barrier(f.owner);
+            f.owner->get_executable()->mark_feedback_dirty();
+        }
         chunk.inline_state |= kInlineHasOpt;
         chunk.opt_loops = 0;
         // The baseline JIT is not wanted for this chunk any more (and the stackless path may take it).

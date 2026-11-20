@@ -150,6 +150,10 @@ void BytecodeChunk::trace(Visitor& v) const {
         // caches the value out of that receiver's map, so both are references.
         v.visit_object(fb.own_desc_receiver());
         v.visit(fb.own_desc_value());
+        // The own-accessor and dictionary entries name their receiver (and the first its getter), which they hold as cells.
+        v.visit_object(fb.own_acc_receiver());
+        v.visit_object(fb.own_acc_getter());
+        v.visit_object(fb.dict_receiver());
     }
     if (ic_feedback) {
         for (const auto& cs : ic_feedback->call_sites)
