@@ -3175,7 +3175,7 @@ inline void Builder::hoist_invariants() {
         if (g_.b[H].synthetic) continue;
         if (avoid_ && avoid_->nohoist.count(g_.b[H].start_pc)) continue;
         // Nothing may run script, and nothing may store a variable, in the loop.
-        bool opaque = false, env_store = false, reg_store = false;
+        bool opaque = false, env_store = false, reg_store = false, slot_store = false;
         for (int32_t b : L.body) {
             if (g_.b[b].term.kind == T::StepBranch) opaque = true;
             for (int32_t id : g_.b[b].nodes) {
@@ -3184,6 +3184,7 @@ inline void Builder::hoist_invariants() {
                 switch (nd.op) {
                 case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
                 case K::StoreEnv: env_store = true; break;
+                case K::StoreSlot: slot_store = true; break;
                 case K::StoreReg: case K::StoreAcc: reg_store = true; break;
                 default: break;
                 }
@@ -3271,6 +3272,7 @@ inline void Builder::hoist_invariants() {
                 case K::LoadEnv: movable = !env_store; cls = 4; break;
                 case K::LoadReg: movable = !reg_store; cls = 4; break;
                 case K::LoadThis: movable = true; guard = true; cls = 4; break;
+                case K::LoadLookup: movable = !env_store && !slot_store; cls = 4; break;      // (a global or a module variable: nothing in the loop writes an object's property or an environment's slot)
                 case K::I32ToF64: case K::U32ToF64: case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI:
                 case K::ShrI: case K::NotI: movable = true; cls = 8; break;
                 default: movable = false; break;
@@ -3367,6 +3369,7 @@ inline void Builder::narrow_integers() {
             const Node& nd = g_.n[id];
             if (nd.dead) continue;
             for (int32_t o : {nd.a, nd.b, nd.c}) if (o >= 0) users[resolve(o)].push_back(id);
+            if (nd.op == K::Phi) for (int32_t o : nd.ins) if (o >= 0) users[resolve(o)].push_back(id);
         }
     auto intish = [&](int32_t id) {
         const Node& nd = g_.n[id];
@@ -3388,8 +3391,8 @@ inline void Builder::narrow_integers() {
                 if (seen[u]) continue;
                 seen[u] = 1;
                 const K k = g_.n[u].op;
-                if (k == K::ToI32) return true;
-                if (k == K::AddF || k == K::SubF || k == K::MulF) stack.push_back(u);
+                if (k == K::ToI32 || k == K::ToIndex) return true;      // (an array index is wanted as an int32 too)
+                if (k == K::AddF || k == K::SubF || k == K::MulF || k == K::Phi) stack.push_back(u);      // (a loop variable steps through sums too)
             }
         }
         return false;
@@ -4407,6 +4410,8 @@ private:
     const char* cur_kind_ = "?";
     K cur_op_ = K::Trap;
     std::map<std::pair<int32_t, int>, Label*> guard_labels_;
+    std::vector<int32_t> fused_cmp_;       // per block: the integer comparison its branch is made of (emitted by the branch, not as a value), or -1
+    void compute_fusion();
 
     bool fail(const char* w) { if (!why_) why_ = w; return false; }
     Label& new_label() { labels_.emplace_back(); return labels_.back(); }
@@ -4570,6 +4575,41 @@ inline bool Emitter::allocate() {
         }
     }
 
+    // How much each value is used, a use in a loop counting 8 times a use outside it for every level of nesting (the natural loops of the back edges).
+    std::vector<int32_t> depth(g_.b.size(), 0), rpo_index(g_.b.size(), -1);
+    for (size_t i = 0; i < order_.size(); i++) rpo_index[order_[i]] = static_cast<int32_t>(i);
+    for (int32_t blk : order_)
+        for (int32_t sc : g_.b[blk].succs) {
+            if (rpo_index[sc] < 0 || rpo_index[sc] > rpo_index[blk]) continue;
+            std::vector<uint8_t> in(g_.b.size(), 0);
+            std::vector<int32_t> work{blk};
+            in[sc] = 1;
+            while (!work.empty()) {
+                const int32_t x = work.back();
+                work.pop_back();
+                if (in[x] && x != blk) continue;
+                in[x] = 1;
+                for (int32_t pr : g_.b[x].preds) if (!in[pr] && rpo_index[pr] >= 0) work.push_back(pr);
+            }
+            for (size_t i = 0; i < in.size(); i++) if (in[i]) depth[i]++;
+        }
+    std::vector<double> weight(nn, 0.0);
+    auto level = [&](int32_t blk) { double w = 1; for (int d = std::min(depth[blk], 5); d > 0; d--) w *= 8; return w; };
+    for (int32_t blk : order_) {
+        const double w = level(blk);
+        for (int32_t id : g_.b[blk].nodes) {
+            if (needs_loc(id)) weight[id] += w;
+            // (What a guard's frame state keeps alive is only read when it fails, from wherever it is: it does not count.)
+            const Node& nd = g_.n[id];
+            if (nd.op == K::Phi) continue;
+            for (int32_t o : {nd.a, nd.b, nd.c}) if (o >= 0 && needs_loc(o)) weight[o] += w;
+            for (int32_t o : nd.ins) if (o >= 0 && needs_loc(o)) weight[o] += w;
+        }
+        const Term& t = g_.b[blk].term;
+        if ((t.kind == T::Branch || t.kind == T::Return || t.kind == T::StepBranch) && t.cond >= 0 && needs_loc(t.cond)) weight[t.cond] += w;
+        for (int32_t sc : g_.b[blk].succs) for (int32_t o : phi_operand(sc, blk)) weight[o] += w;
+    }
+
     loc_.assign(nn, Loc{});
     std::sort(ids.begin(), ids.end(), [&](int32_t x, int32_t y) { return start[x] != start[y] ? start[x] < start[y] : x < y; });
     std::vector<int32_t> active_g, active_x;
@@ -4599,9 +4639,13 @@ inline bool Emitter::allocate() {
             active.push_back(id);
             continue;
         }
-        // Spill the interval that ends last.
+        // Spill the interval that is worth the least (its uses weighted by how deep in loops they are, per unit of its length); of equals, the one that ends last.
         int32_t victim = id;
-        for (int32_t o : active) if (end[o] > end[victim]) victim = o;
+        auto worth = [&](int32_t x) { return weight[x] / static_cast<double>(std::max(1, end[x] - start[x] + 1)); };
+        for (int32_t o : active) {
+            const double wo = worth(o), wv = worth(victim);
+            if (wo < wv || (wo == wv && end[o] > end[victim])) victim = o;
+        }
         if (victim == id) {
             loc_[id] = {kStack, 0, nslots_++};
         } else {
@@ -5032,6 +5076,17 @@ inline void Emitter::emit_node(int32_t id) {
         return;
     }
     case K::AddI: case K::SubI: {
+        if (g_.n[n.b].op == K::ConstI32) {
+            // A constant operand is an immediate.
+            const Reg a = use_g(n.a, RAX);
+            Reg d = def_g(id, RAX);
+            if (d != a) a_.mov32(d, a);
+            const int32_t k = static_cast<int32_t>(g_.n[n.b].imm);
+            if (n.op == K::AddI) a_.add32_imm_o(d, k); else a_.sub32_imm_o(d, k);
+            a_.jcc(CC_O, deopt_label(n.state));
+            commit_g(id, d);
+            return;
+        }
         const Reg a = use_g(n.a, RAX);
         const Reg b = use_g(n.b, RCX);
         Reg d = def_g(id, RAX);
@@ -6278,6 +6333,38 @@ inline void Emitter::emit_node(int32_t id) {
     }
 }
 
+// A branch on an integer comparison that nothing else uses is a compare and a conditional jump, not a flag turned into a number and tested again.
+inline void Emitter::compute_fusion() {
+    fused_cmp_.assign(g_.b.size(), -1);
+    std::vector<uint32_t> uses(g_.n.size(), 0);
+    auto count = [&](int32_t x) { if (x >= 0) uses[x]++; };
+    for (int32_t blk : order_) {
+        for (int32_t id : g_.b[blk].nodes) {
+            const Node& nd = g_.n[id];
+            if (nd.dead) continue;
+            count(nd.a); count(nd.b); count(nd.c);
+            for (int32_t o : nd.ins) count(o);
+        }
+        const Term& t = g_.b[blk].term;
+        if (t.cond >= 0) count(t.cond);
+    }
+    for (const State& st : g_.states) for (auto& [v, d] : st.defs) count(d);
+    for (int32_t blk : order_) {
+        const Term& t = g_.b[blk].term;
+        if (t.kind != T::Branch || t.cond < 0 || uses[t.cond] != 1) continue;
+        const K ck = g_.n[t.cond].op;
+#ifdef QUANTA_JIT_ARCH_A64
+        const bool fusable = ck == K::CmpI;
+#else
+        const bool fusable = ck == K::CmpI || ck == K::LtF || ck == K::GtF || ck == K::LeF || ck == K::GeF;
+#endif
+        if (!fusable) continue;
+        int32_t last = -1;
+        for (int32_t id : g_.b[blk].nodes) if (!g_.n[id].dead) last = id;
+        if (last == t.cond && g_.n[t.cond].blk == blk) fused_cmp_[blk] = t.cond;
+    }
+}
+
 inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
     const Term& t = g_.b[blk].term;
     const int32_t next_blk = layout_index + 1 < order_.size() ? order_[layout_index + 1] : -1;
@@ -6288,6 +6375,31 @@ inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
         goto_blk(t.t);
         return;
     case T::Branch: {
+        if (fused_cmp_[blk] >= 0) {
+            const Node& cn = g_.n[fused_cmp_[blk]];
+#ifndef QUANTA_JIT_ARCH_A64
+            if (cn.op != K::CmpI) {
+                // (ucomisd leaves "unordered" as ZF=CF=1: above and above-or-equal are false for a NaN, their inverses true.)
+                const Xmm a = use_x(cn.a, XMM0);
+                const Xmm b = use_x(cn.b, XMM1);
+                const bool swap = cn.op == K::LtF || cn.op == K::LeF;
+                const Cond yes = (cn.op == K::LtF || cn.op == K::GtF) ? CC_A : CC_AE;
+                const Cond no = (cn.op == K::LtF || cn.op == K::GtF) ? CC_BE : CC_B;
+                if (swap) a_.ucomisd(b, a); else a_.ucomisd(a, b);
+                if (t.t == next_blk) { a_.jcc(no, *blk_label_[t.f]); }
+                else { a_.jcc(yes, *blk_label_[t.t]); goto_blk(t.f); }
+                return;
+            }
+#endif
+            static const Cond cc[6] = {CC_L, CC_G, CC_LE, CC_GE, CC_E, CC_NE};
+            static const Cond inv[6] = {CC_GE, CC_LE, CC_G, CC_L, CC_NE, CC_E};
+            const Reg a = use_g(cn.a, RAX);
+            if (g_.n[cn.b].op == K::ConstI32) a_.cmp32_imm(a, static_cast<int32_t>(g_.n[cn.b].imm));
+            else a_.cmp32(a, use_g(cn.b, RCX));
+            if (t.t == next_blk) { a_.jcc(inv[cn.aux], *blk_label_[t.f]); }
+            else { a_.jcc(cc[cn.aux], *blk_label_[t.t]); goto_blk(t.f); }
+            return;
+        }
         const Reg c = use_g(t.cond, RAX);
         a_.test32(c, c);
         if (t.t == next_blk) { a_.jcc(CC_E, *blk_label_[t.f]); }
@@ -6327,6 +6439,7 @@ inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
 
 inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint32_t, uint32_t>>& entries) {
     if (!allocate()) return false;
+    compute_fusion();
     blk_label_.assign(g_.b.size(), nullptr);
     state_label_.assign(g_.states.size(), nullptr);
     for (int32_t blk : order_) blk_label_[blk] = &new_label();
@@ -6354,6 +6467,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
             entries.push_back({static_cast<uint32_t>(g_.b[blk].osr_pc), static_cast<uint32_t>(a_.size())});
         for (int32_t id : g_.b[blk].nodes) {
             if (g_.n[id].dead) continue;
+            if (id == fused_cmp_[blk]) continue;
             emit_node(id);
             if (why_) break;
         }

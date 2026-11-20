@@ -131,6 +131,8 @@ public:
     void and32_imm(Reg d, int32_t imm) { alu_ri(4, d, imm, false); }
     void sub32_imm(Reg d, int32_t imm) { alu_ri(5, d, imm, false); }
     void cmp32_imm(Reg d, int32_t imm) { alu_ri(7, d, imm, false); }
+    void add32_imm_o(Reg d, int32_t imm) { alu_ri(0, d, imm, false); }      // the same, for an overflow test after it (on arm64 the flags are set only by this form)
+    void sub32_imm_o(Reg d, int32_t imm) { alu_ri(5, d, imm, false); }
     void cmp_load(Reg a, Mem m) { rex_rm(true, a, m); byte(0x3B); modrm_mem(a, m); }       // cmp a, [m]
     void cmp32_load(Reg a, Mem m) { rex_rm(false, a, m); byte(0x3B); modrm_mem(a, m); }
     void cmp_mem_imm(Mem m, int32_t imm) {                                                   // cmp qword [m], imm32

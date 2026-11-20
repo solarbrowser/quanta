@@ -161,6 +161,9 @@ public:
     void and32_imm(Reg d, int32_t imm) { logical_imm(0x0A000000u, d, static_cast<int64_t>(static_cast<uint32_t>(imm))); }
     void sub32_imm(Reg d, int32_t imm) { add32_imm_to(phys(d), -static_cast<int64_t>(imm)); }
     void cmp32_imm(Reg d, int32_t imm) { cmp_imm_to(phys(d), imm, false); }
+    // add/sub of an immediate that sets the flags (adds/subs, 32-bit): for the overflow test that follows.
+    void add32_imm_o(Reg d, int32_t imm) { flag_imm32(phys(d), imm); }
+    void sub32_imm_o(Reg d, int32_t imm) { flag_imm32(phys(d), -static_cast<int64_t>(imm)); }
     void cmp_load(Reg a, Mem m) {
         access(8, true, kScratchData, m);
         emit(0xEB00001Fu | (kScratchData << 16) | (phys(a) << 5));
@@ -376,6 +379,16 @@ private:
             mov_imm_to(kScratchData, mag);
             // add/sub (extended register) so that sp is a legal operand
             emit((neg ? 0xCB200000u : 0x8B200000u) | (kScratchData << 16) | (3u << 13) | (rn << 5) | rd);   // uxtx
+        }
+    }
+    void flag_imm32(uint32_t rd, int64_t imm) {
+        const bool neg = imm < 0;
+        const uint64_t mag = neg ? static_cast<uint64_t>(-imm) : static_cast<uint64_t>(imm);
+        if (mag <= 4095) {
+            emit((neg ? 0x71000000u : 0x31000000u) | (static_cast<uint32_t>(mag) << 10) | (rd << 5) | rd);          // subs / adds w, w, #imm
+        } else {
+            mov_imm_to(kScratchData, mag);
+            emit((neg ? 0x6B000000u : 0x2B000000u) | (kScratchData << 16) | (rd << 5) | rd);                        // subs / adds w, w, w
         }
     }
     void add32_imm_to(uint32_t rd, int64_t imm) {
