@@ -2785,7 +2785,7 @@ struct NativeThunk {
 };
 inline thread_local std::unordered_map<const BytecodeChunk*, NativeThunk*> g_native_by_chunk;
 inline thread_local std::unordered_map<uint64_t, std::unique_ptr<NativeThunk>> g_native_thunks;
-inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc);
+inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, bool construct);
 inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept;
 #include "Opt.inc"
 
@@ -3450,13 +3450,16 @@ template <bool Virt, bool Stack = true>
 // chunk of two instructions, `CallResolved r0(this r1, args r2..)` and `Return`, whose call the tier inlines (the callee is seeded as the site's only target),
 // so the unit is the callee's body with the call's arguments as its registers. Whatever the inlined body cannot do, the interpreter does by resuming the thunk.
 
-inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc) {
+inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, bool construct) {
     const FunctionExecutable* exe = fn->get_executable().get();
     if (!exe || !exe->bytecode_chunk || argc > 4) return nullptr;
     auto t = std::make_unique<NativeThunk>();
     t->argc = argc;
     auto ch = std::make_unique<BytecodeChunk>();
-    std::vector<uint8_t> code{static_cast<uint8_t>(Op::CallResolved), 0, 1, 2, static_cast<uint8_t>(argc), 0, 0, static_cast<uint8_t>(Op::Return)};
+    // (A construction: the callee in r0, the arguments from r2 as for a call, the result in the accumulator.)
+    std::vector<uint8_t> code = construct
+        ? std::vector<uint8_t>{static_cast<uint8_t>(Op::Construct), 0, 2, static_cast<uint8_t>(argc), 0, 0, static_cast<uint8_t>(Op::Return)}
+        : std::vector<uint8_t>{static_cast<uint8_t>(Op::CallResolved), 0, 1, 2, static_cast<uint8_t>(argc), 0, 0, static_cast<uint8_t>(Op::Return)};
     ch->code = FixedArray<uint8_t>::from(std::move(code));
     ch->register_count = static_cast<uint16_t>(2 + argc);
     ch->parameter_count = static_cast<uint8_t>(2 + argc);

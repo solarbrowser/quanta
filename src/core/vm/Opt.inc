@@ -4150,6 +4150,53 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     Context& ctx = *f->ctx;
     f->instr_pc = static_cast<uint32_t>(meta >> 8);
     if (__builtin_expect(meta & 0x20, 0) && !via_call_pristine(*f, f->instr_pc, fv)) return kNotFn;      // `fn.call(this, ...)`: the interpreter takes it from here
+    if (__builtin_expect(g_native_test, 1) && !(meta & 0x20)) {
+        const bool is_new = (meta & 0x10) != 0;
+        const FunctionExecutable* ex = fn->get_executable().get();
+        const BytecodeChunk* nc0 = ex ? ex->bytecode_chunk.get() : nullptr;
+        auto* nch = nc0 ? &const_cast<BytecodeChunk*>(nc0)->ensure_ic_feedback() : nullptr;
+        if (nch && (is_new ? nch->native_new_state : nch->native_state) != 2) {
+            uint8_t& nstate = is_new ? nch->native_new_state : nch->native_state;
+            uint16_t& ncalls = is_new ? nch->native_new_calls : nch->native_calls;
+            uint8_t& nmade = is_new ? nch->native_new_made : nch->native_made;
+            const void* id = nc0->uses_lookup_cache ? static_cast<const void*>(fn) : static_cast<const void*>(ex);
+            const uint64_t key = ((reinterpret_cast<uint64_t>(id) << 3) ^ argc) ^ (is_new ? 0x8000000000000000ull : 0);
+            auto it = nstate == 1 ? g_native_thunks.find(key) : g_native_thunks.end();
+            if (it == g_native_thunks.end()) {
+                // (A thunk of a closure is no use to the next closure of the same code: a program that makes closures all the time gets a few thunks per function.)
+                if (nstate == 0 && ++ncalls >= g_native_at) {
+                    ncalls = 0;
+                    if (nmade >= 3) nstate = 2;
+                    else {
+                        nmade++;
+                        nstate = 1;
+                        if (!g_native_thunks.count(key)) {
+                            g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc, is_new));
+                            if (!g_native_thunks[key] || !g_native_thunks[key]->ok) nstate = 2;       // (nothing to look for any more)
+                        }
+                    }
+                } else if (nstate == 1 && nmade < 3 && ++ncalls >= g_native_at) {
+                    // another closure of the code, hot as well
+                    ncalls = 0;
+                    nmade++;
+                    if (!g_native_thunks.count(key)) g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc, is_new));
+                }
+            } else if (it->second && it->second->ok) {
+                if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[6])) {
+                    bool have = false;
+                    for (int w = 0; w < JitCallIC::kWays; w++) if (ic->fn_bits[w] == fn_bits) have = true;
+                    if (!have) {
+                        const int w = ic->next++ % JitCallIC::kWays;
+                        ic->entry[w] = reinterpret_cast<void*>(it->second->slim);
+                        ic->fn_bits[w] = fn_bits;
+                        it->second->ics.push_back({ic, w});
+                        ic->any = 1;
+                    }
+                }
+                return it->second->entry(f, fn_bits, this_bits, argv);
+            }
+        }
+    }
     Value r;
     if (__builtin_expect(meta & 0x10, 0)) {
         // `new`: h_ConstructPlain's call, new.target set for its duration.
@@ -4167,49 +4214,6 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
         Collector::safepoint();
         const uint64_t cbits = std::bit_cast<uint64_t>(r);
         return cbits >= kNotFn ? kNotFn - 1 : cbits;
-    }
-    if (__builtin_expect(g_native_test, 1)) {
-        const FunctionExecutable* ex = !(meta & 0x30) ? fn->get_executable().get() : nullptr;
-        const BytecodeChunk* nc0 = ex ? ex->bytecode_chunk.get() : nullptr;
-        auto* nch = nc0 ? &const_cast<BytecodeChunk*>(nc0)->ensure_ic_feedback() : nullptr;
-        if (nch && nch->native_state != 2) {
-            const void* id = nc0->uses_lookup_cache ? static_cast<const void*>(fn) : static_cast<const void*>(ex);
-            const uint64_t key = (reinterpret_cast<uint64_t>(id) << 3) ^ argc;
-            auto it = nch->native_state == 1 ? g_native_thunks.find(key) : g_native_thunks.end();
-            if (it == g_native_thunks.end()) {
-                // (A thunk of a closure is no use to the next closure of the same code: a program that makes closures all the time gets a few thunks per function.)
-                if (nch->native_state == 0 && ++nch->native_calls >= g_native_at) {
-                    nch->native_calls = 0;
-                    if (nch->native_made >= 3) nch->native_state = 2;
-                    else {
-                        nch->native_made++;
-                        nch->native_state = 1;
-                        if (!g_native_thunks.count(key)) {
-                            g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc));
-                            if (!g_native_thunks[key] || !g_native_thunks[key]->ok) nch->native_state = 2;       // (nothing to look for any more)
-                        }
-                    }
-                } else if (nch->native_state == 1 && nch->native_made < 3 && ++nch->native_calls >= g_native_at) {
-                    // another closure of the code, hot as well
-                    nch->native_calls = 0;
-                    nch->native_made++;
-                    if (!g_native_thunks.count(key)) g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc));
-                }
-            } else if (it->second && it->second->ok) {
-                if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[6])) {
-                    bool have = false;
-                    for (int w = 0; w < JitCallIC::kWays; w++) if (ic->fn_bits[w] == fn_bits) have = true;
-                    if (!have) {
-                        const int w = ic->next++ % JitCallIC::kWays;
-                        ic->entry[w] = reinterpret_cast<void*>(it->second->slim);
-                        ic->fn_bits[w] = fn_bits;
-                        it->second->ics.push_back({ic, w});
-                        ic->any = 1;
-                    }
-                }
-                return it->second->entry(f, fn_bits, this_bits, argv);
-            }
-        }
     }
     try {
         if (!(g_config_storage.direct && fn->fast_callable() && unit_call_direct(*f, fn, th, args, argc, r))) {
@@ -5667,7 +5671,7 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov(abi::A1, RAX);
         a_.mov_load(abi::A2, mem(RSP, bytes + area + 32));
         a_.lea(abi::A3, mem(RSP, bytes + area));
-        if (!(n.aux & 0x10) && config().native_calls) {
+        if (config().native_calls) {
             // The site's cache: a callee that has a native entry is called through it, directly; anything else through the helper (which fills the cache when it finds one).
             g_.call_ics.push_back(std::make_unique<JitCallIC>());
             JitCallIC* ic = g_.call_ics.back().get();

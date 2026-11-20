@@ -1038,6 +1038,10 @@ struct BytecodeChunk {
         uint16_t native_calls = 0;
         uint8_t native_made = 0;
         uint8_t native_state = 0;
+        // The same for the calls made with `new` (their own thunks, whose call is a construction).
+        uint16_t native_new_calls = 0;
+        uint8_t native_new_made = 0;
+        uint8_t native_new_state = 0;
         KeyedFeedback* keyed(uint32_t index) {
             std::unique_ptr<KeyedFeedback>& slot = keyed_feedback[index];
             if (!slot) slot = std::make_unique<KeyedFeedback>();
