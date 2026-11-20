@@ -317,6 +317,7 @@ struct Config {
     uint32_t inline_total = 1500;      // all the callees of one unit together
     uint32_t hoist_mask = 15;         // QUANTA_OPT_HOIST_MASK: which kinds are moved out of loops (1 object and array checks, 2 number checks and index conversions, 4 loads of variables, 8 arithmetic)
     bool hoist_every = false;         // QUANTA_OPT_HOIST=2: from every loop, not only a hot one or one inside another (a test mode)
+    bool loop_phis = true;            // QUANTA_OPT_LOOPPHIS=0: a loop variable that is a number on every turn is a double from its entry, whatever the entry holds (checked on its edge)
     bool hoist = true;                // QUANTA_OPT_HOIST=0: what a loop checks and loads again and again that cannot change in it is not moved before it
     bool fallback_every = false;      // QUANTA_OPT_FALLBACK=2: every inlined call is built so (a test mode)
     bool fallback = true;             // QUANTA_OPT_FALLBACK=0: an inlined call whose callee is none of those inlined leaves the unit
@@ -377,6 +378,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_HOIST")) { c.hoist = e[0] && e[0] != '0'; c.hoist_every = e[0] == '2'; }
+        if (const char* e = std::getenv("QUANTA_OPT_LOOPPHIS")) c.loop_phis = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_HOIST_MASK")) c.hoist_mask = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_FALLBACK")) { c.fallback = e[0] && e[0] != '0'; c.fallback_every = e[0] == '2'; }
         if (const char* e = std::getenv("QUANTA_OPT_PROTOPOLY")) c.proto_poly = e[0] && e[0] != '0';
@@ -3061,12 +3063,17 @@ inline void Builder::select_representations() {
     };
     for (int32_t p : phis) {
         if (avoid_ && avoid_->phis.count({g_.b[g_.n[p].blk].start_pc, g_.n[p].aux})) { disq[p] = 1; continue; }
-        for (int32_t o : g_.n[p].ins) {
-            o = resolve(o);
+        const Block& PB = g_.b[g_.n[p].blk];
+        for (size_t ii = 0; ii < g_.n[p].ins.size(); ii++) {
+            const int32_t o = resolve(g_.n[p].ins[ii]);
             const Node& on = g_.n[o];
             if (on.op == K::Phi) continue;
-            if (on.rep == Rep::F64) cand[p] = 1;
+            // (A value that was a number as it was made, and boxed for the variable, is one.)
+            if (on.rep == Rep::F64 || (on.op == K::ToTagged && g_.n[resolve(on.a)].rep == Rep::F64)) cand[p] = 1;
             else if (entry_is_number(on)) { /* neutral: a number at the entry */ }
+            // A loop variable that is a number on every turn is one from the start: what comes in from before the loop is checked on its edge (a
+            // frame state at the loop's header), and a loop that finds it is not one learns it (Avoid::phis).
+            else if (PB.loop_header && ii < PB.preds.size() && on.rep == Rep::Tagged && !g_.b[PB.preds[ii]].loop_header && config().loop_phis) { /* neutral: checked on the edge */ }
             else disq[p] = 1;
         }
     }
@@ -3382,7 +3389,7 @@ inline void Builder::narrow_integers() {
         seen[id] = 1;
         for (int32_t u : users[id]) {
             const K k = g_.n[u].op;
-            if (!seen[u] && (k == K::AddF || k == K::SubF || k == K::MulF)) { seen[u] = 1; stack.push_back(u); }
+            if (!seen[u] && (k == K::AddF || k == K::SubF || k == K::MulF || k == K::Phi)) { seen[u] = 1; stack.push_back(u); }
         }
         while (!stack.empty()) {
             const int32_t x = stack.back();
@@ -3582,7 +3589,9 @@ inline void Builder::lower() {
                 if (have != want) {
                     cb_ = p;
                     const uint32_t pc = g_.b[blk].start_pc;
-                    if (want == Rep::F64) {
+                    if (want == Rep::F64 && g_.n[o].op == K::BoxF64) {
+                        o = resolve(g_.n[o].a);      // (boxed a moment ago from a number: that number)
+                    } else if (want == Rep::F64) {
                         // The incoming value is a Tagged one: it has to be a number.
                         const int32_t st = snapshot_at(p, g_.b[blk].func, pc, static_cast<int32_t>(g_.n[id].aux));
                         o = emit_in(p, K::CheckNum, Rep::F64, o);
@@ -4417,7 +4426,7 @@ private:
     Label& new_label() { labels_.emplace_back(); return labels_.back(); }
 
     // ---- register allocation ----
-    static constexpr Reg kGprPool[] = {RSI, RDI, R8, R9, R10, R13, R15, RBP};     // R11 is a fourth scratch
+    static constexpr Reg kGprPool[] = {RSI, RDI, R8, R9, R10, R12, R13, R15, RBP};     // R11 is a fourth scratch
     static constexpr int kXmmFirst = 2, kXmmLast = 13;
     bool needs_loc(int32_t id) const {
         const Node& n = g_.n[id];
@@ -4850,7 +4859,10 @@ inline void Emitter::emit_deopt_stub(int32_t state) {
             a_.mov_load(RCX, mem(R14, static_cast<int32_t>(offsetof(JitRt, inl_scratch))));
             a_.mov_store(mem(RCX, static_cast<int32_t>((v - g_.acc_var - 1) * sizeof(Value))), val);
         }
-        else a_.mov_store(mem(R12, static_cast<int32_t>(v * sizeof(Value))), val);
+        else {
+            a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs)));      // (the register bank: R12 is the allocator's)
+            a_.mov_store(mem(R11, static_cast<int32_t>(v * sizeof(Value))), val);
+        }
     }
     a_.mov_store32_imm(mem(R14, static_cast<int32_t>(offsetof(JitRt, last_deopt))), static_cast<uint32_t>(state));
     a_.mov_store32_imm(mem(RBX, static_cast<int32_t>(kOffPc)), st.pc);
@@ -4964,7 +4976,8 @@ inline void Emitter::emit_node(int32_t id) {
         return;
     case K::LoadReg: {
         const Reg d = def_g(id, RAX);
-        a_.mov_load(d, mem(R12, static_cast<int32_t>(n.aux * sizeof(Value))));
+        a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs)));
+        a_.mov_load(d, mem(R11, static_cast<int32_t>(n.aux * sizeof(Value))));
         commit_g(id, d);
         return;
     }
@@ -5791,7 +5804,8 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::StoreReg: {
         const Reg s = use_g(n.a, RAX);
-        a_.mov_store(mem(R12, static_cast<int32_t>(n.aux * sizeof(Value))), s);
+        a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs)));
+        a_.mov_store(mem(R11, static_cast<int32_t>(n.aux * sizeof(Value))), s);
         return;
     }
     case K::StoreAcc: {
@@ -6457,7 +6471,6 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
 #endif
     a_.mov(RBX, abi::A0);
     a_.mov(R14, abi::A1);
-    a_.mov_load(R12, mem(RBX, static_cast<int32_t>(kOffRegs)));
     a_.jmp_reg(abi::A2);
 
     for (size_t i = 0; i < order_.size() && !why_; i++) {
