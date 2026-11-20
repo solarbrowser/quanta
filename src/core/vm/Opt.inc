@@ -1877,7 +1877,7 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
                 uint32_t n = 0;
                 const bool sc = fn->stackless_constructible() && !fn->is_class_constructor();
                 const bool ok = sc && ctor_plan(fn, plan, n, false);
-                if (config().log) std::fprintf(stderr, "[opt] new at pc %u: constructible=%d plan=%d\n", in.pc, sc, ok);
+                if (config().log) std::fprintf(stderr, "[opt] new at pc %u: constructible=%d plan=%d (%s, plan.inner %s)\n", in.pc, sc, ok, fn->get_name().c_str(), plan.inner ? plan.inner->get_name().c_str() : "-");
                 if (!ok && !(sc && ctor_generic_ok(fn, n))) return no(6);
                 out.push_back(fn);
                 continue;
@@ -2241,28 +2241,29 @@ inline bool apply_forwarder(const BytecodeChunk& c, uint32_t& name_index) {
 // class) whose body is loop-free and small, runs in this realm and strictness (so a deoptimization can rebuild its frame, as a stackless `new` makes it), does not
 // read new.target or use super, and returns nothing (the object is the result). The object is made plain; the body's stores are ordinary ones.
 inline bool Builder::ctor_generic_ok(Function* fn, uint32_t& insns, Graph::CtorPlan* out) {
-    if (!config().gctor || !g_.frame || fn->is_class_constructor() || fn->is_arrow()) return false;
+    auto gfail = [&](int w) { if (config().log) std::fprintf(stderr, "[opt] generic ctor refused: %d\n", w); return false; };
+    if (!config().gctor || !g_.frame || fn->is_class_constructor() || fn->is_arrow()) return gfail(1);
     const Value pv = fn->constructor_prototype();
     Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
-    if (!proto) return false;
+    if (!proto) return gfail(2);
     Graph::CtorPlan plan;
-    if (!resolve_forwarder(fn, proto, plan)) return false;
+    if (!resolve_forwarder(fn, proto, plan)) return gfail(3);
     Function* body = plan.inner ? plan.inner : fn;
     const FunctionExecutable* exe = body->get_executable().get();
-    if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm || exe->fast_uses_super) return false;
+    if (!exe || !exe->bytecode_chunk || exe->owner_realm() != g_current_realm || exe->fast_uses_super) return gfail(4);
     const BytecodeChunk& c = *exe->bytecode_chunk;
     uint8_t v = c.inline_state;
-    if (v & kInlineNever) return false;
+    if (v & kInlineNever) return gfail(5);
     if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, body);
-    if (!(v & kInlineOk) || (v & kInlineEnv) || (v & kInlineNever)) return false;
-    if (g_.frame->ctx->is_strict_mode() != ((v & kInlineStrict) != 0)) return false;
-    if (!inline_scan(body, c, insns) || insns > config().inline_insns) return false;
+    if (!(v & kInlineOk) || (v & kInlineEnv) || (v & kInlineNever)) return gfail(6);
+    if (g_.frame->ctx->is_strict_mode() != ((v & kInlineStrict) != 0)) return gfail(7);
+    if (!inline_scan(body, c, insns) || insns > config().inline_insns) return gfail(8);
     const uint8_t* code = c.code.data();
     const uint32_t size = static_cast<uint32_t>(c.code.size());
     for (uint32_t pc = 0; pc < size;) {
         const Op op = static_cast<Op>(code[pc]);
-        if (op == Op::LdaNewTarget || op == Op::SuperCall || op == Op::SuperCallSpread || op == Op::GetSuper || op == Op::SetSuper) return false;
-        if (op == Op::Return && (pc == 0 || static_cast<Op>(code[pc - 1]) != Op::LdaUndefined)) return false;
+        if (op == Op::LdaNewTarget || op == Op::SuperCall || op == Op::SuperCallSpread || op == Op::GetSuper || op == Op::SetSuper) return gfail(9);
+        if (op == Op::Return && (pc == 0 || static_cast<Op>(code[pc - 1]) != Op::LdaUndefined)) return gfail(10);
         pc += 1 + static_cast<uint32_t>(op_operand_bytes(op));
     }
     if (out) *out = plan;
@@ -2324,7 +2325,7 @@ inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& in
         const Op op = static_cast<Op>(code[pc]);
         if (op_unsupported(op) || op == Op::Throw) return fail_plan(4);
         // A body that calls is not private to the new object (a call is a step, which an inlined constructor cannot make): the general kind inlines it.
-        if (op == Op::Call || op == Op::CallResolved || op == Op::Construct || op == Op::CallViaFunctionCall || op == Op::CallViaFunctionCallWide || op == Op::CallViaFunctionApply || op == Op::CallSpread) return fail_plan(11);
+        if (op == Op::Call || op == Op::CallResolved || op == Op::Construct || op == Op::CallViaFunctionCall || op == Op::CallViaFunctionCallWide || op == Op::CallViaFunctionApply || op == Op::CallSpread) { if (config().log) std::fprintf(stderr, "[opt] ctor body of a %zu-byte chunk has %s at pc %u\n", c.code.size(), op_name(op), pc); return fail_plan(11); }
         // Forward branches only (a conditional expression computing a value): the code between a branch and its target runs
         // on some paths and not on others, and a store there would add its property on some paths only.
         if (const int bp = branch_offset_pos(op); bp >= 0) {

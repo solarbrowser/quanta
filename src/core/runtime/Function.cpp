@@ -2143,7 +2143,7 @@ bool Function::new_target_is_self_or_none(const Context& ctx) const {
 Object* Function::new_construct_object(Object* pending_proto) {
     const uint32_t construct_slot_hint = get_construct_slot_hint();
     std::unique_ptr<Object> new_object;
-    if (construct_slot_hint <= 4) {
+    if (construct_slot_hint <= 12) {
         new_object = ObjectFactory::create_object_with_slots((construct_slot_hint + 1) & ~1u);
     } else {
         new_object = ObjectFactory::create_object();
@@ -2162,7 +2162,7 @@ bool Function::construct_plain(Context& ctx, std::span<const Value> args, Value&
     // See the general construct() for what the hint is.
     const uint32_t construct_slot_hint = get_construct_slot_hint();
     std::unique_ptr<Object> new_object;
-    if (construct_slot_hint <= 4) {
+    if (construct_slot_hint <= 12) {
         new_object = ObjectFactory::create_object_with_slots((construct_slot_hint + 1) & ~1u);
     } else {
         new_object = ObjectFactory::create_object();
@@ -2283,7 +2283,7 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     // construction, which is where the hint is learned.
     uint32_t construct_slot_hint = get_construct_slot_hint();
     std::unique_ptr<Object> new_object;
-    if (construct_slot_hint <= 4) {
+    if (construct_slot_hint <= 12) {
         // Rounded to the cell size class the hint actually needs, not
         // straight to 4 -- see Op::CreateObject's own version of this for
         // the size-class math (this hint is adaptive, learned from the
