@@ -288,6 +288,7 @@ struct Config {
     bool enabled = true;       // on unless QUANTA_OPT=0
     bool log = false;          // QUANTA_OPT_LOG
     bool dump = false;         // QUANTA_OPT_DUMP: print the IR of every chunk an offer is made for
+    std::string bin_dir;       // QUANTA_OPT_BIN=dir: the machine code of every unit is written to dir/unit_<n>.bin, one line per unit in dir/index.txt (tools/jit/disasm.py reads them)
     uint32_t max_insns = 4000;
     uint32_t stress = 0;              // QUANTA_OPT_DEOPT_STRESS=N: every Nth guard evaluation deoptimizes (testing)
     uint32_t skip = 0, limit = 0xFFFFFFFFu, seen = 0;   // QUANTA_OPT_SKIP / QUANTA_OPT_LIMIT: bisect which compiles are allowed
@@ -344,6 +345,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT")) c.enabled = e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_LOG")) c.log = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DUMP")) { c.dump = e[0] && e[0] != '0'; }
+        if (const char* e = std::getenv("QUANTA_OPT_BIN")) { if (e[0]) c.bin_dir = e; }
         if (const char* e = std::getenv("QUANTA_OPT_MAXINSNS")) c.max_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_DEOPT_STRESS")) { c.stress = static_cast<uint32_t>(std::atoi(e)); c.max_deopts = 0x7FFFFFFF; }
         if (const char* e = std::getenv("QUANTA_OPT_SKIP")) c.skip = static_cast<uint32_t>(std::atoi(e));
@@ -6573,6 +6575,23 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         unit.inl_strict = g.inl_strict;
         unit.inl_scratch_mem.reset(new uint64_t[g.nvars - unit.root_vars]());
         unit.rt->inl_scratch = unit.inl_scratch_mem.get();
+    }
+    if (!config().bin_dir.empty()) {
+        // For looking at the code the tier makes: the bytes as they are in the arena (the addresses inside them are the ones of this run), and where each entry is.
+        static uint32_t unit_count = 0;
+        const uint32_t n = unit_count++;
+        const std::string path = config().bin_dir + "/unit_" + std::to_string(n) + ".bin";
+        if (FILE* out = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(bytes.data(), 1, bytes.size(), out);
+            std::fclose(out);
+            if (FILE* idx = std::fopen((config().bin_dir + "/index.txt").c_str(), "ab")) {
+                std::fprintf(idx, "%u %s pc=%u bytecode=%u code=%zu inlined=%u entries=", n, (peek && peek->owner) ? peek->owner->get_name().c_str() : "?", pc,
+                             static_cast<unsigned>(chunk.code.size()), bytes.size(), g.inl_count);
+                for (size_t e = 0; e < unit.entries.size(); e++) std::fprintf(idx, "%s%u:%u", e ? "," : "", unit.entries[e].first, unit.entries[e].second);
+                std::fprintf(idx, "\n");
+                std::fclose(idx);
+            }
+        }
     }
     if (config().log && peek && peek->owner) std::fprintf(stderr, "[opt] compiling function \"%s\"\n", peek->owner->get_name().c_str());
     if (config().log) std::fprintf(stderr, "[opt] compiled loop at pc %u of %u bytes of bytecode -> %zu bytes of code, %zu entries, %u calls inlined\n",
