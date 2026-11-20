@@ -4167,10 +4167,10 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
         return cbits >= kNotFn ? kNotFn - 1 : cbits;
     }
     if (__builtin_expect(g_native_test, 1)) {
-        const FunctionExecutable* ex = fn->get_executable().get();
+        const FunctionExecutable* ex = !(meta & 0x30) ? fn->get_executable().get() : nullptr;
         const BytecodeChunk* nc0 = ex ? ex->bytecode_chunk.get() : nullptr;
         auto* nch = nc0 ? &const_cast<BytecodeChunk*>(nc0)->ensure_ic_feedback() : nullptr;
-        if (nch && nch->native_state != 2 && !(meta & 0x30)) {
+        if (nch && nch->native_state != 2) {
             const void* id = nc0->uses_lookup_cache ? static_cast<const void*>(fn) : static_cast<const void*>(ex);
             const uint64_t key = (reinterpret_cast<uint64_t>(id) << 3) ^ argc;
             auto it = nch->native_state == 1 ? g_native_thunks.find(key) : g_native_thunks.end();
@@ -4182,7 +4182,10 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                     else {
                         nch->native_made++;
                         nch->native_state = 1;
-                        if (!g_native_thunks.count(key)) g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc));
+                        if (!g_native_thunks.count(key)) {
+                            g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc));
+                            if (!g_native_thunks[key] || !g_native_thunks[key]->ok) nch->native_state = 2;       // (nothing to look for any more)
+                        }
                     }
                 } else if (nch->native_state == 1 && nch->native_made < 3 && ++nch->native_calls >= g_native_at) {
                     // another closure of the code, hot as well

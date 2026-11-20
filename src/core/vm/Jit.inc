@@ -2780,6 +2780,7 @@ struct NativeThunk {
     uint32_t argc = 0;
     bool ok = false;
     uint32_t deopts = 0;
+    bool closed = false;       // given up on
     std::vector<std::pair<JitCallIC*, int>> ics;     // the cache ways that point at this entry
 };
 inline thread_local std::unordered_map<const BytecodeChunk*, NativeThunk*> g_native_by_chunk;
@@ -3563,6 +3564,7 @@ inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept {
         if (it != g_native_by_chunk.end() && ++it->second->deopts > 24 && it->second->ok) {
             it->second->ok = false;
             for (auto& [ic, w] : it->second->ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
+            it->second->closed = true;
             if (opt::config().log) std::fprintf(stderr, "[native] thunk given up on\n");
         }
     }
