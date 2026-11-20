@@ -4153,7 +4153,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
             r = fn->construct(ctx, std::span<const Value>(args, argc));
         } catch (...) {
             ctx.set_new_target(old_new_target);
-            f->chunk->jit->pending = std::current_exception();
+            g_pending_exc = std::current_exception();
             return kRethrow;
         }
         ctx.set_new_target(old_new_target);
@@ -4169,7 +4169,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
             r = fn->fast_callable() ? fn->call_fast_gate(ctx, call_args, th) : fn->call_register_args(ctx, call_args, th);
         }
     } catch (...) {
-        f->chunk->jit->pending = std::current_exception();
+        g_pending_exc = std::current_exception();
         return kRethrow;
     }
     if (__builtin_expect(ctx.has_exception(), 0)) { f->acc = Value(); return kThrew; }
@@ -4190,7 +4190,7 @@ template <typename Fn>
     try {
         r = fn(ctx);
     } catch (...) {
-        f->chunk->jit->pending = std::current_exception();
+        g_pending_exc = std::current_exception();
         return kRethrow;
     }
     if (__builtin_expect(ctx.has_exception(), 0)) { f->acc = Value(); return kThrew; }

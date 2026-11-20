@@ -135,6 +135,9 @@ struct Config {
 };
 Config g_cfg;
 thread_local char g_thread_marker;
+// The exception a helper caught on its way out of generated code, to be rethrown by whatever drives the outermost unit. One per thread, not one per chunk:
+// with units that call each other the rethrow happens in the driver of a different chunk than the one that caught it.
+thread_local std::exception_ptr g_pending_exc;
 
 inline void note_site(const BytecodeChunk& chunk, uint32_t pc) {
     const uint64_t key = (reinterpret_cast<uint64_t>(&chunk) << 16) ^ (static_cast<uint64_t>(pc) * 0x9E3779B97F4A7C15ull);
@@ -480,7 +483,7 @@ int32_t step_impl(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noe
         try {
             result = kHandlers[op](*f, pc, f->acc, f->regs, f->code);
         } catch (...) {
-            jc->pending = std::current_exception();
+            g_pending_exc = std::current_exception();
             threw = true;
         }
         f->code = saved_code;
@@ -509,7 +512,7 @@ int32_t step_impl(Frame* f, uint32_t pc, uint32_t target, uint32_t ic_index) noe
         try {
             result = kHandlers[op](*f, pc, f->acc, f->regs, f->code);
         } catch (...) {
-            jc->pending = std::current_exception();
+            g_pending_exc = std::current_exception();
             threw = true;
         }
         f->code = saved_code;
@@ -570,7 +573,7 @@ QUANTA_JIT_ABI int32_t step_k(Frame* f, uint32_t pc, uint32_t target, uint32_t i
     try {
         result = kHandlers[op](*f, pc, f->acc, f->regs, f->code);
     } catch (...) {
-        jc->pending = std::current_exception();
+        g_pending_exc = std::current_exception();
         f->code = saved_code;
         return kStepRethrow;
     }
@@ -990,7 +993,7 @@ QUANTA_JIT_ABI int32_t binary_op(Frame* f, uint32_t pc, uint32_t op) noexcept {
         const uint8_t* code = f->chunk->code.data();
         f->acc = binary_slow(*f->ctx, static_cast<BinOp>(op), f->regs[code[pc + 1]], f->acc);
     } catch (...) {
-        jc->pending = std::current_exception();
+        g_pending_exc = std::current_exception();
         return kStepRethrow;
     }
     return after_op(f, jc, pc, pc + 2);
@@ -1053,7 +1056,7 @@ QUANTA_JIT_ABI int32_t call_op(Frame* f, uint32_t pc, uint32_t kind) noexcept {
         }
         f->acc = acc;
     } catch (...) {
-        jc->pending = std::current_exception();
+        g_pending_exc = std::current_exception();
         return kStepRethrow;
     }
     return after_call(f, jc, pc, next);
@@ -2784,8 +2787,8 @@ bool tally(JitCode* jc) noexcept {
 // The slow half of run(): everything but "started at pc 0 and finished".
 [[gnu::noinline]] Value run_resume(Frame& f, JitCode* jc, uint64_t status) {
     if (status == kExitRethrow) {
-        std::exception_ptr ep = std::move(jc->pending);
-        jc->pending = nullptr;
+        std::exception_ptr ep = std::move(g_pending_exc);
+        g_pending_exc = nullptr;
         if (ep) std::rethrow_exception(ep);
         return Value();
     }
@@ -2985,8 +2988,8 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
     auto& refused = opt_refused();
     if (status == opt::kStatusFinished) return 1;
     if (status == opt::kStatusRethrow) {
-        std::exception_ptr ep = std::move(jc->pending);
-        jc->pending = nullptr;
+        std::exception_ptr ep = std::move(g_pending_exc);
+        g_pending_exc = nullptr;
         if (ep) std::rethrow_exception(ep);
         return 1;
     }
@@ -3230,6 +3233,144 @@ constexpr uint32_t kEntryMaxDepth = 96;
     return true;
 }
 
+// A frame that lives on the native stack of the call (not in the arena): the callee of a native call. Same contents as the arena frame unit_enter_fast makes,
+// built into storage the call owns; the arena and its slots are not touched, and popping it is the call stack and the activation's link only.
+inline const bool g_cfg_virtual_frames = [] { const char* e = std::getenv("QUANTA_VFRAME"); return e && e[0] && e[0] != '0'; }();
+
+struct VFrameBlock {
+    alignas(Frame) unsigned char frame_storage[sizeof(Frame)];
+    CallInfo call_info;
+    Environment* env_saves[64];
+    Environment* resolved_envs[8];
+    alignas(16) Value bank[kInlineMaxRegs + 4];
+    Frame& frame() { return *reinterpret_cast<Frame*>(frame_storage); }
+};
+
+[[gnu::always_inline]] inline void vframe_pop(Frame& f) {
+    Frame* c = f.caller;
+    f.base->active = (c == f.base) ? nullptr : c;
+    CallStack::established().pop_frame_unchecked();
+}
+
+// unit_enter_fast for a frame in `vb`. False, with nothing done, for what the caller or the receiver rules out.
+[[gnu::always_inline]] inline bool unit_enter_virtual(VFrameBlock& vb, Frame& f, Function* fn, const BytecodeChunk& chunk, const BytecodeChunk::DirectCall& d,
+                                                      const Value* argv, uint32_t argc, const Value& this_value, Frame*& out) {
+    Context& ctx = *f.ctx;
+    if (UNLIKELY(ctx.this_needs_super() || ctx.is_strict_mode() != d.strict || d.realm != g_current_realm ||
+                 (d.sloppy_this && !this_value.is_object() && !this_value.is_function()) || d.nregs > kInlineMaxRegs))
+        return false;
+    CallStack& stack = CallStack::established();
+    if (UNLIKELY(stack.depth() > kEntryMaxDepth)) return false;
+    ctx.consume_pending_construct_call();
+
+    Environment* outer_env = fn->get_closure_environment();
+    if (!outer_env && fn->get_closure_context()) outer_env = fn->get_closure_context()->get_lexical_environment();
+    if (!outer_env) outer_env = ctx.get_lexical_environment();
+    if (outer_env && !d.no_closures) outer_env->mark_escaped();
+
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
+    PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
+    if (UNLIKELY(d.uses_caches)) {
+        if (LIKELY(d.uses_lookup && !d.uses_private)) {
+            auto& ic = fn->instance_lookup_cache();
+            if (LIKELY(ic.size() >= d.names)) lookup_cache_data = ic.data();
+            else inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+        } else {
+            inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+        }
+    }
+    Value* regs = vb.bank;
+    init_register_bank(reinterpret_cast<unsigned char*>(regs), d.nregs);
+    const uint32_t copy = std::min<uint32_t>(chunk.parameter_count, argc);
+    for (uint32_t i = 0; i < copy; i++) regs[i] = argv[i];
+
+    vb.call_info.lexical_environment_ = outer_env;
+    vb.call_info.variable_environment_ = outer_env;
+    Frame* callee = new (vb.frame_storage) Frame{
+        nullptr, nullptr, std::span<const Value>(), nullptr, true, nullptr, vb.env_saves, vb.resolved_envs,
+        nullptr, nullptr, nullptr, nullptr, nullptr, Value(), Value(), 0, 0, 0, true};
+    callee->call_info = &vb.call_info;
+    callee->osr_budget = g_stackless_osr_budget;
+    callee->inline_ok = true;
+    callee->chunk = &chunk;
+    callee->ctx = f.ctx;
+    callee->args = std::span<const Value>(argv, argc);
+    callee->owner = fn;
+    callee->regs = regs;
+    callee->lookup_cache_data = lookup_cache_data;
+    callee->private_feedback_data = private_feedback_data;
+    callee->code = chunk.code.data();
+    callee->constants = chunk.constants.data();
+    callee->entry_env = outer_env;
+    callee->this_value = this_value;
+    callee->env_save_top = 0;
+    callee->current_lexical_env = outer_env;
+    callee->current_variable_env = outer_env;
+    callee->caller = &f;
+    Frame* base = f.base ? f.base : &f;
+    callee->base = base;
+    callee->return_pc = 0;
+    callee->value_words = 0;
+    if (UNLIKELY(d.verdict & kInlineHasOpt) && !chunk.opt_loops) callee->osr_budget = 1;
+    base->active = callee;
+    stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
+    out = callee;
+    return true;
+}
+
+template <bool Virt>
+[[gnu::always_inline]] inline bool unit_run_entered(Frame& caller, Frame* cf, const BytecodeChunk& chunk, const BytecodeChunk::DirectCall* d, Value& out) {
+#define POP(x) do { if constexpr (Virt) vframe_pop(x); else inline_frame_pop(x); } while (0)
+    cf->code = chunk.code.data();
+    int r;
+    try {
+        if (d && !d->plain && !d->fast && d->owner == &g_thread_marker && chunk.jit && chunk.jit->owner_thread == &g_thread_marker && d->ix < chunk.jit->opt_units.size()) {
+            // A unit with inlined callees: opt_run_unit checks that their frames can be rebuilt.
+            cf->pc = 0;
+            cf->acc = Value();
+            r = opt_run_unit(*cf, chunk, chunk.jit.get(), d->ix, 0, d->off);
+        } else if (__builtin_expect(d && (d->plain || d->fast) && d->owner == &g_thread_marker, 1)) {
+            cf->pc = 0;
+            cf->acc = Value();
+            const bool was_inline_ok = cf->inline_ok;
+            cf->inline_ok = false;
+            JitRt* rt = static_cast<JitRt*>(d->rt);
+            rt->opt_runs++;
+            const uint64_t status = reinterpret_cast<uint64_t (QUANTA_JIT_ABI *)(void*, JitRt*, const void*)>(d->entry)(cf, rt, d->target);
+            cf->inline_ok = was_inline_ok;
+            r = __builtin_expect(status == opt::kStatusFinished, 1) ? 1 : opt_unit_exit(*cf, chunk, chunk.jit.get(), d->ix, 0, rt, status);
+        } else {
+            r = opt_osr(*cf, 0, Value());
+        }
+    } catch (...) {
+        POP(*cf);
+        throw;
+    }
+    if (r == 1) {
+        out = cf->acc;
+        POP(*cf);
+        return true;
+    }
+    Frame* t = cf;
+    if (r == 3) t = g_osr_target;
+    else if (r == 0) { cf->pc = 0; cf->code = chunk.code.data(); t = cf; }
+    Frame* const saved_caller = cf->caller;
+    cf->caller = nullptr;
+    Value v;
+    try {
+        v = kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code);
+    } catch (...) {
+        cf->caller = saved_caller;
+        POP(*cf);
+        throw;
+    }
+    cf->caller = saved_caller;
+    out = v;
+    POP(*cf);
+    return true;
+}
+#undef POP
+
 [[gnu::always_inline]] inline bool unit_call_direct(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
     const FunctionExecutable* exe = fn->get_executable().get();
     if (UNLIKELY(!exe || !exe->bytecode_chunk)) return false;
@@ -3239,6 +3380,11 @@ constexpr uint32_t kEntryMaxDepth = 96;
     if (LIKELY(d && d->fast && chunk.opt_entry == 3 && d->owner == &g_thread_marker)) {
         // Decided once for the declaration site (below): nothing of the chunk is asked again.
         if (d->leaf && unit_leaf_call(caller, fn, *exe, d->verdict, *d, this_value, argv, argc, out)) return true;
+        if (g_cfg_virtual_frames && d->plain && d->nregs <= kInlineMaxRegs) {
+            VFrameBlock vb;
+            if (!unit_enter_virtual(vb, caller, fn, chunk, *d, argv, argc, this_value, cf)) return false;
+            return unit_run_entered<true>(caller, cf, chunk, d, out);
+        }
         if (!unit_enter_fast(caller, fn, chunk, *d, argv, argc, this_value, cf)) return false;
     } else {
         if (!fn->fast_callable() || chunk.opt_entry != 3) return false;
@@ -3270,53 +3416,7 @@ constexpr uint32_t kEntryMaxDepth = 96;
             m.fast = true;
         }
     }
-    cf->code = chunk.code.data();
-    int r;
-    try {
-        if (d && !d->plain && !d->fast && d->owner == &g_thread_marker && chunk.jit && chunk.jit->owner_thread == &g_thread_marker && d->ix < chunk.jit->opt_units.size()) {
-            // A unit with inlined callees: opt_run_unit checks that their frames can be rebuilt.
-            cf->pc = 0;
-            cf->acc = Value();
-            r = opt_run_unit(*cf, chunk, chunk.jit.get(), d->ix, 0, d->off);
-        } else if (__builtin_expect(d && (d->plain || d->fast) && d->owner == &g_thread_marker, 1)) {
-            cf->pc = 0;
-            cf->acc = Value();
-            const bool was_inline_ok = cf->inline_ok;
-            cf->inline_ok = false;
-            JitRt* rt = static_cast<JitRt*>(d->rt);
-            rt->opt_runs++;
-            const uint64_t status = reinterpret_cast<uint64_t (QUANTA_JIT_ABI *)(void*, JitRt*, const void*)>(d->entry)(cf, rt, d->target);
-            cf->inline_ok = was_inline_ok;
-            r = __builtin_expect(status == opt::kStatusFinished, 1) ? 1 : opt_unit_exit(*cf, chunk, chunk.jit.get(), d->ix, 0, rt, status);
-        } else {
-            r = opt_osr(*cf, 0, Value());
-        }
-    } catch (...) {
-        inline_frame_pop(*cf);
-        throw;
-    }
-    if (r == 1) {
-        out = cf->acc;
-        inline_frame_pop(*cf);
-        return true;
-    }
-    Frame* t = cf;
-    if (r == 3) t = g_osr_target;
-    else if (r == 0) { cf->pc = 0; cf->code = chunk.code.data(); t = cf; }
-    Frame* const saved_caller = cf->caller;
-    cf->caller = nullptr;
-    Value v;
-    try {
-        v = kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code);
-    } catch (...) {
-        cf->caller = saved_caller;
-        inline_frame_pop(*cf);
-        throw;
-    }
-    cf->caller = saved_caller;
-    out = v;
-    inline_frame_pop(*cf);
-    return true;
+    return unit_run_entered<false>(caller, cf, chunk, d, out);
 }
 #endif
 
