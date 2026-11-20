@@ -851,6 +851,9 @@ public:
     bool to_boolean() const;
     
     size_t element_count() const { return elements_length(); }
+    // True when an index below the element count is recorded as absent (deleted, or skipped by a write past the end).
+    bool element_is_hole(uint32_t index) const { auto* holes = deleted_elements(); return holes && !holes->empty() && holes->count(index) > 0; }
+    bool has_element_holes() const { auto* holes = deleted_elements(); return holes && !holes->empty(); }
 
     // VM inline-cache fast path. A shape match alone doesn't prove "plain
     // data slot, no override" -- defineProperty can attach non-default

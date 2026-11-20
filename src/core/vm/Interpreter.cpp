@@ -1906,6 +1906,31 @@ inline bool dense_element_slot(const Value& receiver, uint32_t index, Object*& o
     return true;
 }
 
+// An ordinary object -- or an array that is not dense just now: it has holes, the digits of a BigInteger being filled from the top -- that keeps indexed properties as elements (a BigInteger's digits, a jQuery set, a list a library builds on `{}` or a function's prototype):
+// the element is there as the object holds it when no index has a descriptor of its own and no hole is recorded, which is all get_element looks at before it
+// reads the storage. The generic handler turns the index into a string and asks the property map, a hundred times the cost.
+inline bool plain_element_slot(const Value& receiver, uint32_t index, Object*& out) {
+    if (!receiver.is_object()) return false;
+    Object* obj = receiver.as_object();
+    if ((obj->get_type() != Object::ObjectType::Ordinary && obj->get_type() != Object::ObjectType::Array) || obj->has_index_descriptor() || index >= obj->element_count()) return false;
+    if (obj->element_is_hole(index)) return false;
+    out = obj;
+    return true;
+}
+
+// The write: an element the object holds is overwritten, and an index that is new (the next one, or a few past it, which leaves holes the digits of a
+// number being built from the top fill in) is added when the object takes new properties and nothing it inherits has an index (so no setter and no read-only
+// value can intervene) -- set_element does the rest (the collector's barrier, the growth, the holes).
+inline bool plain_element_store(const Value& receiver, uint32_t index, const Value& value) {
+    if (!receiver.is_object()) return false;
+    Object* obj = receiver.as_object();
+    if ((obj->get_type() != Object::ObjectType::Ordinary && obj->get_type() != Object::ObjectType::Array) || obj->has_index_descriptor()) return false;
+    const uint32_t count = obj->element_count();
+    if (index > count + 64) return false;
+    if ((index >= count || obj->element_is_hole(index)) && (!obj->is_extensible() || !obj->proto_chain_has_no_indices())) return false;
+    return obj->set_element(index, value);
+}
+
 // The same question for a WRITE, which may also extend the array by one.
 // A read at the element count is out of bounds and answers undefined, which is
 // why the two cannot share a bound -- but a write there appends, and appending
@@ -8880,6 +8905,11 @@ QUANTA_HANDLER Value h_GetKeyedElement(HANDLER_PARAMS) {
             pc += 4;
             DISPATCH();
         }
+        if (plain_element_slot(recv, index, dense)) {
+            acc = dense->get_element_unchecked(index);
+            pc += 4;
+            DISPATCH();
+        }
         if (Object* obj = as_object_like(recv); obj && obj->get_type() == Object::ObjectType::TypedArray) {
             double element;
             if (static_cast<TypedArrayBase*>(obj)->read_plain_number(index, element)) {
@@ -8936,6 +8966,10 @@ QUANTA_HANDLER Value h_SetKeyedElement(HANDLER_PARAMS) {
         Object* dense;
         if (LIKELY(dense_element_store_slot(recv, index, dense)) &&
             dense->store_dense_element(index, acc)) {
+            pc += 5;
+            DISPATCH();
+        }
+        if (plain_element_store(recv, index, acc)) {
             pc += 5;
             DISPATCH();
         }
