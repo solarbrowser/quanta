@@ -3275,10 +3275,8 @@ struct VFrameBlock {
     CallStack::established().pop_frame_unchecked();
 }
 
-[[gnu::always_inline]] inline void vframe_pop_nostack(Frame& f) {
-    Frame* c = f.caller;
-    f.base->active = (c == f.base) ? nullptr : c;
-}
+// (The frame of a native entry is the base of its own activation: nothing of its caller's to put back.)
+[[gnu::always_inline]] inline void vframe_pop_nostack(Frame& f) { f.active = nullptr; }
 
 // unit_enter_fast for a frame in `vb`. False, with nothing done, for what the caller or the receiver rules out.
 [[gnu::always_inline]] inline bool unit_enter_virtual(VFrameBlock& vb, Frame& f, Function* fn, const BytecodeChunk& chunk, const BytecodeChunk::DirectCall& d,
@@ -3600,6 +3598,8 @@ inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept {
     } catch (...) {
         g_pending_exc = std::current_exception();
         rethrow = true;
+        // The frames the interpreter had running above this one (an exception does not pop them: the run loop of the activation does that, and none owns this frame).
+        while (cf->base->active && cf->base->active != cf) inline_frame_pop(*cf->base->active);
     }
     vframe_pop_nostack(*cf);
     if (rethrow) return kRethrow;

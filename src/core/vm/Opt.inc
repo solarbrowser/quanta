@@ -6690,16 +6690,12 @@ inline void Emitter::emit_native_entry() {
         a_.mov_load(RDX, mem(RBP, static_cast<int32_t>(8 * i)));
         a_.mov_store(mem(RCX, static_cast<int32_t>(16 + 8 * i)), RDX);
     }
-    // Linked to the caller as a stackless frame is: the activation's innermost frame is this one while it runs.
+    // The caller of the call (for what the interpreter finishes of it), and the frame is the base of its own activation: stackless frames made under it (by the helpers it
+    // calls, or by the interpreter after a deoptimization) link to it, and nothing of the caller's activation is touched.
     a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::caller)), R12);
-    a_.mov_load(RAX, mem(R12, static_cast<int32_t>(FrameOff::base)));
-    Label& have_base = new_label();
-    a_.test(RAX, RAX);
-    a_.jcc(CC_NE, have_base);
-    a_.mov(RAX, R12);
-    a_.bind(have_base);
-    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::base)), RAX);
-    a_.mov_store(mem(RAX, static_cast<int32_t>(FrameOff::active)), RBX);
+    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::base)), RBX);
+    a_.xor32(RAX, RAX);
+    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::active)), RAX);
     a_.mov_store8(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), R11);
     a_.mov_imm64(R14, reinterpret_cast<uint64_t>(native_->rt));
     for (int32_t blk : order_)
@@ -6721,14 +6717,6 @@ inline void Emitter::emit_native_tail(Label& restore_full) {
     a_.jcc(CC_NE, cold);
     a_.mov_load(RAX, mem(RBX, static_cast<int32_t>(kOffAcc)));
     a_.bind(unlink);
-    a_.mov_load(RCX, mem(RBX, static_cast<int32_t>(FrameOff::caller)));
-    a_.mov_load(RDX, mem(RBX, static_cast<int32_t>(FrameOff::base)));
-    Label& keep = new_label();
-    a_.cmp(RCX, RDX);
-    a_.jcc(CC_NE, keep);
-    a_.xor32(RCX, RCX);
-    a_.bind(keep);
-    a_.mov_store(mem(RDX, static_cast<int32_t>(FrameOff::active)), RCX);
     a_.jmp(restore);
     a_.bind(cold);
     Label& threw = new_label();
