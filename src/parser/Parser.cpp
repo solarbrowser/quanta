@@ -12596,8 +12596,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
                 return nullptr;
             }
             continue;
-        } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-            std::string_view pn = token_text(current_token());
+        } else if (token_names_a_binding(current_token().get_type())) {
+            std::string_view pn = binding_name_text(current_token());
             if (options_.strict_mode && (is_strict_reserved_name(pn) || pn == "eval" || pn == "arguments")) {
                 add_error("SyntaxError: '" + std::string(pn) + "' cannot be used as parameter name in strict mode");
                 return nullptr;
