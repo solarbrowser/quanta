@@ -4736,7 +4736,7 @@ inline bool Emitter::allocate() {
     std::sort(ids.begin(), ids.end(), [&](int32_t x, int32_t y) { return start[x] != start[y] ? start[x] < start[y] : x < y; });
     std::vector<int32_t> active_g, active_x;
     uint32_t free_g = 0, free_x = 0;
-    for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) free_g |= 1u << i;
+    for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) if (!(native_ && kGprPool[i] == R12)) free_g |= 1u << i;
     for (int r = kXmmFirst; r <= kXmmLast; r++) free_x |= 1u << r;
     auto gpr_index = [&](uint8_t reg) { for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) if (kGprPool[i] == reg) return static_cast<int>(i); return -1; };
     for (int32_t id : ids) {
@@ -4980,8 +4980,9 @@ inline void Emitter::emit_deopt_stub(int32_t state) {
             a_.mov_store(mem(RCX, static_cast<int32_t>((v - g_.acc_var - 1) * sizeof(Value))), val);
         }
         else {
-            a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs)));      // (the register bank: R12 is the allocator's)
-            a_.mov_store(mem(R11, static_cast<int32_t>(v * sizeof(Value))), val);
+            Reg rb = R12;                                                      // (a native unit keeps its bank's address in R12)
+            if (!native_) { a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs))); rb = R11; }       // (else R12 is the allocator's)
+            a_.mov_store(mem(rb, static_cast<int32_t>(v * sizeof(Value))), val);
         }
     }
     a_.mov_store32_imm(mem(R14, static_cast<int32_t>(offsetof(JitRt, last_deopt))), static_cast<uint32_t>(state));
@@ -5124,8 +5125,9 @@ inline void Emitter::emit_node(int32_t id) {
         return;
     case K::LoadReg: {
         const Reg d = def_g(id, RAX);
-        a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs)));
-        a_.mov_load(d, mem(R11, static_cast<int32_t>(n.aux * sizeof(Value))));
+        Reg rb = R12;
+        if (!native_) { a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs))); rb = R11; }
+        a_.mov_load(d, mem(rb, static_cast<int32_t>(n.aux * sizeof(Value))));
         commit_g(id, d);
         return;
     }
@@ -5655,19 +5657,15 @@ inline void Emitter::emit_node(int32_t id) {
             const Reg r = use_g(n.b, RAX);
             a_.mov_store(mem(RSP, area + 32), r);
         }
-        a_.mov_imm64(RAX, static_cast<uint64_t>(n.aux));
-        a_.mov_store(mem(RSP, area + 40), RAX);
         (void)undefined_bits;
         const Reg callee = use_g(n.a, RAX);
-        if (callee != RAX) a_.mov(RAX, callee);
-        a_.push(RAX);                     // the callee survives the live-register save below (two slots keep the stack aligned)
-        a_.push(RAX);
+        if (callee != RAX) a_.mov(RAX, callee);       // (RAX is not touched by the save below)
         int32_t bytes;
         save_live(bytes, &cur_ls_);
         a_.mov(abi::A0, RBX);
-        a_.mov_load(abi::A1, mem(RSP, bytes));
-        a_.mov_load(abi::A2, mem(RSP, bytes + 2 * kPushBytes + area + 32));
-        a_.lea(abi::A3, mem(RSP, bytes + 2 * kPushBytes + area));
+        a_.mov(abi::A1, RAX);
+        a_.mov_load(abi::A2, mem(RSP, bytes + area + 32));
+        a_.lea(abi::A3, mem(RSP, bytes + area));
         if (!(n.aux & 0x10) && config().native_calls) {
             // The site's cache: a callee that has a native entry is called through it, directly; anything else through the helper (which fills the cache when it finds one).
             g_.call_ics.push_back(std::make_unique<JitCallIC>());
@@ -5695,15 +5693,17 @@ inline void Emitter::emit_node(int32_t id) {
             }
             a_.bind(generic);
             a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(ic));
-            a_.mov_store(mem(RSP, bytes + 2 * kPushBytes + area + 48), RAX);        // (the helper learns which cache it is for)
+            a_.mov_store(mem(RSP, bytes + area + 48), RAX);        // (the helper learns which cache it is for)
+            a_.mov_imm64(RAX, static_cast<uint64_t>(n.aux));       // (and the call's count of arguments, flags and pc: a native entry needs none of it)
+            a_.mov_store(mem(RSP, bytes + area + 40), RAX);
             call_c(reinterpret_cast<const void*>(&helper_call_fn));
             a_.bind(after);
         } else {
+            a_.mov_imm64(RAX, static_cast<uint64_t>(n.aux));
+            a_.mov_store(mem(RSP, bytes + area + 40), RAX);
             call_c(reinterpret_cast<const void*>(&helper_call_fn));
         }
         restore_live(bytes, &cur_ls_);
-        a_.pop(RCX);
-        a_.pop(RCX);
         {
             // The three sentinels (threw, rethrow, not a function) are the three largest words; no Value is one of them.
             Label& special = new_label();
@@ -5984,8 +5984,9 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::StoreReg: {
         const Reg s = use_g(n.a, RAX);
-        a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs)));
-        a_.mov_store(mem(R11, static_cast<int32_t>(n.aux * sizeof(Value))), s);
+        Reg rb = R12;
+        if (!native_) { a_.mov_load(R11, mem(RBX, static_cast<int32_t>(kOffRegs))); rb = R11; }
+        a_.mov_store(mem(rb, static_cast<int32_t>(n.aux * sizeof(Value))), s);
         return;
     }
     case K::StoreAcc: {
@@ -6697,6 +6698,7 @@ inline void Emitter::emit_native_entry() {
     a_.xor32(RAX, RAX);
     a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::active)), RAX);
     a_.mov_store8(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), R11);
+    a_.lea(R12, mem(RBX, bank_rel - frame_rel));       // (the registers of the unit: the bank)
     a_.mov_imm64(R14, reinterpret_cast<uint64_t>(native_->rt));
     for (int32_t blk : order_)
         if (g_.b[blk].synthetic && g_.b[blk].osr_pc == 0) { a_.jmp(*blk_label_[blk]); return; }
@@ -6760,6 +6762,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
 #endif
     a_.mov(RBX, abi::A0);
     a_.mov(R14, abi::A1);
+    if (native_) a_.mov_load(R12, mem(RBX, static_cast<int32_t>(kOffRegs)));
     a_.jmp_reg(abi::A2);
 
     for (size_t i = 0; i < order_.size() && !why_; i++) {
