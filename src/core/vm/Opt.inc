@@ -235,6 +235,7 @@ struct Graph {
     // Inlining: the arena words and frames the deepest chain of inlined callees needs once a deoptimization
     // rebuilds them, the strictness they were checked against, and the call site whose callee needed a step.
     bool fn_entry = false;                // the unit is for the whole function, entered at its first instruction
+    bool native_thunk = false;            // the unit is a native thunk: its one call is of the callee the entry was found for (the call site's cache and the helper's lookup say so)
     uint32_t inl_words = 0, inl_depth = 0, inl_count = 0;
     bool inl_strict = false;
     std::pair<const BytecodeChunk*, uint32_t> failed_site{nullptr, 0};
@@ -2591,7 +2592,7 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
     const Func C = g_.funcs[ci];
     const int32_t fv = fv_in >= 0 ? fv_in : tagged(value(callee_r));
     int32_t entry_state;
-    if (guard) {
+    if (guard && !(g_.native_thunk && cf_ == 0)) {
         const int32_t chk = guarded(K::CheckFn, Rep::None, fv, -1, C.by_identity ? 1 : 0, reinterpret_cast<uint64_t>(C.by_identity ? static_cast<const void*>(C.fnp) : C.exe));
         entry_state = g_.n[chk].state;
     } else {
@@ -6678,7 +6679,6 @@ inline void Emitter::emit_native_entry() {
     a_.mov_load(RAX, mem(R12, static_cast<int32_t>(kOffCtx)));
     a_.mov_store(mem(RBX, static_cast<int32_t>(kOffCtx)), RAX);
     a_.xor32(RAX, RAX);
-    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::owner)), RAX);
     a_.mov_store(mem(RBX, static_cast<int32_t>(kOffCallInfo)), RAX);       // (the thunk has no scope of its own: the context's is the one)
     a_.mov_store8_imm(mem(RBX, static_cast<int32_t>(FrameOff::feedback_rooted)), 1);
     // The registers: the callee, the receiver, the arguments.
@@ -6690,9 +6690,6 @@ inline void Emitter::emit_native_entry() {
         a_.mov_load(RDX, mem(RBP, static_cast<int32_t>(8 * i)));
         a_.mov_store(mem(RCX, static_cast<int32_t>(16 + 8 * i)), RDX);
     }
-    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::args)), RBP);
-    a_.mov_store32_imm(mem(RBX, static_cast<int32_t>(FrameOff::args + 8)), native_->argc);
-    a_.mov_store32_imm(mem(RBX, static_cast<int32_t>(FrameOff::args + 12)), 0);
     // Linked to the caller as a stackless frame is: the activation's innermost frame is this one while it runs.
     a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::caller)), R12);
     a_.mov_load(RAX, mem(R12, static_cast<int32_t>(FrameOff::base)));
@@ -6967,6 +6964,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         gp->frame = peek;
         gp->entry_pc = pc;
         gp->fn_entry = pc == 0;
+        gp->native_thunk = native != nullptr;
         Builder b(*gp, &no_inline);
         if (b.build({pc}, config().max_insns)) break;
         if (gp->failed_site.first && attempt < 8) {

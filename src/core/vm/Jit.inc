@@ -3533,6 +3533,8 @@ inline void native_frame_complete(Frame* f) {
     static thread_local Environment* dummy_resolved[8];
     const BytecodeChunk& chunk = *f->chunk;
     Environment* env = f->ctx->get_lexical_environment();
+    f->owner = nullptr;
+    f->args = std::span<const Value>(f->regs + 2, chunk.parameter_count >= 2 ? chunk.parameter_count - 2 : 0);      // (the arguments are the bank's after the callee and the receiver)
     f->env_saves = dummy_saves;
     f->resolved_envs = dummy_resolved;
     f->lookup_cache_data = chunk.lookup_cache.data();
