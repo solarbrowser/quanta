@@ -560,14 +560,21 @@ private:
     // Whether the register `rcv` is to be taken for a dense array at an indexed access. A loop's entry frame shows what
     // the registers hold; a function entry (and an inlined callee) has no such frame, so it assumes an array and lets a
     // site that proves otherwise deoptimize into the interpreter, which then keeps that site.
+    std::vector<std::pair<int32_t, Value>> lookup_peek_;      // the value a LoadLookup's cache holds as the unit is built (a node, the value)
     bool dense_array_receiver(uint32_t rcv) {
         if (cf_ == 0 && g_.frame && !g_.fn_entry) {
             // A receiver the unit read from a property (this.table[i]) leaves nothing in the entry frame: the register still holds
             // whatever an earlier statement put there. The guard on the array decides. One read from an environment slot is
             // left to the frame: arrays held that way are mostly filled by the loop, and compiling their element accesses lost
             // time to the guard's deopts.
-            const K def = g_.n[value(rcv)].op;
+            const int32_t dn = value(rcv);
+            const K def = g_.n[dn].op;
             if (def == K::LoadSlot || def == K::LoadPoly || def == K::LoadHolder) return true;
+            // A global or a module variable: what its cache holds now is what the register would have held, and the guard decides at run time.
+            if (def == K::LoadLookup) {
+                for (const auto& [id, pv] : lookup_peek_)
+                    if (id == dn) return pv.is_object() && pv.as_object()->is_verified_dense_array();
+            }
             const Value& pv = g_.frame->regs[rcv];
             return pv.is_object() && pv.as_object()->is_verified_dense_array();
         }
@@ -1297,6 +1304,17 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         const BytecodeChunk::LookupCacheEntry& e = *ep;
         const int32_t v = guarded(K::LoadLookup, Rep::Tagged, -1, -1, form | (root ? 0x100u : 0u) | (refresh ? 0x200u : 0u),
                                   root ? static_cast<uint64_t>(nidx) * JitLookupLayout::kSize : reinterpret_cast<uint64_t>(&e));
+        if (root && ep->shadow_epoch == cur_epoch) {
+            if (const Value* sp = ep->slot()) lookup_peek_.push_back({v, *sp});
+            else if (const PropertyDescriptor* dd = ep->dict_desc()) {
+                Object* bo = ep->env ? ep->env->get_binding_object() : nullptr;
+                if (bo && !bo->get_shape() && ep->descriptor_epoch == Object::descriptor_epoch() && dd->is_data_descriptor()) lookup_peek_.push_back({v, dd->get_value()});
+            } else if (ep->obj_shape()) {
+                Object* bo = ep->env ? ep->env->get_binding_object() : nullptr;
+                if (bo && bo->get_shape() == ep->obj_shape() && ep->descriptor_epoch == Object::descriptor_epoch())
+                    if (const Value* sp = bo->get_shape_slot_unchecked(ep->obj_slot_index)) lookup_peek_.push_back({v, *sp});
+            }
+        }
         set(acc(), v);
         if (fused) set(dst, v);
         return true;
