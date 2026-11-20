@@ -1954,7 +1954,7 @@ inline bool Builder::generic_op(const Insn& in) {
         auto d = std::make_unique<JitCode::OptUnit::RtDesc>();
         d->name = F().chunk->names[nidx];
         d->slot = const_cast<FeedbackSlot*>(&F().chunk->feedback[fbi]);
-        d->owner = F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr);
+        d->owner = F().gbody ? F().gbody : (F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr));   // (the function whose executable holds this site's feedback: a forwarding constructor's body, not the forwarder; the unit keeps it alive, see jit_trace)
         d->pc = root_pc;
         d->is_length = *d->name == "length";
         JitCode::OptUnit::RtDesc* dp = d.get();
@@ -1971,7 +1971,7 @@ inline bool Builder::generic_op(const Insn& in) {
         auto d = std::make_unique<JitCode::OptUnit::RtDesc>();
         d->name = F().chunk->names[nidx];
         d->slot = const_cast<FeedbackSlot*>(&F().chunk->feedback[fbi]);
-        d->owner = F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr);
+        d->owner = F().gbody ? F().gbody : (F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr));   // (the function whose executable holds this site's feedback: a forwarding constructor's body, not the forwarder; the unit keeps it alive, see jit_trace)
         d->pc = root_pc;
         JitCode::OptUnit::RtDesc* dp = d.get();
         g_.rtdescs.push_back(std::move(d));
@@ -4212,12 +4212,14 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
         Value shared;
         if (d->slot->peek() && d->slot->peek()->mega && VM::mega_probe(obj, d->name, shared)) return std::bit_cast<uint64_t>(shared);
     }
-    const bool rooted = d->owner && d->owner == f->owner && f->feedback_rooted;  // A site the optimized code reaches before the interpreter ever did still learns here, where the owner is the running frame's own (an inlined callee's owner is a bare pointer the unit does not keep alive).
+    // A site the optimized code reaches before the interpreter ever did still learns here. The owner is the running frame's own, or an inlined callee's, which the unit keeps
+    // alive (jit_trace marks it, and with it the executable whose feedback this site is in), so what the site learns is traced.
+    const bool rooted = d->owner && (d->owner != f->owner || f->feedback_rooted);
     return rt_run(f, d->pc, [&](Context& ctx) { return VM::get_named(ctx, rv, *d->name, d->slot, d->owner, rooted); });
 }
 inline QUANTA_JIT_ABI uint64_t helper_rt_setnamed(VM::Frame* f, uint64_t recv, uint64_t val, uint64_t desc) noexcept {
     const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
-    const bool rooted = d->owner && d->owner == f->owner && f->feedback_rooted;
+    const bool rooted = d->owner && (d->owner != f->owner || f->feedback_rooted);
     return rt_run(f, d->pc, [&](Context& ctx) { VM::set_named(ctx, std::bit_cast<Value>(recv), *d->name, std::bit_cast<Value>(val), d->slot, d->owner, rooted); return Value(); });
 }
 inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_rt_binary), reinterpret_cast<const void*>(&helper_rt_typeof),
