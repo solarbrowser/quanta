@@ -135,6 +135,8 @@ struct Config {
 };
 Config g_cfg;
 thread_local char g_thread_marker;
+inline const bool g_native_test = [] { const char* e = std::getenv("QUANTA_NATIVE"); return !(e && e[0] == '0'); }();      // QUANTA_NATIVE=0: no native units for hot callees
+inline const int g_native_at = [] { const char* e = std::getenv("QUANTA_NATIVE_AT"); return e ? std::atoi(e) : 300; }();
 // The exception a helper caught on its way out of generated code, to be rethrown by whatever drives the outermost unit. One per thread, not one per chunk:
 // with units that call each other the rethrow happens in the driver of a different chunk than the one that caught it.
 thread_local std::exception_ptr g_pending_exc;
@@ -2764,6 +2766,22 @@ bool chunk_has_loop(const BytecodeChunk& chunk) noexcept {
     compile_chunk(chunk);
 }
 
+struct NativeThunk {
+    // The functions the unit stands on (the callee, and the ones its runtime accesses learn into) stay alive as long as the thunk does: nothing else traces it.
+    std::vector<Value> held;
+    ValueVectorRoot root{&held};
+    std::unique_ptr<BytecodeChunk> chunk;
+    std::unique_ptr<Frame> tmpl;      // the frame of a call, but for what the call decides
+    uint64_t (QUANTA_JIT_ABI *entry)(Frame*, uint64_t, uint64_t, const uint64_t*) noexcept = nullptr;
+    uint32_t argc = 0;
+    bool ok = false;
+    uint32_t deopts = 0;
+    std::vector<std::pair<JitCallIC*, int>> ics;     // the cache ways that point at this entry
+};
+inline thread_local std::unordered_map<const BytecodeChunk*, NativeThunk*> g_native_by_chunk;
+inline thread_local std::unordered_map<uint64_t, std::unique_ptr<NativeThunk>> g_native_thunks;
+inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc);
+inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept;
 #include "Opt.inc"
 
 // The interpreter's offer at a hot back edge (see osr_try in Interpreter.cpp).
@@ -2986,7 +3004,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
 // interpreter takes the frame on from there). Same results as opt_osr.
 int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, JitRt* rt, uint64_t status) {
     auto& refused = opt_refused();
-    if (status == opt::kStatusFinished) return 1;
+    if (status == opt::kStatusFinished || status == opt::kStatusThrew) return 1;
     if (status == opt::kStatusRethrow) {
         std::exception_ptr ep = std::move(g_pending_exc);
         g_pending_exc = nullptr;
@@ -3252,6 +3270,11 @@ struct VFrameBlock {
     CallStack::established().pop_frame_unchecked();
 }
 
+[[gnu::always_inline]] inline void vframe_pop_nostack(Frame& f) {
+    Frame* c = f.caller;
+    f.base->active = (c == f.base) ? nullptr : c;
+}
+
 // unit_enter_fast for a frame in `vb`. False, with nothing done, for what the caller or the receiver rules out.
 [[gnu::always_inline]] inline bool unit_enter_virtual(VFrameBlock& vb, Frame& f, Function* fn, const BytecodeChunk& chunk, const BytecodeChunk::DirectCall& d,
                                                       const Value* argv, uint32_t argc, const Value& this_value, Frame*& out) {
@@ -3318,9 +3341,9 @@ struct VFrameBlock {
     return true;
 }
 
-template <bool Virt>
+template <bool Virt, bool Stack = true>
 [[gnu::always_inline]] inline bool unit_run_entered(Frame& caller, Frame* cf, const BytecodeChunk& chunk, const BytecodeChunk::DirectCall* d, Value& out) {
-#define POP(x) do { if constexpr (Virt) vframe_pop(x); else inline_frame_pop(x); } while (0)
+#define POP(x) do { if constexpr (Virt) { if constexpr (Stack) vframe_pop(x); else vframe_pop_nostack(x); } else inline_frame_pop(x); } while (0)
     cf->code = chunk.code.data();
     int r;
     try {
@@ -3418,7 +3441,163 @@ template <bool Virt>
     }
     return unit_run_entered<false>(caller, cf, chunk, d, out);
 }
+
+// ---- native units (F3) ----
+// A function called from a unit without being inlined is given a unit of its own that is entered without a frame of the interpreter's making: the "thunk" is a
+// chunk of two instructions, `CallResolved r0(this r1, args r2..)` and `Return`, whose call the tier inlines (the callee is seeded as the site's only target),
+// so the unit is the callee's body with the call's arguments as its registers. Whatever the inlined body cannot do, the interpreter does by resuming the thunk.
+
+inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc) {
+    const FunctionExecutable* exe = fn->get_executable().get();
+    if (!exe || !exe->bytecode_chunk || argc > 4) return nullptr;
+    auto t = std::make_unique<NativeThunk>();
+    t->argc = argc;
+    auto ch = std::make_unique<BytecodeChunk>();
+    std::vector<uint8_t> code{static_cast<uint8_t>(Op::CallResolved), 0, 1, 2, static_cast<uint8_t>(argc), 0, 0, static_cast<uint8_t>(Op::Return)};
+    ch->code = FixedArray<uint8_t>::from(std::move(code));
+    ch->register_count = static_cast<uint16_t>(2 + argc);
+    ch->parameter_count = static_cast<uint8_t>(2 + argc);
+    { std::vector<FeedbackSlot> fv(1); ch->feedback = FixedArray<FeedbackSlot>::from(std::move(fv)); }
+    auto& fb = ch->ensure_ic_feedback();
+    BytecodeChunk::IcFeedback::CallSite cs;
+    cs.pc = 0;
+    cs.n = 1;
+    cs.fns[0] = fn;
+    cs.ids[0] = exe;
+    fb.call_sites.push_back(cs);
+    // What the unit is built against: the registers the thunk would have at its call.
+    Value bank[8];
+    bank[0] = Value(fn);
+    bank[1] = this_value;
+    for (uint32_t i = 0; i < argc; i++) bank[2 + i] = argv[i];
+    Frame peek{nullptr, nullptr, std::span<const Value>(), nullptr, true, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, Value(), Value(), 0, 0, 0, true};
+    peek.chunk = ch.get();
+    peek.ctx = caller.ctx;
+    peek.regs = bank;
+    peek.code = ch->code.data();
+    peek.constants = ch->constants.data();
+    peek.this_value = this_value;
+    // The template of the frames the native entry makes.
+    t->tmpl.reset(new Frame{
+        nullptr, nullptr, std::span<const Value>(), nullptr, true, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, Value(), Value(), 0, 0, 0, true});
+    t->tmpl->chunk = ch.get();
+    t->tmpl->code = ch->code.data();
+    t->tmpl->constants = ch->constants.data();
+    t->tmpl->lookup_cache_data = ch->lookup_cache.data();
+    t->tmpl->osr_budget = INT32_MAX;
+    t->tmpl->inline_ok = false;
+    t->tmpl->this_value = Value();
+    JitCode::OptUnit made;
+    JitCode* jc = opt::ensure_jitcode(*ch);
+    opt::Emitter::NativeInfo ninfo;
+    ninfo.tmpl = t->tmpl.get();
+    ninfo.rt = made.rt.get();
+    ninfo.argc = argc;
+    ninfo.nregs = 2 + argc;
+    const bool saved_inl = opt::config().inl;
+    opt::config().inl = true;       // (the thunk exists to have its callee inlined, whatever the call sites around it were allowed)
+    const bool compiled = opt::compile(*ch, 0, &peek, made, &ninfo);
+    opt::config().inl = saved_inl;
+    if (opt::config().log) std::fprintf(stderr, "[native] thunk for \"%s\" argc %u: %s\n", fn->get_name().c_str(), argc, compiled ? "compiled" : "refused");
+    if (compiled && made.native_off) {
+        t->held.push_back(Value(fn));
+        for (const auto& d : made.rtdescs) if (d->owner) t->held.push_back(Value(d->owner));
+
+        t->entry = reinterpret_cast<decltype(t->entry)>(made.base + made.native_off);
+        jc->opt_units.push_back(std::move(made));
+        t->ok = true;
+    }
+    const BytecodeChunk* chp = ch.get();
+    t->chunk = std::move(ch);
+    NativeThunk* raw = t.release();
+    g_native_by_chunk[chp] = raw;
+    return raw;
+}
+
 #endif
+
+
+// What is left of a call made through a thunk's native entry when its unit did not simply finish: the frame is complete (the entry made all of it), so the
+// unit's exit is handled as the one of a frame in the arena is (the guard learned from, the frames of an inlined chain rebuilt), and the interpreter finishes what
+// is left, nested. The value (or helper_call_fn's sentinels) is what the native caller gets; the frame is unlinked here.
+// The fields of the frame of a native entry that it did not store (the entry stores what generated code and its helpers read).
+inline void native_frame_complete(Frame* f) {
+    static thread_local Environment* dummy_saves[64];
+    static thread_local Environment* dummy_resolved[8];
+    const BytecodeChunk& chunk = *f->chunk;
+    Environment* env = f->ctx->get_lexical_environment();
+    f->env_saves = dummy_saves;
+    f->resolved_envs = dummy_resolved;
+    f->lookup_cache_data = chunk.lookup_cache.data();
+    f->private_feedback_data = nullptr;
+    f->code = chunk.code.data();
+    f->constants = chunk.constants.data();
+    f->entry_env = env;
+    f->this_value = Value();
+    f->env_save_top = 0;
+    f->this_resolved = true;
+    f->current_lexical_env = env;
+    f->current_variable_env = env;
+    f->jit_halted = false;
+    f->osr_budget = INT32_MAX;
+    f->return_pc = 0;
+    f->value_words = 0;
+    f->inline_ok = true;        // (what an arena frame's is once its unit has stopped running: the interpreter may start stackless calls from it)
+    f->env_call = false;
+    f->construct_call = false;
+    f->rare_pop = false;
+}
+
+inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept {
+    constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1, kNotFn = ~0ull - 2;
+    native_frame_complete(f);
+    if (status == opt::kStatusDeopt || status == opt::kStatusResume) {
+        // A thunk whose guards keep failing costs more than it saves: its call sites go back to the ordinary call.
+        auto it = g_native_by_chunk.find(f->chunk);
+        if (it != g_native_by_chunk.end() && ++it->second->deopts > 24 && it->second->ok) {
+            it->second->ok = false;
+            for (auto& [ic, w] : it->second->ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
+            if (opt::config().log) std::fprintf(stderr, "[native] thunk given up on\n");
+        }
+    }
+    if (opt::config().log) { JitCode* j = f->chunk->jit.get(); JitRt* r = j->opt_units[0].rt.get(); std::fprintf(stderr, "[native] exit status %lu last_deopt %u func %d pc %u\n", (unsigned long)status, r->last_deopt, r->last_deopt < j->opt_units[0].inl_states.size() ? j->opt_units[0].inl_states[r->last_deopt].func : -9, f->pc); }
+    Frame* cf = f;
+    BytecodeChunk& chunk = const_cast<BytecodeChunk&>(*f->chunk);
+    Context& ctx = *f->ctx;
+    Value result;
+    bool rethrow = false;
+    try {
+        JitCode* jc = chunk.jit.get();
+        JitRt* rt = jc->opt_units[0].rt.get();
+        const int r = opt_unit_exit(*cf, chunk, jc, 0, 0, rt, status);
+        if (r == 1) {
+            result = cf->acc;
+        } else {
+            Frame* t = cf;
+            if (r == 3) t = g_osr_target;
+            else if (r == 0) { cf->pc = 0; cf->code = chunk.code.data(); t = cf; }
+            if (opt::config().log) std::fprintf(stderr, "[native] resume r=%d t=%p chunk=%p pc=%u code=%p consts=%p op=%u regs=%p\n", r, (void*)t, (const void*)t->chunk, t->pc, (const void*)t->code, (const void*)t->constants, t->code ? t->code[t->pc] : 999u, (void*)t->regs);
+            Frame* const saved_caller = cf->caller;
+            cf->caller = nullptr;
+            try {
+                result = kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code);
+            } catch (...) {
+                cf->caller = saved_caller;
+                throw;
+            }
+            cf->caller = saved_caller;
+        }
+    } catch (...) {
+        g_pending_exc = std::current_exception();
+        rethrow = true;
+    }
+    vframe_pop_nostack(*cf);
+    if (rethrow) return kRethrow;
+    if (__builtin_expect(ctx.has_exception(), 0)) { cf->acc = Value(); return kThrew; }
+    const uint64_t bits = std::bit_cast<uint64_t>(result);
+    return bits >= kNotFn ? kNotFn - 1 : bits;
+}
 
 // ---- function-entry units ----
 // A function that has run hot -- not only its loops -- gets a unit of its own, entered at its first instruction.

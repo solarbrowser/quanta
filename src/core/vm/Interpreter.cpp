@@ -2352,6 +2352,8 @@ struct Frame {
     bool construct_call = false;
     // Either of the two above: the one test the return and pop paths make on the way through.
     bool rare_pop = false;
+    // The unit of this frame was entered through its native entry (Opt.inc: emit_native_entry): its exits hand the value to a native caller.
+    bool native_entered = false;
 };
 
 // The permanent form of the diagnostic's frame_lex_env_diag(f): falls back

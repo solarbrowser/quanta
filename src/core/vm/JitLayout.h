@@ -111,6 +111,15 @@ struct JitRt {
 };
 static_assert(sizeof(JitIC) == 64, "generated code scales an IC index by 64");
 
+// The cache of one call site of generated code (K::CallFn): the callee it last found a native entry for (the Value's bits) and that entry. Filled by helper_call_fn.
+struct JitCallIC {
+    static constexpr int kWays = 4;
+    uint64_t fn_bits[kWays] = {};     // the callees it has found a native entry for (the Values' bits; 0 for none)
+    void* entry[kWays] = {};
+    uint32_t any = 0;                 // nonzero once a way is bound: a site that never found a native entry skips the compares
+    uint8_t next = 0;                 // the way the next one goes to
+};
+
 struct JitCode {
     JitRt rt;                          // must stay first: r14 points at it
     void* mem = nullptr;
@@ -153,6 +162,8 @@ struct JitCode {
         // address survives the unit being moved between JitCodes when the baseline JIT replaces one.
         std::unique_ptr<JitRt> rt = std::make_unique<JitRt>();
         std::unique_ptr<BytecodeChunk::DirectCall> direct;   // what the chunk's direct call enters this unit with (BytecodeChunk::direct points here)
+        std::vector<std::unique_ptr<JitCallIC>> call_ics;   // one per K::CallFn site
+        uint32_t native_off = 0;                             // the native offset of the entry a native caller calls (0: none), see Emitter::emit_native_entry
         bool leaf = false;                                   // a unit that only reads (see DirectCall::leaf)
         uint8_t leaf_regs = 0;
         uint32_t deopts = 0;

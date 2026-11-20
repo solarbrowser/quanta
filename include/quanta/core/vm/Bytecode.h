@@ -1033,6 +1033,11 @@ struct BytecodeChunk {
         // The optimizing tier's function-entry hook: the chunk's bytes with the entry stop at the front, for the
         // frames that start through it.
         std::unique_ptr<uint8_t[]> entry_code;
+        // Calls a unit made of this chunk through the helper (the native entries of F3, Jit.inc): counted until a native unit is made for it; state 0 counting, 1 it has
+        // native units (the helper looks for one), 2 no more are made.
+        uint16_t native_calls = 0;
+        uint8_t native_made = 0;
+        uint8_t native_state = 0;
         KeyedFeedback* keyed(uint32_t index) {
             std::unique_ptr<KeyedFeedback>& slot = keyed_feedback[index];
             if (!slot) slot = std::make_unique<KeyedFeedback>();

@@ -220,6 +220,7 @@ struct Graph {
     std::vector<std::unique_ptr<JitCode::OptUnit::NewDesc>> descs;
     std::vector<std::unique_ptr<JitCode::OptUnit::NativeDesc>> natives;
     std::vector<std::unique_ptr<JitCode::OptUnit::RtDesc>> rtdescs;
+    std::vector<std::unique_ptr<JitCallIC>> call_ics;
     struct Poly { uint8_t n = 0; uint64_t word[4] = {}; uint32_t slot[4] = {}; };
     std::vector<Poly> polys;             // the shapes a polymorphic property read serves
     // A property read of several receiver shapes that find it on the prototype chain: for each, the receiver's shape word, the prototype it has, and where the value is
@@ -282,6 +283,7 @@ inline std::map<const BytecodeChunk*, Avoid>& avoid_table() { static std::map<co
 // What an optimized unit's entry function returns.
 constexpr uint32_t kRtBinary = 0, kRtTypeof = 1, kRtGetNamed = 2, kRtSetNamed = 3;
 constexpr uint64_t kStatusFinished = 0, kStatusRethrow = 1, kStatusResume = 2, kStatusDeopt = 3;
+constexpr uint64_t kStatusThrew = 4;      // (a native unit) it finished with an exception pending in the context
 
 struct Config {
     bool init = false;
@@ -317,6 +319,7 @@ struct Config {
     uint32_t inline_total = 1500;      // all the callees of one unit together
     uint32_t hoist_mask = 15;         // QUANTA_OPT_HOIST_MASK: which kinds are moved out of loops (1 object and array checks, 2 number checks and index conversions, 4 loads of variables, 8 arithmetic)
     bool hoist_every = false;         // QUANTA_OPT_HOIST=2: from every loop, not only a hot one or one inside another (a test mode)
+    bool native_calls = true;         // QUANTA_OPT_NATIVECALLS=0: a call that a native entry could take is made through the helper
     bool loop_phis = true;            // QUANTA_OPT_LOOPPHIS=0: a loop variable that is a number on every turn is a double from its entry, whatever the entry holds (checked on its edge)
     bool hoist = true;                // QUANTA_OPT_HOIST=0: what a loop checks and loads again and again that cannot change in it is not moved before it
     bool fallback_every = false;      // QUANTA_OPT_FALLBACK=2: every inlined call is built so (a test mode)
@@ -378,6 +381,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_HOIST")) { c.hoist = e[0] && e[0] != '0'; c.hoist_every = e[0] == '2'; }
+        if (const char* e = std::getenv("QUANTA_OPT_NATIVECALLS")) c.native_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_LOOPPHIS")) c.loop_phis = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_HOIST_MASK")) c.hoist_mask = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_FALLBACK")) { c.fallback = e[0] && e[0] != '0'; c.fallback_every = e[0] == '2'; }
@@ -4162,6 +4166,46 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
         const uint64_t cbits = std::bit_cast<uint64_t>(r);
         return cbits >= kNotFn ? kNotFn - 1 : cbits;
     }
+    if (__builtin_expect(g_native_test, 1)) {
+        const FunctionExecutable* ex = fn->get_executable().get();
+        const BytecodeChunk* nc0 = ex ? ex->bytecode_chunk.get() : nullptr;
+        auto* nch = nc0 ? nc0->ic_feedback.get() : nullptr;      // (a chunk that is hot has its feedback)
+        if (nch && nch->native_state != 2 && !(meta & 0x30)) {
+            const void* id = nc0->uses_lookup_cache ? static_cast<const void*>(fn) : static_cast<const void*>(ex);
+            const uint64_t key = (reinterpret_cast<uint64_t>(id) << 3) ^ argc;
+            auto it = nch->native_state == 1 ? g_native_thunks.find(key) : g_native_thunks.end();
+            if (it == g_native_thunks.end()) {
+                // (A thunk of a closure is no use to the next closure of the same code: a program that makes closures all the time gets a few thunks per function.)
+                if (nch->native_state == 0 && ++nch->native_calls >= g_native_at) {
+                    nch->native_calls = 0;
+                    if (nch->native_made >= 3) nch->native_state = 2;
+                    else {
+                        nch->native_made++;
+                        nch->native_state = 1;
+                        if (!g_native_thunks.count(key)) g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc));
+                    }
+                } else if (nch->native_state == 1 && nch->native_made < 3 && ++nch->native_calls >= g_native_at) {
+                    // another closure of the code, hot as well
+                    nch->native_calls = 0;
+                    nch->native_made++;
+                    if (!g_native_thunks.count(key)) g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc));
+                }
+            } else if (it->second && it->second->ok) {
+                if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[6])) {
+                    bool have = false;
+                    for (int w = 0; w < JitCallIC::kWays; w++) if (ic->fn_bits[w] == fn_bits) have = true;
+                    if (!have) {
+                        const int w = ic->next++ % JitCallIC::kWays;
+                        ic->entry[w] = reinterpret_cast<void*>(it->second->entry);
+                        ic->fn_bits[w] = fn_bits;
+                        it->second->ics.push_back({ic, w});
+                        ic->any = 1;
+                    }
+                }
+                return it->second->entry(f, fn_bits, this_bits, argv);
+            }
+        }
+    }
     try {
         if (!(g_config_storage.direct && fn->fast_callable() && unit_call_direct(*f, fn, th, args, argc, r))) {
             if (const FunctionExecutable* e = fn->get_executable().get(); e && e->bytecode_chunk && !e->bytecode_chunk->unit_callee) note_unit_callee(*e->bytecode_chunk);
@@ -4410,11 +4454,40 @@ inline QUANTA_JIT_ABI void helper_poll(JitRt* rt) noexcept {
     Collector::safepoint();
 }
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+#endif
+// Where the fields of a Frame that a native entry sets up are.
+struct FrameOff {
+    static constexpr size_t chunk = offsetof(VM::Frame, chunk);
+    static constexpr size_t owner = offsetof(VM::Frame, owner);
+    static constexpr size_t feedback_rooted = offsetof(VM::Frame, feedback_rooted);
+    static constexpr size_t args = offsetof(VM::Frame, args);
+    static constexpr size_t env_saves = offsetof(VM::Frame, env_saves);
+    static constexpr size_t resolved_envs = offsetof(VM::Frame, resolved_envs);
+    static constexpr size_t entry_env = offsetof(VM::Frame, entry_env);
+    static constexpr size_t current_variable_env = offsetof(VM::Frame, current_variable_env);
+    static constexpr size_t caller = offsetof(VM::Frame, caller);
+    static constexpr size_t base = offsetof(VM::Frame, base);
+    static constexpr size_t active = offsetof(VM::Frame, active);
+    static constexpr size_t native_entered = offsetof(VM::Frame, native_entered);
+    static constexpr size_t instr_pc = offsetof(VM::Frame, instr_pc);
+};
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
 class Emitter {
 public:
     explicit Emitter(Graph& g) : g_(g) {}
     bool emit(std::vector<uint8_t>& out, std::vector<std::pair<uint32_t, uint32_t>>& entries);
     const char* why() const { return why_; }
+    // A unit with a native entry (F3): called by generated code of another unit through the C ABI of helper_call_fn (frame of the caller, callee, receiver, arguments),
+    // with a frame of its own made on its native stack from a template, and handing its value back in rax.
+    struct NativeInfo { const VM::Frame* tmpl = nullptr; JitRt* rt = nullptr; uint32_t argc = 0; uint32_t nregs = 0; };
+    void set_native(const NativeInfo* n) { native_ = n; }
+    uint32_t native_entry_off() const { return native_entry_off_; }
     // For each state a guard can deoptimize to: its pc and the kind of the first guard that uses it.
     std::vector<std::tuple<uint32_t, const char*, int32_t>> guard_kinds;
 
@@ -4440,6 +4513,11 @@ private:
     const char* cur_kind_ = "?";
     K cur_op_ = K::Trap;
     std::map<std::pair<int32_t, int>, Label*> guard_labels_;
+    const NativeInfo* native_ = nullptr;
+    int32_t native_off_ = 0;            // where the frame of a native entry lives in the unit's native frame
+    uint32_t native_entry_off_ = 0;
+    void emit_native_entry();
+    void emit_native_tail(Label& restore);
     std::vector<int32_t> fused_cmp_;       // per block: the integer comparison its branch is made of (emitted by the branch, not as a value), or -1
     void compute_fusion();
 
@@ -4688,6 +4766,13 @@ inline bool Emitter::allocate() {
     for (int32_t blk : order_)
         for (int32_t id : g_.b[blk].nodes)
             if (!g_.n[id].dead && (g_.n[id].op == K::CallNative || g_.n[id].op == K::CallFn || g_.n[id].op == K::Rt) && native_args_ < 0) { native_args_ = nslots_; nslots_ += 8; }
+    if (native_) {
+        // [Frame][CallInfo][env_saves 64][resolved_envs 8][bank]: the frame of a call made through the native entry.
+        if (nslots_ & 1) nslots_++;
+        native_off_ = nslots_ * 8;
+        const size_t bytes = ((sizeof(VM::Frame) + 15) & ~size_t(15)) + 16 + 8 * (64 + 8) + ((8 * std::max<uint32_t>(native_->nregs, 1) + 15) & ~15u);
+        nslots_ += static_cast<int32_t>(bytes / 8);
+    }
 #ifdef QUANTA_JIT_ARCH_A64
     frame_bytes_ = ((nslots_ * 8 + 15) / 16) * 16;
 #else
@@ -5541,7 +5626,39 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov_load(abi::A1, mem(RSP, bytes));
         a_.mov_load(abi::A2, mem(RSP, bytes + 2 * kPushBytes + area + 32));
         a_.lea(abi::A3, mem(RSP, bytes + 2 * kPushBytes + area));
-        call_c(reinterpret_cast<const void*>(&helper_call_fn));
+        if (!(n.aux & 0x10) && config().native_calls) {
+            // The site's cache: a callee that has a native entry is called through it, directly; anything else through the helper (which fills the cache when it finds one).
+            g_.call_ics.push_back(std::make_unique<JitCallIC>());
+            JitCallIC* ic = g_.call_ics.back().get();
+            Label& generic = new_label();
+            Label& after = new_label();
+            a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(ic));
+            a_.cmp32_mem_imm(mem(RAX, static_cast<int32_t>(offsetof(JitCallIC, any))), 0);
+            a_.jcc(CC_E, generic);
+            Label* hit[JitCallIC::kWays];
+            for (int w = 0; w < JitCallIC::kWays; w++) {
+                hit[w] = &new_label();
+                a_.cmp_load(abi::A1, mem(RAX, static_cast<int32_t>(offsetof(JitCallIC, fn_bits) + 8 * w)));
+                a_.jcc(CC_E, *hit[w]);
+            }
+            a_.jmp(generic);
+            for (int w = 0; w < JitCallIC::kWays; w++) {
+                a_.bind(*hit[w]);
+                a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(offsetof(JitCallIC, entry) + 8 * w)));
+                a_.mov_store32_imm(mem(RBX, static_cast<int32_t>(FrameOff::instr_pc)), n.aux >> 8);      // (where a stack trace names the call)
+                if (abi::kShadow) a_.sub_imm(RSP, abi::kShadow);
+                a_.call_reg(RAX);
+                if (abi::kShadow) a_.add_imm(RSP, abi::kShadow);
+                a_.jmp(after);
+            }
+            a_.bind(generic);
+            a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(ic));
+            a_.mov_store(mem(RSP, bytes + 2 * kPushBytes + area + 48), RAX);        // (the helper learns which cache it is for)
+            call_c(reinterpret_cast<const void*>(&helper_call_fn));
+            a_.bind(after);
+        } else {
+            call_c(reinterpret_cast<const void*>(&helper_call_fn));
+        }
         restore_live(bytes);
         a_.pop(RCX);
         a_.pop(RCX);
@@ -6472,6 +6589,100 @@ inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
     }
 }
 
+// The entry another unit's generated code calls (K::CallFn through a native thunk). C ABI like helper_call_fn: A0 the caller's frame, A1 the callee, A2 the receiver,
+// A3 the arguments. The unit's prologue, then the frame this call runs on is made in the native frame from the thunk's template, the registers of the thunk (the callee,
+// the receiver, the arguments) are written, and control goes to the unit's entry for pc 0. The value comes back in rax (the tail below), or one of the sentinels of helper_call_fn.
+inline void Emitter::emit_native_entry() {
+    native_entry_off_ = static_cast<uint32_t>(a_.size());
+#ifdef QUANTA_JIT_ARCH_A64
+    a_.enter_frame();
+#else
+    a_.push(RBP); a_.push(RBX); a_.push(R12); a_.push(R13); a_.push(R14); a_.push(R15);
+    if (abi::kPreservesRdiRsi) { a_.push(RDI); a_.push(RSI); }
+#endif
+    if (frame_bytes_) a_.sub_imm(RSP, frame_bytes_);
+#ifdef QUANTA_JIT_WIN64
+    for (int i = 0; i < 10; i++) a_.movups_store(mem(RSP, xmm_save_off_ + 16 * i), static_cast<Xmm>(6 + i));
+#endif
+    a_.mov(R12, abi::A0);          // the caller's frame
+    a_.mov(R13, abi::A1);          // the callee
+    a_.mov(R15, abi::A2);          // the receiver
+    a_.mov(RBP, abi::A3);          // the arguments
+    const int32_t frame_rel = native_off_;
+    const int32_t ci_rel = frame_rel + static_cast<int32_t>((sizeof(VM::Frame) + 15) & ~size_t(15));
+    const int32_t saves_rel = ci_rel + 16;
+    const int32_t resolved_rel = saves_rel + 8 * 64;
+    const int32_t bank_rel = resolved_rel + 8 * 8;
+    a_.lea(RBX, mem(RSP, frame_rel));
+    // Only what generated code and the helpers it calls read is stored now; the rest of the frame is made by native_frame_complete when a deoptimization or an exception
+    // needs the interpreter to have one.
+    a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(native_->tmpl->chunk));
+    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::chunk)), RAX);
+    a_.mov_load(RAX, mem(R12, static_cast<int32_t>(kOffCtx)));
+    a_.mov_store(mem(RBX, static_cast<int32_t>(kOffCtx)), RAX);
+    a_.xor32(RAX, RAX);
+    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::owner)), RAX);
+    a_.mov_store(mem(RBX, static_cast<int32_t>(kOffCallInfo)), RAX);       // (the thunk has no scope of its own: the context's is the one)
+    a_.mov_store8_imm(mem(RBX, static_cast<int32_t>(FrameOff::feedback_rooted)), 1);
+    // The registers: the callee, the receiver, the arguments.
+    a_.lea(RCX, mem(RBX, bank_rel - frame_rel));
+    a_.mov_store(mem(RBX, static_cast<int32_t>(kOffRegs)), RCX);
+    a_.mov_store(mem(RCX, 0), R13);
+    a_.mov_store(mem(RCX, 8), R15);
+    for (uint32_t i = 0; i < native_->argc; i++) {
+        a_.mov_load(RDX, mem(RBP, static_cast<int32_t>(8 * i)));
+        a_.mov_store(mem(RCX, static_cast<int32_t>(16 + 8 * i)), RDX);
+    }
+    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::args)), RBP);
+    a_.mov_store32_imm(mem(RBX, static_cast<int32_t>(FrameOff::args + 8)), native_->argc);
+    a_.mov_store32_imm(mem(RBX, static_cast<int32_t>(FrameOff::args + 12)), 0);
+    // Linked to the caller as a stackless frame is: the activation's innermost frame is this one while it runs.
+    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::caller)), R12);
+    a_.mov_load(RAX, mem(R12, static_cast<int32_t>(FrameOff::base)));
+    Label& have_base = new_label();
+    a_.test(RAX, RAX);
+    a_.jcc(CC_NE, have_base);
+    a_.mov(RAX, R12);
+    a_.bind(have_base);
+    a_.mov_store(mem(RBX, static_cast<int32_t>(FrameOff::base)), RAX);
+    a_.mov_store(mem(RAX, static_cast<int32_t>(FrameOff::active)), RBX);
+    a_.mov_store8_imm(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), 1);
+    a_.mov_imm64(R14, reinterpret_cast<uint64_t>(native_->rt));
+    for (int32_t blk : order_)
+        if (g_.b[blk].synthetic && g_.b[blk].osr_pc == 0) { a_.jmp(*blk_label_[blk]); return; }
+    why_ = "no entry for pc 0";
+}
+
+// What a unit entered through its native entry does at the end: the value (or an exception pending, or a finish the interpreter has to do) goes to the native caller.
+inline void Emitter::emit_native_tail(Label& restore) {
+    Label& cold = new_label();
+    Label& unlink = new_label();
+    a_.test(RAX, RAX);                        // kStatusFinished
+    a_.jcc(CC_NE, cold);
+    a_.mov_load(RAX, mem(RBX, static_cast<int32_t>(kOffAcc)));
+    a_.bind(unlink);
+    a_.mov_load(RCX, mem(RBX, static_cast<int32_t>(FrameOff::caller)));
+    a_.mov_load(RDX, mem(RBX, static_cast<int32_t>(FrameOff::base)));
+    Label& keep = new_label();
+    a_.cmp(RCX, RDX);
+    a_.jcc(CC_NE, keep);
+    a_.xor32(RCX, RCX);
+    a_.bind(keep);
+    a_.mov_store(mem(RDX, static_cast<int32_t>(FrameOff::active)), RCX);
+    a_.jmp(restore);
+    a_.bind(cold);
+    Label& threw = new_label();
+    a_.cmp_imm(RAX, static_cast<int32_t>(kStatusThrew));
+    a_.jcc(CC_E, threw);
+    a_.mov(abi::A0, RBX);
+    a_.mov(abi::A1, RAX);
+    call_c(reinterpret_cast<const void*>(&native_exit));
+    a_.jmp(restore);                           // (native_exit has unlinked the frame itself)
+    a_.bind(threw);
+    a_.mov_imm64(RAX, ~0ull);                  // helper_call_fn's "threw"
+    a_.jmp(unlink);
+}
+
 inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint32_t, uint32_t>>& entries) {
     if (!allocate()) return false;
     compute_fusion();
@@ -6527,7 +6738,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
         a_.mov_imm32(RAX, 2);
         a_.jmp(epilogue_);
         a_.bind(finished);
-        a_.xor32(RAX, RAX);
+        if (native_) a_.mov_imm32(RAX, static_cast<uint32_t>(kStatusThrew)); else a_.xor32(RAX, RAX);      // (a native unit has no step: the exit means a call left an exception pending)
         a_.jmp(epilogue_);
         a_.bind(rethrow);
         a_.mov_imm32(RAX, 1);
@@ -6540,7 +6751,16 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
         emit_deopt_stub(static_cast<int32_t>(s));
     }
     if (why_) return false;
+    if (native_) emit_native_entry();
+    if (why_) return false;
     a_.bind(epilogue_);
+    Label& restore = new_label();
+    if (native_) {
+        a_.cmp8_mem_imm(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), 0);
+        a_.jcc(CC_E, restore);
+        emit_native_tail(restore);
+    }
+    a_.bind(restore);
 #ifdef QUANTA_JIT_WIN64
     for (int i = 0; i < 10; i++) a_.movups_load(static_cast<Xmm>(6 + i), mem(RSP, xmm_save_off_ + 16 * i));
 #endif
@@ -6649,7 +6869,7 @@ inline bool leaf_graph(const Graph& g, uint8_t& regs) {
 
 #ifdef QUANTA_OPT_BACKEND
 // Builds, allocates and emits. On success the chunk's JitCode has its optimized entry points.
-inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, JitCode::OptUnit& unit) {
+inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, JitCode::OptUnit& unit, const Emitter::NativeInfo* native = nullptr) {
     {
         const uint32_t ordinal = config().seen++;
         if (ordinal < config().skip || ordinal - config().skip >= config().limit) return false;
@@ -6678,6 +6898,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     Graph& g = *gp;
     if (config().dump) dump(g, stderr);
     Emitter em(g);
+    em.set_native(native);
     std::vector<uint8_t> bytes;
     std::vector<std::pair<uint32_t, uint32_t>> entries;
     if (!em.emit(bytes, entries)) {
@@ -6693,6 +6914,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     unit.code_bytes = bytes.size();
     unit.base = start;
     unit.entry = reinterpret_cast<decltype(unit.entry)>(start);
+    if (native) unit.native_off = em.native_entry_off();
     unit.rt->sp_counter = g_cfg.safepoint_reload;
     unit.rt->stress = static_cast<int32_t>(config().stress);
     unit.rt->opt_pc = pc;
@@ -6703,6 +6925,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     unit.descs = std::move(g.descs);
     unit.natives = std::move(g.natives);
     unit.rtdescs = std::move(g.rtdescs);
+    unit.call_ics = std::move(g.call_ics);
     if (g.funcs.size() > 1) {
         // What a deoptimization inside an inlined callee needs to rebuild the interpreter frames it stands for.
         unit.root_vars = g.acc_var + 1;
