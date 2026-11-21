@@ -105,6 +105,8 @@ enum class K : uint8_t {
     CheckDenseSt,         // CheckDense for a store: an array dense but for a tail of holes will do
     NewArrayConst,        // Tagged: a fresh array of the aux constants (imm: their address in the pool), or deopt
     DefineElem,           // Tagged a, Tagged b: the element of index aux of the array literal a, appended; deopt (before doing anything) when it is not the next one
+    CheckLookupRes,       // deopt unless the name's cache entry (imm: as LoadLookup's; aux bit 8 set when imm is an offset from the frame's cache) is good for a store: the name resolves
+    StoreLookup,          // Tagged a: store it through the name's cache entry (as CheckLookupRes), deopt (before doing anything) when the entry is not good
 };
 
 struct Node {
@@ -244,7 +246,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -258,6 +260,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
     case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem: case K::CheckDenseSt:
+    case K::CheckLookupRes: case K::StoreLookup:
         return false;
     default: return true;
     }
@@ -316,6 +319,7 @@ struct Config {
     bool fast_enter = true;           // QUANTA_OPT_FASTENTER=0: the frame of a unit's callee is made by the general entry
     bool direct = true;               // QUANTA_OPT_DIRECT=0: a call from a unit goes through the interpreter's call path
     uint32_t callfn = 1;              // QUANTA_OPT_CALLFN: 0 a call the tier does not inline stays a step; 1 it is made from the unit; 2 only when feedback names JS functions it reaches
+    bool sta_lookup = false;          // QUANTA_OPT_STALOOKUP=1: an assignment to a global is compiled (CheckLookupRes, StoreLookup); off: it stays a step (an inlined callee that has one is not inlined). On, DeltaBlue and EarleyBoyer lose ~12 % (the callee that holds the hot loop is inlined into its caller's unit and the loop does worse than as a unit of its own): not understood yet
     bool inline_loops = true;         // QUANTA_OPT_LOOPS=0: callees with loops are not inlined
     uint32_t entry_min_insns = 24;    // smallest loop-free body a function-entry unit is built for
     uint32_t inline_insns = 250;      // largest callee (decoded instructions)
@@ -333,7 +337,7 @@ struct Config {
     bool gctor = true;                // QUANTA_OPT_GCTOR=0: a constructor of no plan is not inlined
     uint32_t deopt_ratio = 16;        // QUANTA_OPT_DEOPT_RATIO=n: a unit is given up on once it has left more than max_deopts times AND more than one run in n
     uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
-    uint32_t inline_depth = 3;
+    uint32_t inline_depth = 4;
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
     uint32_t max_helper_calls = 32;   // QUANTA_OPT_MAXHELPERCALLS: refuse a region that leaves more calls than this to the call helper
@@ -381,6 +385,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_DIRECT")) c.direct = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_CALLFN")) c.callfn = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_STALOOKUP")) c.sta_lookup = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_HOIST")) { c.hoist = e[0] && e[0] != '0'; c.hoist_every = e[0] == '2'; }
@@ -717,6 +722,8 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::EnterLoopEnv: case Op::AdvanceLoopEnv: case Op::ExitLoopEnv: break;
     case Op::DefineOwn: R(pc + 1); e.rd(acc); break;
     case Op::DefineElement: R(pc + 1); R(pc + 2); e.rd(acc); break;
+    case Op::CheckLookupResolvable: e.wr(acc); break;
+    case Op::StaLookupChecked: R(pc + 1); e.rd(acc); break;
     case Op::Call: {
         R(pc + 1);
         const uint32_t start = code[pc + 2], argc = code[pc + 3];
@@ -1331,6 +1338,33 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         if (fused) set(dst, v);
         return true;
     }
+    case Op::CheckLookupResolvable: case Op::StaLookup: case Op::StaLookupChecked: {
+        // An assignment to a name that is not a local: the check that it resolves (before the right side runs) and the store, through the same cache entry LdaLookup reads.
+        // An entry that is not good when the code runs leaves (before anything is done) and the interpreter's own handler does the whole thing.
+        if (!config().sta_lookup) return false;
+        const bool checked = op == Op::StaLookupChecked;
+        const uint32_t nidx = u16(pc + (checked ? 2 : 1));
+        if (nidx >= F().chunk->names.size() || nidx >= F().chunk->lookup_cache.size()) return false;
+        if (checked) {
+            const uint32_t rr = reg(pc + 1);
+            if (!ok_reg(rr)) return false;
+            const Node& rn = g_.n[resolve(value(rr))];
+            if (rn.op != K::ConstBool || rn.imm != 1) return false;      // the verdict this unit made itself
+        }
+        const BytecodeChunk::LookupCacheEntry* base = cf_ == 0 ? (g_.frame ? g_.frame->lookup_cache_data : nullptr) : F().lookup;
+        if (!base) return false;
+        const bool root = cf_ == 0;
+        const uint64_t limm = root ? static_cast<uint64_t>(nidx) * JitLookupLayout::kSize : reinterpret_cast<uint64_t>(&base[nidx]);
+        const uint32_t laux = root ? 0x100u : 0u;
+        if (op == Op::CheckLookupResolvable) {
+            guarded(K::CheckLookupRes, Rep::None, -1, -1, laux, limm);
+            set(acc(), const_of(Value(true)));
+            return true;
+        }
+        const int32_t val = tagged(value(acc()));
+        guarded(K::StoreLookup, Rep::None, val, -1, laux, limm);
+        return true;
+    }
     case Op::GetNamed: case Op::GetNamedStar: {
         const bool fused = op == Op::GetNamedStar;
         const uint32_t rcv = reg(pc + 1), fbi = u16(pc + 4);
@@ -1897,7 +1931,8 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
             // `fn.call(...)` is the call of fn only while `call` is still Function.prototype.call (the unit checks that again: the epochs and fn's shape).
             if (static_cast<Op>(in.op) == Op::CallViaFunctionCall && !via_call_pristine_in(*P.chunk, in.pc, Value(fn))) return no(14);
             uint32_t n = 0;
-            if (!inline_scan(fn, c, n) || n > config().inline_insns) return no(11);
+            if (!inline_scan(fn, c, n)) return no(11);
+            if (n > config().inline_insns) { if (config().log) std::fprintf(stderr, "[scan] too-big %u\n", n); return no(11); }
             poly_total += n;
             out.push_back(fn);
         }
@@ -2366,18 +2401,19 @@ inline bool Builder::ctor_plan(Function* fn, Graph::CtorPlan& plan, uint32_t& in
     return true;
 }
 
-inline bool Builder::inline_scan(const Function*, const BytecodeChunk& c, uint32_t& insns) {
-    if ((c.handlers && !c.handlers->empty()) || c.register_count > kInlineMaxRegs) return false;
+inline bool Builder::inline_scan(const Function* scan_fn, const BytecodeChunk& c, uint32_t& insns) {
+    if (c.handlers && !c.handlers->empty()) { if (config().log) std::fprintf(stderr, "[scan] try-handlers\n"); return false; }
+    if (c.register_count > kInlineMaxRegs) { if (config().log) std::fprintf(stderr, "[scan] too-many-regs %u\n", unsigned(c.register_count)); return false; }
     const uint8_t* code = c.code.data();
     const uint32_t size = static_cast<uint32_t>(c.code.size());
     insns = 0;
     for (uint32_t pc = 0; pc < size;) {
         if (code[pc] >= static_cast<uint8_t>(Op::kCount)) return false;
         const Op op = static_cast<Op>(code[pc]);
-        if (op_unsupported(op) || op == Op::Throw) return false;
+        if (op_unsupported(op)) { if (config().log) std::fprintf(stderr, "[scan] op %s in %s\n", op_name(op), scan_fn ? scan_fn->get_name().c_str() : "?"); return false; }      // (a throw is allowed: the block that ends in one is a cold block, see make_instance)
         const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(op));
         const int pos = branch_offset_pos(op);
-        if (pos >= 0 && read_i16(code, pc + pos) < 0 && !config().inline_loops) return false;      // no loops
+        if (pos >= 0 && read_i16(code, pc + pos) < 0 && !config().inline_loops) { if (config().log) std::fprintf(stderr, "[scan] loop\n"); return false; }      // no loops
         pc += len;
         insns++;
     }
@@ -2465,8 +2501,12 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
         added.push_back(x);
         for (int32_t s2 : g_.b[x].succs) work.push_back(s2);
     }
+    // A block that ends in a `throw` is where a guard (`if (!x) throw ...`) leaves the function: it is compiled as a deoptimization into the interpreter, which runs the
+    // throw with the callee's frames rebuilt. A callee that throws at its first block is not inlined.
+    auto ends_in_throw = [&](int32_t b) { return g_.b[b].last_insn >= 0 && static_cast<Op>(g_.funcs[ci].insns[g_.b[b].last_insn].op) == Op::Throw; };
+    if (ends_in_throw(g_.funcs[ci].entry_block)) return -1;
     for (size_t k = added_before; k < added.size(); k++)
-        if (added[k] != g_.funcs[ci].entry_block && block_is_cold(ci, added[k])) g_.b[added[k]].cold = true;
+        if (added[k] != g_.funcs[ci].entry_block && (block_is_cold(ci, added[k]) || ends_in_throw(added[k]))) g_.b[added[k]].cold = true;
     if (!leaf) {
         uint32_t words = 0, depth = 0;
         for (int32_t k = ci; k > 0; k = g_.funcs[k].parent) { words += inline_frame_words(g_.funcs[k].nregs); depth++; }
@@ -3223,6 +3263,7 @@ inline void Builder::hoist_invariants() {
                 switch (nd.op) {
                 case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
                 case K::StoreEnv: env_store = true; break;
+                case K::StoreLookup: env_store = true; slot_store = true; break;
                 case K::StoreSlot: slot_store = true; break;
                 case K::StoreReg: case K::StoreAcc: reg_store = true; break;
                 default: break;
@@ -4002,13 +4043,13 @@ inline void Builder::cse() {
         }
     };
     auto breaks_bindings = [](K op) {   // what can assign to an environment slot or run script that can
-        return op == K::Step || op == K::StoreEnv || op == K::CallNative || op == K::CallFn || op == K::Rt;
+        return op == K::Step || op == K::StoreEnv || op == K::StoreLookup || op == K::CallNative || op == K::CallFn || op == K::Rt;
     };
     auto breaks_guards = [](K op) {   // what can change an object's shape, density or prototype
         return op == K::Step || op == K::CallNative || op == K::CallFn || op == K::Rt;
     };
     auto breaks_memory = [](K op) {
-        return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreReg || op == K::StoreAcc ||
+        return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreLookup || op == K::StoreReg || op == K::StoreAcc ||
                op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::StoreTyped || op == K::DefineElem;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
@@ -4580,6 +4621,26 @@ inline QUANTA_JIT_ABI void helper_barrier_value(Object* obj, uint64_t bits) noex
     // record or to shade, and the collector's own probe for the cell's block is not needed to say so.
     if (__builtin_expect(!Collector::major_in_progress() && !Heap::any_large_cell().load(std::memory_order_relaxed) && !HeapBlock::from_cell(obj)->test_mark(obj), 1)) return;
     Collector::write_barrier_value(obj, v);
+}
+// The store half of an assignment to a name, through the name's cache entry (what the interpreter's fast handler does once it has checked the epoch and that the binding
+// is writable): 1 when it stored, 0 with nothing done.
+inline QUANTA_JIT_ABI uint64_t helper_lookup_store(const BytecodeChunk::LookupCacheEntry* entry, uint64_t bits) noexcept {
+    Value acc;
+    std::memcpy(&acc, &bits, 8);
+    if (entry->slot() && !entry->obj_shape()) {
+        if (!entry->writable) return 0;
+        if (acc.is_object() || acc.is_function() || acc.is_string() || acc.is_symbol() || acc.is_bigint()) Collector::write_barrier_env(entry->env);
+        *entry->slot() = acc;
+        return 1;
+    }
+    if ((entry->obj_shape() || entry->dict_desc()) && entry->writable) return store_via_object_entry(*entry, acc) ? 1 : 0;
+    return 0;
+}
+// The check half, for an entry of the object form (the slot form is told from its kind): 1 when the binding is still where the entry says.
+inline QUANTA_JIT_ABI uint64_t helper_lookup_resolvable(const BytecodeChunk::LookupCacheEntry* entry) noexcept {
+    if (!entry->obj_shape()) return 0;
+    Object* bo = entry->env->get_binding_object();
+    return (bo && bo->get_shape() == entry->obj_shape() && entry->descriptor_epoch == Object::descriptor_epoch() && bo->get_shape_slot_unchecked(entry->obj_slot_index)) ? 1 : 0;
 }
 inline QUANTA_JIT_ABI void helper_barrier_env(Environment* env, uint64_t bits) noexcept {
     Value v;
@@ -6466,6 +6527,42 @@ inline void Emitter::emit_node(int32_t id) {
         }
         a_.bind(done);
         commit_g(id, d);
+        return;
+    }
+    case K::CheckLookupRes: case K::StoreLookup: {
+        const bool store = n.op == K::StoreLookup;
+        Label& dl = deopt_label(n.state);
+        const Reg v = store ? use_g(n.a, RDX) : RDX;
+        if (n.aux & 0x100) {
+            a_.mov_load(RCX, mem(RBX, static_cast<int32_t>(kOffLookup)));
+            if (n.imm) a_.add_imm(RCX, static_cast<int32_t>(n.imm));
+        } else {
+            a_.mov_imm64(RCX, n.imm);
+        }
+        a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(JitEnvLayout::shadow_epoch_addr()));
+        a_.mov_load32(RAX, mem(RAX));
+        a_.cmp32_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::shadow_epoch())));
+        a_.jcc(CC_NE, dl);
+        Label& done = new_label();
+        if (store) {
+            a_.cmp8_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::writable())), 0);
+            a_.jcc(CC_E, dl);
+        } else {
+            a_.cmp8_mem_imm(mem(RCX, static_cast<int32_t>(JitLookupLayout::kind())), JitLookupLayout::kSlot);
+            a_.jcc(CC_E, done);
+        }
+        int32_t bytes;
+        save_live(bytes);
+        a_.push(RCX);
+        if (store) a_.push(v);
+        if (store) a_.pop(abi::A1);
+        a_.pop(abi::A0);
+        if (store) call_c(reinterpret_cast<const void*>(&helper_lookup_store));
+        else call_c(reinterpret_cast<const void*>(&helper_lookup_resolvable));
+        restore_live(bytes);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        a_.bind(done);
         return;
     }
     case K::CheckProto: {
