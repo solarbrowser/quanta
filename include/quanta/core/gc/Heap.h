@@ -306,6 +306,7 @@ private:
 
     static size_t size_class_index(size_t size);
     HeapBlock* fresh_block(CellKind kind, HeapSegment segment, size_t cls, bool pure);
+    void* allocate_in_lane_slow(CellKind kind, HeapSegment segment, size_t cls, size_t lane, bool pure);
     void* allocate_large(size_t size, CellKind kind);
     static void free_large(void* p);
 

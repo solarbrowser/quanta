@@ -255,6 +255,13 @@ void* Heap::allocate_in_lane(size_t size, CellKind kind, HeapSegment segment, bo
     if (block) {
         if (void* p = block->try_allocate()) return p;
     }
+    return allocate_in_lane_slow(kind, segment, cls, lane, pure);
+}
+
+// The lane's active block is full: another partial block, or a fresh one. Out of line so the common case above does not save the registers this needs.
+[[gnu::noinline]] void* Heap::allocate_in_lane_slow(CellKind kind, HeapSegment segment, size_t cls, size_t lane, bool pure) {
+    const size_t k = static_cast<size_t>(kind);
+    HeapBlock* block;
     auto& partial = partial_blocks_[k][lane];
     while (!partial.empty()) {
         block = partial.back();
