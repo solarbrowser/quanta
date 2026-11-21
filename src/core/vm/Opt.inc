@@ -3377,7 +3377,16 @@ inline void Builder::hoist_invariants() {
                 }
                 case K::CheckNum: case K::CheckI32: case K::NonNegI32: case K::ToIndex: case K::ToI32:
                     movable = true; guard = true; cls = 2; break;
-                case K::LoadEnv: movable = !env_store; cls = 4; break;
+                case K::LoadEnv:
+                    movable = !env_store;
+                    // A load through a function's own scope chain: only with the checks that the value is that function leaving the loop with it.
+                    if (nd.a >= 0)
+                        for (int32_t b2 : L.body)
+                            for (int32_t id2 : g_.b[b2].nodes) {
+                                const Node& g2 = g_.n[id2];
+                                if (!g2.dead && g2.op == K::CheckFn && resolve(g2.a) == resolve(nd.a) && !invariant(g2.a)) movable = false;
+                            }
+                    cls = 4; break;
                 case K::LoadReg: movable = !reg_store; cls = 4; break;
                 case K::LoadThis: movable = true; guard = true; cls = 4; break;
                 case K::LoadLookup: movable = !env_store && !slot_store; cls = 4; break;      // (a global or a module variable: nothing in the loop writes an object's property or an environment's slot)
@@ -3386,7 +3395,7 @@ inline void Builder::hoist_invariants() {
                 default: movable = false; break;
                 }
                 if (movable && !(config().hoist_mask & cls)) movable = false;
-                if (!movable || (nd.op == K::LoadEnv && nd.a >= 0)) continue;
+                if (!movable) continue;
                 guard = guard || nd.state >= 0;       // (a load of an environment variable leaves when there is no such slot)
                 if (guard && nd.state < 0) continue;
                 if (!invariant(nd.a) || !invariant(nd.b) || !invariant(nd.c)) continue;
