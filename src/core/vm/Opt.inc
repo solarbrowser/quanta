@@ -4653,7 +4653,7 @@ inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_r
 
 // An inlined `new`: the constructor's object, already of the shape its stores would give it. 0 when the constructor's
 // prototype or the fresh object's shape is not what the unit was built for (the caller deoptimizes to run the `new`).
-inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
+[[gnu::noinline]] inline uint64_t helper_new_object_slow(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
     Value fv;
     std::memcpy(&fv, &fn_bits, 8);
     Function* fn = fv.as_function();
@@ -4672,10 +4672,35 @@ inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode
     if (self->get_shape() != d->from) return 0;
     self->reserve_property_slots(d->nslots);
     self->adopt_literal_shape(d->to, d->nslots);
+    if (d->nslots <= 12) {
+        const size_t n = self->inline_cell_bytes(sizeof(d->tmpl));
+        if (n && n % 8 == 0) {
+            auto* wd = const_cast<JitCode::OptUnit::NewDesc*>(d);
+            std::memcpy(wd->tmpl, static_cast<const void*>(self), n);
+            wd->tmpl_bytes = static_cast<uint32_t>(n);
+            wd->proto_bits = std::bit_cast<uint64_t>(pv);
+        }
+    }
     const Value r(self);
     uint64_t bits;
     std::memcpy(&bits, &r, 8);
     return bits;
+}
+inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
+    if (__builtin_expect(d && d->tmpl_bytes != 0, 1)) {
+        Function* fn = std::bit_cast<Value>(fn_bits).as_function();
+        if (__builtin_expect(std::bit_cast<uint64_t>(fn->constructor_prototype()) == d->proto_bits, 1)) {
+            // The object a `new` of this site made before, copied: header, core and slots as they were when it was finished, the butterfly pointer the cell's own.
+            void* cell = Object::operator new(sizeof(Object), d->tmpl_bytes - sizeof(Object), Object::PureTag{});
+            const uint64_t* src = d->tmpl;
+            uint64_t* dst = static_cast<uint64_t*>(cell);
+            for (uint32_t i = 0; i < d->tmpl_bytes / 8; i++) dst[i] = src[i];
+            Object* copy = static_cast<Object*>(cell);
+            copy->adopt_copied_inline_butterfly(sizeof(Object));
+            return std::bit_cast<uint64_t>(Value(copy));
+        }
+    }
+    return helper_new_object_slow(fn_bits, d);
 }
 // An object literal whose shape the interpreter has learned (Op::CreateObjectT): 0 when the template has lost it.
 inline QUANTA_JIT_ABI uint64_t helper_new_literal(const BytecodeChunk::IcFeedback::LiteralTemplate* t, Context* ctx) noexcept {

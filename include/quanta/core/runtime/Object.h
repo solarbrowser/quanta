@@ -424,6 +424,16 @@ public:
     // Points butterfly_ at the trailing space the cell was given. `object_bytes`
     // is where that space starts, which is the size of the concrete type.
     void adopt_inline_butterfly(size_t object_bytes, uint32_t slots);
+    // The cell is a byte copy of one that had an inline butterfly: only the pointer to it is the new cell's own.
+    void adopt_copied_inline_butterfly(size_t object_bytes) {
+        butterfly_ = reinterpret_cast<Value*>(reinterpret_cast<char*>(this) + object_bytes + sizeof(ButterflyCore));
+    }
+    // The bytes a copy of this object needs to be made from (the object, the core, the slots): 0 when its butterfly is not the cell's own, or is too big for `room` bytes.
+    size_t inline_cell_bytes(size_t room) const {
+        if (!butterfly_is_inline()) return 0;
+        const size_t n = sizeof(Object) + sizeof(ButterflyCore) + static_cast<size_t>(shape_capacity()) * sizeof(Value);
+        return n <= room ? n : 0;
+    }
     // An array's first butterfly in the cell: room for `capacity` elements, the
     // extras an element region needs, and no shape slots.
     static constexpr size_t inline_array_bytes(uint32_t capacity) {

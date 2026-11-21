@@ -178,7 +178,13 @@ struct JitCode {
             Function* body = nullptr; // (a forwarding constructor) the method whose body this frame runs
         };
         // What an inlined `new` allocates (helper_new_object): the object takes its final shape at once.
-        struct NewDesc { Shape* from = nullptr; Shape* to = nullptr; Object* proto = nullptr; uint32_t nslots = 0; };
+        struct NewDesc {
+            Shape* from = nullptr; Shape* to = nullptr; Object* proto = nullptr; uint32_t nslots = 0;
+            // The bytes of the finished object the first `new` made (its header, the inline butterfly's core, its slots): the next ones copy them (the butterfly pointer is the cell's own).
+            uint32_t tmpl_bytes = 0;
+            uint64_t proto_bits = 0;      // the constructor's `prototype` value the copy is valid for
+            uint64_t tmpl[(24 + 8 + 12 * 8) / 8] = {};
+        };
         std::vector<std::unique_ptr<NewDesc>> descs;
         // A native function a unit calls directly (helper_call_native): what it may be given, and how many arguments.
         struct NativeDesc { Function* fn = nullptr; uint8_t argc = 0; uint8_t recv = 0; bool any_arg = false; uint8_t special = 0; };   // special: 1 charCodeAt, 2 charAt
