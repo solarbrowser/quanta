@@ -115,6 +115,7 @@ struct Node {
     int32_t a = -1, b = -1, c = -1;
     uint32_t aux = 0;        // register index / pc
     uint64_t imm = 0;
+    uint64_t imm2 = 0;       // CheckFn by executable: the function the site was built with (tested first, as a whole word)
     int32_t state = -1;      // deopt snapshot, for nodes that can deoptimize
     int32_t blk = -1;
     std::vector<int32_t> ins; // Phi operands (one per predecessor of the block, in order)
@@ -2648,6 +2649,7 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
     int32_t entry_state;
     if (guard && !(g_.native_thunk && cf_ == 0)) {
         const int32_t chk = guarded(K::CheckFn, Rep::None, fv, -1, C.by_identity ? 1 : 0, reinterpret_cast<uint64_t>(C.by_identity ? static_cast<const void*>(C.fnp) : C.exe));
+        g_.n[chk].imm2 = reinterpret_cast<uint64_t>(C.fnp);
         entry_state = g_.n[chk].state;
     } else {
         entry_state = snapshot();
@@ -3263,7 +3265,7 @@ inline void Builder::hoist_invariants() {
         if (g_.b[H].synthetic) continue;
         if (avoid_ && avoid_->nohoist.count(g_.b[H].start_pc)) continue;
         // Nothing may run script, and nothing may store a variable, in the loop.
-        bool opaque = false, env_store = false, reg_store = false, slot_store = false;
+        bool opaque = false, env_store = false, reg_store = false, slot_store = false, elem_store = false;
         for (int32_t b : L.body) {
             if (g_.b[b].term.kind == T::StepBranch) opaque = true;
             for (int32_t id : g_.b[b].nodes) {
@@ -3274,6 +3276,7 @@ inline void Builder::hoist_invariants() {
                 case K::StoreEnv: env_store = true; break;
                 case K::StoreLookup: env_store = true; slot_store = true; break;
                 case K::StoreSlot: slot_store = true; break;
+                case K::StoreElem: case K::StoreTyped: case K::DefineElem: elem_store = true; break;
                 case K::StoreReg: case K::StoreAcc: reg_store = true; break;
                 default: break;
                 }
@@ -3335,9 +3338,15 @@ inline void Builder::hoist_invariants() {
             }
             return true;
         };
-        auto invariant = [&](int32_t x) { x = resolve(x); return x < 0 || outside(x) || self_phi(x); };
+        // (A constant is the same on every turn wherever it is made: it is made again on the edge when something that moves needs it.)
+        auto is_const = [&](int32_t x) { const K o = g_.n[x].op; return o == K::ConstI32 || o == K::ConstF64 || o == K::ConstTagged || o == K::ConstBool; };
+        auto invariant = [&](int32_t x) { x = resolve(x); return x < 0 || outside(x) || self_phi(x) || is_const(x); };
         auto on_edge = [&](int32_t x, size_t k) {       // the operand's value as it enters the loop by edge k
             x = resolve(x);
+            if (x >= 0 && is_const(x) && !outside(x)) {
+                const Node c0 = g_.n[x];
+                return emit_in(edge_blk[k], c0.op, c0.rep, -1, -1, c0.aux, c0.imm);
+            }
             if (x >= 0 && g_.n[x].op == K::Phi && g_.n[x].blk == H && self_phi(x)) return resolve(g_.n[x].ins[fwd[k]]);
             return x;
         };
@@ -3354,8 +3363,18 @@ inline void Builder::hoist_invariants() {
                 bool guard = false;
                 uint32_t cls = 0;
                 switch (nd.op) {
-                case K::CheckObj: case K::CheckDense: case K::CheckDenseSt: case K::CheckShape: case K::CheckProto: case K::CheckNotNullish: case K::CheckBits:
+                case K::CheckObj: case K::CheckDense: case K::CheckDenseSt: case K::CheckShape: case K::CheckProto: case K::CheckNotNullish: case K::CheckBits: case K::CheckFn:
                     movable = true; guard = true; cls = 1; break;
+                case K::LoadElem: {
+                    // An element of an array nothing in the loop writes to: only with the array's own guards leaving the loop with it (the load reads the storage they vouch for).
+                    movable = !slot_store && !elem_store && (config().hoist_mask & 1);
+                    for (int32_t b2 : L.body)
+                        for (int32_t id2 : g_.b[b2].nodes) {
+                            const Node& g2 = g_.n[id2];
+                            if (!g2.dead && (g2.op == K::CheckDense || g2.op == K::CheckDenseSt) && resolve(g2.a) == resolve(nd.a) && !invariant(g2.a)) movable = false;
+                        }
+                    guard = true; cls = 4; break;
+                }
                 case K::CheckNum: case K::CheckI32: case K::NonNegI32: case K::ToIndex: case K::ToI32:
                     movable = true; guard = true; cls = 2; break;
                 case K::LoadEnv: movable = !env_store; cls = 4; break;
@@ -3384,6 +3403,7 @@ inline void Builder::hoist_invariants() {
                     const int32_t E = edge_blk[k];
                     const int32_t a = nd.a >= 0 ? on_edge(nd.a, k) : -1, bb = nd.b >= 0 ? on_edge(nd.b, k) : -1, c = nd.c >= 0 ? on_edge(nd.c, k) : -1;
                     const int32_t cl = emit_in(E, nd.op, nd.rep, a, bb, nd.aux, nd.imm, c);
+                    g_.n[cl].imm2 = nd.imm2;
                     g_.n[cl].state = guard ? edge_state[k] : -1;
                     clones[k] = cl;
                 }
@@ -3943,6 +3963,8 @@ inline void Builder::fold() {
             case K::NegF: if (cf(nd.a, x)) make_f(nd, -x); break;
             case K::CheckNum:
                 if (g_.n[nd.a].op == K::ConstF64) { g_.repl[id] = nd.a; nd.dead = true; }
+                // The number that was just boxed (a callee's return value read by its caller): the double itself.
+                else if (g_.n[nd.a].op == K::BoxF64) { g_.repl[id] = g_.n[nd.a].a; nd.dead = true; }
                 break;
             case K::ToIndex:
                 if (cf(nd.a, x)) {
@@ -3970,6 +3992,13 @@ inline void Builder::fold() {
         }
         g_.b[blk].term.cond = resolve(g_.b[blk].term.cond);
     }
+    // A deoptimization writes a double to the interpreter's register boxed (emit_deopt_stub does it, on the cold side): a state that names the box instead keeps the boxing in the
+    // hot code for nothing.
+    for (State& st : g_.states)
+        for (auto& [var, d] : st.defs) {
+            const int32_t r = resolve(d);
+            if (r >= 0 && g_.n[r].op == K::BoxF64 && g_.n[r].a >= 0) d = g_.n[r].a;
+        }
 }
 
 // Common subexpressions, over the dominator tree. Pure values are shared wherever one dominates the
@@ -6447,6 +6476,16 @@ inline void Emitter::emit_node(int32_t id) {
     case K::CheckFn: {
         const Reg s = use_g(n.a, RAX);
         Label& dl = deopt_label(n.state);
+        // The function the site was built with: one compare of the whole tagged word (a function made by the same declaration site passes the second test below).
+        const uint64_t known = n.aux == 1 ? n.imm : n.imm2;
+        Label& ok = new_label();
+        if (known) {
+            const Value kv(reinterpret_cast<Function*>(known));
+            a_.mov_imm64(RDX, std::bit_cast<uint64_t>(kv));
+            a_.cmp(s, RDX);
+            if (n.aux == 1) { a_.jcc(CC_NE, dl); return; }
+            a_.jcc(CC_E, ok);
+        }
         a_.mov(RCX, s);
         a_.shr_imm(RCX, 48);
         a_.cmp32_imm(RCX, 0x7FF9);                 // QUIET_NAN | TAG_FUNCTION
@@ -6458,6 +6497,7 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov_imm64(RDX, n.imm);
         a_.cmp(RCX, RDX);
         a_.jcc(CC_NE, dl);
+        a_.bind(ok);
         return;
     }
     case K::LoadLookup: {
