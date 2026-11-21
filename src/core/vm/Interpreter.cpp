@@ -2966,6 +2966,11 @@ static bool arrow_env_ok(Function* fn) {
     return true;
 }
 
+// A stackless call is a call the baseline JIT's counters would otherwise never see (they run in run()): the call of a chunk whose compile has not been decided is counted here.
+}  // namespace
+void bl_consider(const BytecodeChunk& chunk) noexcept;      // (defined with the JIT hooks below, in VM, not in the unnamed namespace)
+namespace {
+
 // Starts a stackless call of `fn` from `f` if everything allows it; true with the callee's
 // frame in `out` (the caller has only to dispatch it), false with nothing touched.
 template <bool NoteCall = true>
@@ -2973,6 +2978,7 @@ template <bool NoteCall = true>
                                                        const Value& this_value, uint32_t return_pc, Frame*& out) {
     const FunctionExecutable& exe = *fn->get_executable().get();
     const BytecodeChunk& chunk = *exe.bytecode_chunk;
+    if (UNLIKELY(static_cast<uint8_t>(chunk.jit_state - 1) > 1)) bl_consider(chunk);      // (0 not seen, 3 and 4 counting: neither 1 compiled nor 2 never)
     uint8_t verdict = chunk.inline_state;
     if (UNLIKELY(!(verdict & kInlineOk))) {
         if (verdict == kInlineNever) return false;
@@ -7153,7 +7159,7 @@ QUANTA_HANDLER Value h_CallInlineGo(HANDLER_PARAMS) {
     f.instr_pc = pc;
     Frame* callee_frame;
     if (inline_call_enter(f, fn, regs + code[pc + 2], code[pc + 3], Value(), pc + 6, callee_frame)) {
-        if (UNLIKELY(callee_frame->chunk->bl_compiled)) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
+        if (UNLIKELY(callee_frame->chunk->bl_compiled) && !callee_frame->env_call) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
         [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
     }
     [[clang::musttail]] return h_CallPlain(f, pc, acc, regs, code);
@@ -7204,7 +7210,7 @@ QUANTA_HANDLER Value h_CallResolvedInlineGo(HANDLER_PARAMS) {
     f.instr_pc = pc;
     Frame* callee_frame;
     if (inline_call_enter(f, fn, regs + code[pc + 3], code[pc + 4], regs[code[pc + 2]], pc + 7, callee_frame)) {
-        if (UNLIKELY(callee_frame->chunk->bl_compiled)) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
+        if (UNLIKELY(callee_frame->chunk->bl_compiled) && !callee_frame->env_call) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
         [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
     }
     [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc, regs, code);
@@ -10841,6 +10847,7 @@ int osr_try(Frame& f, uint32_t, const Value&) { f.osr_budget = INT32_MAX; return
 void opt_note_call(const BytecodeChunk& chunk, Frame&) { chunk.opt_entry = 2; }
 int opt_fn_enter(Frame&) { return 0; }
 #endif
+void bl_consider(const BytecodeChunk& chunk) noexcept { jit::consider(chunk); }
 #ifdef QUANTA_JIT_ENABLED
 QUANTA_HANDLER Value h_RunCompiledFrame(HANDLER_PARAMS) { [[clang::musttail]] return jit::run_compiled_frame(f, pc, acc, regs, code); }
 #endif

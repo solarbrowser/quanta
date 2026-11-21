@@ -148,7 +148,8 @@ struct BlPlan {
 struct BlSite {
     uint64_t fn_bits = 0;                         // must stay first: generated code compares it with the callee
     BlPlan* plan = nullptr;
-    uint32_t fills = 0;
+    uint32_t fills = 0;                           // plans made for the site
+    uint32_t asks = 0;                            // times the site asked for one (a callee that is not compiled yet gets a plan later)
 };
 
 struct JitCode {

@@ -3776,6 +3776,7 @@ template <bool Virt, bool Stack = true>
 // ---- calls from generated code to generated code (BlSite) ----
 
 static constexpr uint32_t kBlMaxSiteFills = 8;
+static constexpr uint32_t kBlMaxSiteAsks = 64;
 
 // Whether `fn` can be entered directly from a call site, and the plan if so. Everything it asks is fixed for the function (and the context it is called in is
 // asked again by bl_call_fast).
@@ -3822,12 +3823,13 @@ static BlPlan* bl_make_plan(JitCode* jc, Function* fn) {
 // The miss of a site: the ordinary call, then the site is given the callee (a few times: a site that keeps meeting new functions stops asking).
 QUANTA_JIT_ABI int32_t call_op_site(Frame* f, uint32_t pc, uint32_t kind, BlSite* site) noexcept {
     const int32_t r = call_op(f, pc, kind);
-    if (site->fills < kBlMaxSiteFills) {
+    if (site->fills < kBlMaxSiteFills && site->asks < kBlMaxSiteAsks) {
         const Value& callee = f->regs[f->chunk->code[pc + 1]];
         if (callee.is_function()) {
-            site->fills++;
+            site->asks++;
             JitCode* jc = f->chunk->jit.get();
             if (BlPlan* plan = bl_make_plan(jc, callee.as_function())) {
+                site->fills++;
 
                 jc->bl_held.push_back(callee);
                 if (!jc->bl_root) jc->bl_root = std::make_unique<ValueVectorRoot>(&jc->bl_held);
