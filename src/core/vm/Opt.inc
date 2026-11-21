@@ -116,6 +116,7 @@ struct Node {
     int32_t state = -1;      // deopt snapshot, for nodes that can deoptimize
     int32_t blk = -1;
     std::vector<int32_t> ins; // Phi operands (one per predecessor of the block, in order)
+    int32_t rlo = INT32_MIN, rhi = INT32_MAX;     // an I32 node's value lies in [rlo, rhi] (compute_ranges); what a check of it need not ask
     bool dead = false;
     bool light = false;       // Step: only the registers the instruction reads were written back, and values stay live across it
 };
@@ -638,6 +639,7 @@ private:
         return on.op == K::LoadAcc ? &g_.frame->acc : &g_.frame->regs[on.aux];
     }
     void narrow_integers();
+    void compute_ranges();
     void hoist_invariants();
     void apply_replacements();
     void lower();
@@ -2993,6 +2995,7 @@ inline void Builder::finalize() {
     optimize();
     narrow_integers();
     hoist_invariants();
+    compute_ranges();
     eliminate_dead();
     // A region that spends its time in steps is slower than the interpreter (every step writes the whole
     // register file back and reads it again), so it is not worth having.
@@ -3566,6 +3569,100 @@ inline void Builder::narrow_integers() {
         }
     }
 #endif
+}
+
+// What an int32 value can be, as far as the code says: a constant, a mask, a shift, a sum of values that are themselves bounded (a loop counter that starts at
+// zero and only goes up is never negative, whatever its upper end). Interval arithmetic on the int32 operations the tier makes (each of which leaves the unit when it
+// overflows, so its result is always an int32), with the loops' phis widened to the end of the range that keeps moving. The emitter asks it three things: whether an
+// index can be negative (it need not test), whether a sum, a difference or a product can leave the int32 range (no overflow test), and whether a product can be a
+// negative zero (both factors are non-negative: no sign test).
+inline void Builder::compute_ranges() {
+    const size_t nn = g_.n.size();
+    struct R { int64_t lo, hi; bool def; };
+    std::vector<R> r(nn, R{0, 0, false});
+    auto full = [](R& x) { x = R{INT32_MIN, INT32_MAX, true}; };
+    auto get = [&](int32_t id) -> R { if (id < 0) return R{INT32_MIN, INT32_MAX, true}; id = resolve(id); R x = r[id]; if (!x.def) { x = R{INT32_MIN, INT32_MAX, true}; } return x; };
+    auto clampr = [](int64_t lo, int64_t hi) { return R{std::max<int64_t>(lo, INT32_MIN), std::min<int64_t>(hi, INT32_MAX), true}; };
+    std::vector<int32_t> widen_count(nn, 0);
+    for (int round = 0; round < 8; round++) {
+        bool changed = false;
+        for (int32_t blk : g_.rpo) {
+            for (int32_t id : g_.b[blk].nodes) {
+                Node& nd = g_.n[id];
+                if (nd.dead || nd.rep != Rep::I32) continue;
+                R nr;
+                switch (nd.op) {
+                case K::ConstI32: { const int32_t v = static_cast<int32_t>(nd.imm); nr = R{v, v, true}; break; }
+                case K::AddI: case K::SubI: {
+                    const R a = get(nd.a), b = get(nd.b);
+                    nr = nd.op == K::AddI ? clampr(a.lo + b.lo, a.hi + b.hi) : clampr(a.lo - b.hi, a.hi - b.lo);
+                    break;
+                }
+                case K::MulI: {
+                    const R a = get(nd.a), b = get(nd.b);
+                    const int64_t c[4] = {a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi};
+                    nr = clampr(*std::min_element(c, c + 4), *std::max_element(c, c + 4));
+                    break;
+                }
+                case K::AndI: {
+                    const R a = get(nd.a), b = get(nd.b);
+                    if (a.lo >= 0 && b.lo >= 0) nr = R{0, std::min(a.hi, b.hi), true};
+                    else if (a.lo >= 0) nr = R{0, a.hi, true};
+                    else if (b.lo >= 0) nr = R{0, b.hi, true};
+                    else full(nr);
+                    break;
+                }
+                case K::OrI: case K::XorI: {
+                    const R a = get(nd.a), b = get(nd.b);
+                    if (a.lo >= 0 && b.lo >= 0) {
+                        int64_t m = std::max(a.hi, b.hi), p = 1;
+                        while (p <= m) p <<= 1;
+                        nr = R{0, p - 1, true};
+                    } else full(nr);
+                    break;
+                }
+                case K::SarI: {
+                    const R a = get(nd.a), k = get(nd.b);
+                    if (k.lo == k.hi && k.lo >= 0 && k.lo <= 31) nr = R{a.lo >> k.lo, a.hi >> k.lo, true};
+                    else full(nr);
+                    break;
+                }
+                case K::NonNegI32: { const R a = get(nd.a); nr = R{std::max<int64_t>(a.lo, 0), std::max<int64_t>(a.hi, 0), true}; break; }
+                case K::NotI: { const R a = get(nd.a); nr = R{~a.hi, ~a.lo, true}; break; }
+                case K::Phi: {
+                    R u{0, 0, false};
+                    for (int32_t o : nd.ins) {
+                        const int32_t oo = resolve(o);
+                        if (oo < 0 || !r[oo].def) continue;
+                        if (!u.def) u = r[oo]; else { u.lo = std::min(u.lo, r[oo].lo); u.hi = std::max(u.hi, r[oo].hi); }
+                    }
+                    if (!u.def) continue;
+                    // A bound that keeps moving is let go after a few rounds.
+                    if (r[id].def) {
+                        if (u.lo < r[id].lo && widen_count[id] >= 2) u.lo = INT32_MIN;
+                        if (u.hi > r[id].hi && widen_count[id] >= 2) u.hi = INT32_MAX;
+                        if (u.lo < r[id].lo || u.hi > r[id].hi) widen_count[id]++;
+                        u.lo = std::min(u.lo, r[id].lo); u.hi = std::max(u.hi, r[id].hi);
+                    }
+                    nr = u;
+                    break;
+                }
+                default: full(nr); break;
+                }
+                if (!r[id].def || nr.lo != r[id].lo || nr.hi != r[id].hi) { r[id] = nr; changed = true; }
+            }
+        }
+        if (!changed) break;
+        if (round == 7) {
+            // Not settled: everything that is still moving is the whole range.
+            for (size_t i = 0; i < nn; i++) if (r[i].def) { r[i] = R{INT32_MIN, INT32_MAX, true}; }
+        }
+    }
+    for (size_t i = 0; i < nn; i++) {
+        if (!r[i].def || g_.n[i].rep != Rep::I32) continue;
+        g_.n[i].rlo = static_cast<int32_t>(r[i].lo);
+        g_.n[i].rhi = static_cast<int32_t>(r[i].hi);
+    }
 }
 
 inline void Builder::lower() {
@@ -4560,6 +4657,18 @@ private:
     void commit_g(int32_t id, Reg r) { const Loc& l = loc_[id]; if (l.kind == kStack) a_.mov_store(slot_mem(l), r); }
     void commit_x(int32_t id, Xmm x) { const Loc& l = loc_[id]; if (l.kind == kStack) a_.movsd_store(slot_mem(l), x); }
 
+    // ---- what the ranges (Builder::compute_ranges) let a check leave out ----
+    bool no_overflow(const Node& n) const {
+        const Node& a = g_.n[n.a]; const Node& b = g_.n[n.b];
+        const int64_t alo = a.rlo, ahi = a.rhi, blo = b.rlo, bhi = b.rhi;
+        int64_t lo, hi;
+        if (n.op == K::AddI) { lo = alo + blo; hi = ahi + bhi; }
+        else if (n.op == K::SubI) { lo = alo - bhi; hi = ahi - blo; }
+        else { const int64_t c[4] = {alo * blo, alo * bhi, ahi * blo, ahi * bhi}; lo = *std::min_element(c, c + 4); hi = *std::max_element(c, c + 4); }
+        return lo >= INT32_MIN && hi <= INT32_MAX;
+    }
+    bool both_non_negative(const Node& n) const { return g_.n[n.a].rlo >= 0 && g_.n[n.b].rlo >= 0; }
+
     // ---- emission ----
     Label& deopt_label(int32_t state);
     void stress_guard(int32_t state);
@@ -5252,7 +5361,7 @@ inline void Emitter::emit_node(int32_t id) {
             if (d != a) a_.mov32(d, a);
             const int32_t k = static_cast<int32_t>(g_.n[n.b].imm);
             if (n.op == K::AddI) a_.add32_imm_o(d, k); else a_.sub32_imm_o(d, k);
-            a_.jcc(CC_O, deopt_label(n.state));
+            if (!no_overflow(n)) a_.jcc(CC_O, deopt_label(n.state));
             commit_g(id, d);
             return;
         }
@@ -5262,7 +5371,7 @@ inline void Emitter::emit_node(int32_t id) {
         if (d == b && d != a) d = RAX;
         if (d != a) a_.mov32(d, a);
         if (n.op == K::AddI) a_.add32(d, b); else a_.sub32(d, b);
-        a_.jcc(CC_O, deopt_label(n.state));
+        if (!no_overflow(n)) a_.jcc(CC_O, deopt_label(n.state));
         if (loc_[id].kind == kGpr && static_cast<Reg>(loc_[id].reg) != d) a_.mov32(static_cast<Reg>(loc_[id].reg), d);
         else commit_g(id, d);
         return;
@@ -5271,20 +5380,25 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg a = use_g(n.a, RAX);
         const Reg b = use_g(n.b, RCX);
         // A product of zero is a negative zero when either factor is negative: the sign of the two together, taken before the product overwrites a.
-        a_.mov32(RDX, a);
-        a_.or32(RDX, b);
+        const bool zero_ok = both_non_negative(n);       // (two factors that cannot be negative make no negative zero)
+        if (!zero_ok) {
+            a_.mov32(RDX, a);
+            a_.or32(RDX, b);
+        }
         Reg d = def_g(id, RAX);
         if (d == b && d != a) d = RAX;
         if (d != a) a_.mov32(d, a);
         a_.imul32(d, b);
         Label& dl = deopt_label(n.state);
-        a_.jcc(CC_O, dl);
-        Label& nonzero = new_label();
-        a_.test32(d, d);
-        a_.jcc(CC_NE, nonzero);
-        a_.test32(RDX, RDX);
-        a_.jcc(CC_S, dl);
-        a_.bind(nonzero);
+        if (!no_overflow(n)) a_.jcc(CC_O, dl);
+        if (!zero_ok) {
+            Label& nonzero = new_label();
+            a_.test32(d, d);
+            a_.jcc(CC_NE, nonzero);
+            a_.test32(RDX, RDX);
+            a_.jcc(CC_S, dl);
+            a_.bind(nonzero);
+        }
         if (loc_[id].kind == kGpr && static_cast<Reg>(loc_[id].reg) != d) a_.mov32(static_cast<Reg>(loc_[id].reg), d);
         else commit_g(id, d);
         return;
@@ -6400,8 +6514,10 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::NonNegI32: {
         const Reg s2 = use_g(n.a, RAX);
-        a_.test32(s2, s2);
-        a_.jcc(CC_S, deopt_label(n.state));
+        if (g_.n[n.a].rlo < 0) {
+            a_.test32(s2, s2);
+            a_.jcc(CC_S, deopt_label(n.state));
+        }
         const Reg d = def_g(id, RAX);
         if (d != s2) a_.mov32(d, s2);
         commit_g(id, d);
@@ -7046,8 +7162,8 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
             std::fwrite(bytes.data(), 1, bytes.size(), out);
             std::fclose(out);
             if (FILE* idx = std::fopen((config().bin_dir + "/index.txt").c_str(), "ab")) {
-                std::fprintf(idx, "%u %s pc=%u bytecode=%u code=%zu inlined=%u entries=", n, (peek && peek->owner) ? peek->owner->get_name().c_str() : "?", pc,
-                             static_cast<unsigned>(chunk.code.size()), bytes.size(), g.inl_count);
+                std::fprintf(idx, "%u %s pc=%u bytecode=%u code=%zu inlined=%u base=%llx entries=", n, (peek && peek->owner) ? peek->owner->get_name().c_str() : "?", pc,
+                             static_cast<unsigned>(chunk.code.size()), bytes.size(), g.inl_count, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(start)));
                 for (size_t e = 0; e < unit.entries.size(); e++) std::fprintf(idx, "%s%u:%u", e ? "," : "", unit.entries[e].first, unit.entries[e].second);
                 std::fprintf(idx, "\n");
                 std::fclose(idx);
