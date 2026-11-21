@@ -107,6 +107,9 @@ enum class K : uint8_t {
     DefineElem,           // Tagged a, Tagged b: the element of index aux of the array literal a, appended; deopt (before doing anything) when it is not the next one
     CheckLookupRes,       // deopt unless the name's cache entry (imm: as LoadLookup's; aux bit 8 set when imm is an offset from the frame's cache) is good for a store: the name resolves
     StoreLookup,          // Tagged a: store it through the name's cache entry (as CheckLookupRes), deopt (before doing anything) when the entry is not good
+    CheckPlainElems,      // Ptr a: deopt unless it is an ordinary object or an array whose indexed properties are plain elements (no index descriptor, an element storage)
+    LoadElemPlain,        // Ptr a, I32 b -> Tagged: the element, deopt when it is out of the storage or a hole (the interpreter asks the prototype chain)
+    StoreElemPlain,       // Ptr a, I32 b, Tagged c: plain_element_store, deopt (before doing anything) when it declines
 };
 
 struct Node {
@@ -247,7 +250,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -261,7 +264,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
     case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem: case K::CheckDenseSt:
-    case K::CheckLookupRes: case K::StoreLookup:
+    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain:
         return false;
     default: return true;
     }
@@ -538,6 +541,7 @@ private:
     bool block_is_cold(int32_t fi, int32_t blk) const;
     bool native_call(const Insn& in);
     int typed_kind(uint32_t fb_pc) const;
+    bool plain_keyed(uint32_t fb_pc) const;
     bool call_fn(const Insn& in);
     bool call_via(const Insn& in);
     bool call_fn_ok(int32_t fi, const Insn& in) const;
@@ -1032,7 +1036,9 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     const uint8_t* code = F().chunk->code.data();
     const Op op = static_cast<Op>(in.op);
     const uint32_t pc = in.pc;
-    if (cf_ == 0 && avoided(pc)) { if (config().log) std::fprintf(stderr, "[opt] pc %u avoided\n", pc); return false; }
+    // (A site the dense-array guards kept failing at is a step, unless the interpreter has met the plain-element road there: that is compiled for what it is.)
+    const bool plain_site = (op == Op::GetKeyed && plain_keyed(pc + 2)) || (op == Op::SetKeyed && plain_keyed(pc + 3));
+    if (cf_ == 0 && avoided(pc) && !plain_site) { if (config().log) std::fprintf(stderr, "[opt] pc %u avoided\n", pc); return false; }
     if (cf_ != 0 && avoid_ && !avoid_->generic_in.empty() && avoid_->generic_in.count({F().chunk, pc})) { if (config().log) std::fprintf(stderr, "[opt] callee pc %u made generic\n", pc); return false; }
     auto reg = [&](uint32_t at) -> uint32_t { return F().var_base + code[at]; };
     auto ok_reg = [&](uint32_t r) { return r < F().acc_var; };
@@ -1555,8 +1561,27 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             set(acc(), guarded(K::LoadTyped, Rep::F64, obj, idx, static_cast<uint32_t>(kind)));
             return true;
         }
-        if (!dense_array_receiver(rcv)) { if (config().log) std::fprintf(stderr, "[opt] GetKeyed pc %u: receiver r%u not a dense array\n", in.pc, rcv); return false; }
-        if (!object_value(value(rcv)) || !numeric_value(value(acc()))) { if (config().log) std::fprintf(stderr, "[opt] GetKeyed pc %u: receiver object=%d key numeric=%d\n", in.pc, int(object_value(value(rcv))), int(numeric_value(value(acc())))); return false; }
+        if (!dense_array_receiver(rcv) || (plain_site && cf_ == 0 && avoided(pc))) {
+            // (What was a step: not a dense array just now, and the interpreter has met the plain-element road at this site.)
+            if (plain_keyed(pc + 2) && object_value(value(rcv)) && numeric_value(value(acc()))) {
+                const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(acc())));
+                const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+                guarded(K::CheckPlainElems, Rep::None, obj);
+                JitCode::OptUnit::RtDesc* pdesc = nullptr;
+                {
+                    auto pd = std::make_unique<JitCode::OptUnit::RtDesc>();
+                    pd->owner = F().gbody ? F().gbody : (F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr));
+                    pd->kf = F().chunk->ic_feedback->keyed(read_u16(code, pc + 2));
+                    pdesc = pd.get();
+                    g_.rtdescs.push_back(std::move(pd));
+                }
+                set(acc(), guarded(K::LoadElemPlain, Rep::Tagged, obj, idx, 0, reinterpret_cast<uint64_t>(pdesc)));
+                return true;
+            }
+            if (config().log) std::fprintf(stderr, "[opt] GetKeyed pc %u: receiver r%u not a dense array (plain feedback %d, object %d, numeric key %d)\n", in.pc, rcv, int(plain_keyed(pc + 2)), int(object_value(value(rcv))), int(numeric_value(value(acc()))));
+            return false;
+        }
+        if (!object_value(value(rcv)) || !numeric_value(value(acc()))) { if (config().log) std::fprintf(stderr, "[opt] GetKeyed pc %u: receiver object=%d (node %s rep %s) key numeric=%d\n", in.pc, int(object_value(value(rcv))), kname(g_.n[resolve(value(rcv))].op), rname(g_.n[resolve(value(rcv))].rep), int(numeric_value(value(acc())))); return false; }
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(acc())));
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
         guarded(K::CheckDense, Rep::None, obj);
@@ -1575,7 +1600,25 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             guarded(K::StoreTyped, Rep::None, obj, idx, static_cast<uint32_t>(kind), 0, val);
             return true;
         }
-        if (!dense_array_receiver(rcv)) return false;
+        if (!dense_array_receiver(rcv) || (plain_site && cf_ == 0 && avoided(pc))) {
+            if (config().log && !(plain_keyed(pc + 3) && object_value(value(rcv)) && numeric_value(value(kreg)))) std::fprintf(stderr, "[opt] SetKeyed pc %u: not dense; plain feedback %d, receiver object %d (node %s), key numeric %d\n", in.pc, int(plain_keyed(pc + 3)), int(object_value(value(rcv))), kname(g_.n[resolve(value(rcv))].op), int(numeric_value(value(kreg))));
+            if (plain_keyed(pc + 3) && object_value(value(rcv)) && numeric_value(value(kreg))) {
+                const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(kreg)));
+                const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+                guarded(K::CheckPlainElems, Rep::None, obj);
+                JitCode::OptUnit::RtDesc* pdesc = nullptr;
+                {
+                    auto pd = std::make_unique<JitCode::OptUnit::RtDesc>();
+                    pd->owner = F().gbody ? F().gbody : (F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr));
+                    pd->kf = F().chunk->ic_feedback->keyed(read_u16(code, pc + 3));
+                    pdesc = pd.get();
+                    g_.rtdescs.push_back(std::move(pd));
+                }
+                guarded(K::StoreElemPlain, Rep::None, obj, idx, 0, reinterpret_cast<uint64_t>(pdesc), tagged(value(acc())));
+                return true;
+            }
+            return false;
+        }
         if (!object_value(value(rcv)) || !numeric_value(value(kreg))) return false;
         const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(kreg)));
         const int32_t obj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
@@ -2062,6 +2105,14 @@ inline bool Builder::generic_op(const Insn& in) {
 
 // The element type of the typed array the keyed access whose feedback index sits at `fb_pc` has only ever seen, or -1 when
 // there is none the tier compiles (not seen, mixed, a clamped or BigInt array, or a target without the code for it).
+// Whether the interpreter has taken an indexed access at this site through its plain-element road (an ordinary object's elements, or an array with holes).
+inline bool Builder::plain_keyed(uint32_t fb_pc) const {
+    const auto* ic = F().chunk->ic_feedback.get();
+    if (!ic) return false;
+    const uint32_t fbi = read_u16(F().chunk->code.data(), fb_pc);
+    return fbi < ic->keyed_feedback.size() && ic->keyed_feedback[fbi] && ic->keyed_feedback[fbi]->plain_elems && ic->keyed_feedback[fbi]->elem_kind == 0;
+}
+
 inline int Builder::typed_kind(uint32_t fb_pc) const {
 #ifdef QUANTA_JIT_ARCH_A64
     (void)fb_pc;
@@ -3272,7 +3323,7 @@ inline void Builder::hoist_invariants() {
                 const Node& nd = g_.n[id];
                 if (nd.dead) continue;
                 switch (nd.op) {
-                case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
+                case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::LoadElemPlain: case K::StoreElemPlain: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
                 case K::StoreEnv: env_store = true; break;
                 case K::StoreLookup: env_store = true; slot_store = true; break;
                 case K::StoreSlot: slot_store = true; break;
@@ -4090,14 +4141,14 @@ inline void Builder::cse() {
         }
     };
     auto breaks_bindings = [](K op) {   // what can assign to an environment slot or run script that can
-        return op == K::Step || op == K::StoreEnv || op == K::StoreLookup || op == K::CallNative || op == K::CallFn || op == K::Rt;
+        return op == K::Step || op == K::StoreEnv || op == K::StoreLookup || op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreElemPlain;
     };
     auto breaks_guards = [](K op) {   // what can change an object's shape, density or prototype
-        return op == K::Step || op == K::CallNative || op == K::CallFn || op == K::Rt;
+        return op == K::Step || op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreElemPlain;
     };
     auto breaks_memory = [](K op) {
-        return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreEnv || op == K::StoreLookup || op == K::StoreReg || op == K::StoreAcc ||
-               op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::StoreTyped || op == K::DefineElem;
+        return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreElemPlain || op == K::StoreEnv || op == K::StoreLookup || op == K::StoreReg || op == K::StoreAcc ||
+               op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreTyped || op == K::DefineElem;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
     std::vector<Frame2> stack;
@@ -4735,6 +4786,26 @@ inline QUANTA_JIT_ABI uint64_t helper_lookup_resolvable(const BytecodeChunk::Loo
     if (!entry->obj_shape()) return 0;
     Object* bo = entry->env->get_binding_object();
     return (bo && bo->get_shape() == entry->obj_shape() && entry->descriptor_epoch == Object::descriptor_epoch() && bo->get_shape_slot_unchecked(entry->obj_slot_index)) ? 1 : 0;
+}
+// An element store of an ordinary object or an array with holes: plain_element_store as the interpreter's SetKeyed makes it, and what it declines (an index well past the
+// end, a setter or a read-only value on the chain, a frozen object) is the generic store, run here with the value the unit parked in the frame's accumulator. Like the
+// Rt helpers it answers all ones when that threw and all ones minus one when a C++ exception is pending.
+inline QUANTA_JIT_ABI uint64_t helper_plain_store(VM::Frame* f, uint64_t obj_ptr, uint64_t index, uint64_t desc) noexcept {
+    const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
+    const Value v = f->acc;
+    Object* o = reinterpret_cast<Object*>(obj_ptr);
+    const uint32_t idx = static_cast<uint32_t>(index);
+    if (plain_element_store(Value(o), idx, v)) return std::bit_cast<uint64_t>(Value());
+    return rt_run(f, f->instr_pc, [&](Context& ctx) { set_keyed(ctx, Value(o), std::to_string(idx), v, d->kf, d->owner); return Value(); });
+}
+// An element read that is out of the storage or reads as undefined (a hole, or an undefined the program stored): what is there when it is plain, else the generic read.
+inline QUANTA_JIT_ABI uint64_t helper_plain_load(VM::Frame* f, uint64_t obj_ptr, uint64_t index, uint64_t desc) noexcept {
+    const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
+    Object* o = reinterpret_cast<Object*>(obj_ptr);
+    const uint32_t idx = static_cast<uint32_t>(index);
+    Object* slot_owner;
+    if (plain_element_slot(Value(o), idx, slot_owner)) return std::bit_cast<uint64_t>(slot_owner->get_element_unchecked(idx));
+    return rt_run(f, f->instr_pc, [&](Context& ctx) { return get_keyed(ctx, Value(o), std::to_string(idx), d->kf); });
 }
 inline QUANTA_JIT_ABI void helper_barrier_env(Environment* env, uint64_t bits) noexcept {
     Value v;
@@ -6682,6 +6753,113 @@ inline void Emitter::emit_node(int32_t id) {
         a_.test(RAX, RAX);
         a_.jcc(CC_E, dl);
         a_.bind(done);
+        return;
+    }
+    case K::CheckPlainElems: {
+        const Reg o = use_g(n.a, RAX);
+        Label& dl = deopt_label(n.state);
+        Label& typed = new_label();
+        a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::shape())));
+        a_.and32_imm(RCX, static_cast<int32_t>(JitObjectLayout::kShapeTypeMask));
+        a_.cmp32_imm(RCX, static_cast<int32_t>(JitObjectLayout::kOrdinaryType));
+        a_.jcc(CC_E, typed);
+        a_.cmp32_imm(RCX, static_cast<int32_t>(JitObjectLayout::kArrayType));
+        a_.jcc(CC_NE, dl);
+        a_.bind(typed);
+        a_.test8_mem_imm(mem(o, static_cast<int32_t>(JitObjectLayout::proto())), static_cast<uint8_t>(JitObjectLayout::kHasIndexDescriptor));
+        a_.jcc(CC_NE, dl);
+        a_.mov_load(RDX, mem(o, static_cast<int32_t>(JitObjectLayout::butterfly())));
+        a_.test(RDX, RDX);
+        a_.jcc(CC_E, dl);
+        a_.mov_load32(RCX, mem(RDX, -static_cast<int32_t>(sizeof(Value))));
+        a_.and32_imm(RCX, static_cast<int32_t>(JitObjectLayout::kExtrasBit));
+        a_.jcc(CC_E, dl);
+        return;
+    }
+    case K::LoadElemPlain: case K::StoreElemPlain: {
+        const bool store = n.op == K::StoreElemPlain;
+        Label& threw = new_label();
+        Label& rethrow = new_label();
+        cold_.push_back([this, &threw, &rethrow]() {
+            a_.bind(threw);
+            a_.mov_imm32(RAX, static_cast<uint32_t>(kStepFinished));
+            a_.jmp(step_exit_);
+            a_.bind(rethrow);
+            a_.mov_imm32(RAX, static_cast<uint32_t>(kStepRethrow));
+            a_.jmp(step_exit_);
+        });
+        // The call: the receiver and the index are where the operands are, the value (a store) is parked in the frame's accumulator.
+        auto call_helper = [this, store, &threw, &rethrow, imm = n.imm](Reg o, Reg i) {
+            a_.push(o);
+            a_.push(i);
+            int32_t bytes;
+            save_live(bytes);
+            a_.mov(abi::A0, RBX);
+            a_.mov_load(abi::A1, mem(RSP, bytes + 8));
+            a_.mov_load(abi::A2, mem(RSP, bytes));
+            a_.mov_imm64(abi::A3, imm);
+            if (store) call_c(reinterpret_cast<const void*>(&helper_plain_store));
+            else call_c(reinterpret_cast<const void*>(&helper_plain_load));
+            restore_live(bytes);
+            a_.add_imm(RSP, 16);
+            a_.cmp_imm(RAX, -1);
+            a_.jcc(CC_E, threw);
+            a_.cmp_imm(RAX, -2);
+            a_.jcc(CC_E, rethrow);
+        };
+        if (store) {
+            // An element the object holds (in the storage, and not undefined, which is what a hole reads as) is written in place; the rest is the helper's.
+            const Reg o = use_g(n.a, RAX);
+            const Reg i = use_g(n.b, RCX);
+            const Reg v = use_g(n.c, RDX);
+            Label& cold = new_label();
+            Label& done = new_label();
+            a_.mov_load(R11, mem(o, static_cast<int32_t>(JitObjectLayout::butterfly())));
+            a_.cmp32_load(i, mem(R11, -static_cast<int32_t>(JitObjectLayout::kExtrasBack) + static_cast<int32_t>(JitObjectLayout::kElementsLengthOff)));
+            a_.jcc(CC_AE, cold);
+            if (i != RCX) a_.mov32(RCX, i);
+            a_.neg64(RCX);
+            a_.cmp32_mem_imm(mem_idx(R11, RCX, 8, -static_cast<int32_t>(JitObjectLayout::kElementBase * sizeof(Value)) + 4), 0x7FF00000);
+            a_.jcc(CC_E, cold);
+            a_.mov_store(mem_idx(R11, RCX, 8, -static_cast<int32_t>(JitObjectLayout::kElementBase * sizeof(Value))), v);
+            emit_barrier_check(n.c, o, v);
+            a_.bind(done);
+            cold_.push_back([this, na = n.a, nb = n.b, nc = n.c, &cold, &done, call_helper]() {
+                a_.bind(cold);
+                const Reg v2 = use_g(nc, RDX);
+                a_.mov_store(mem(RBX, static_cast<int32_t>(kOffAcc)), v2);
+                const Reg o2 = use_g(na, RAX);
+                const Reg i2 = use_g(nb, RCX);
+                call_helper(o2, i2);
+                a_.jmp(done);
+            });
+            return;
+        }
+        const Reg o = use_g(n.a, RAX);
+        const Reg i = use_g(n.b, RCX);
+        const Reg d = def_g(id, RAX);
+        Label& cold = new_label();
+        Label& back = new_label();
+        a_.mov_load(RDX, mem(o, static_cast<int32_t>(JitObjectLayout::butterfly())));
+        a_.cmp32_load(i, mem(RDX, -static_cast<int32_t>(JitObjectLayout::kExtrasBack) + static_cast<int32_t>(JitObjectLayout::kElementsLengthOff)));
+        a_.jcc(CC_AE, cold);
+        if (i != RCX) a_.mov32(RCX, i);
+        a_.neg64(RCX);
+        a_.mov_load(d, mem_idx(RDX, RCX, 8, -static_cast<int32_t>(JitObjectLayout::kElementBase * sizeof(Value))));
+        a_.mov_imm64(RDX, std::bit_cast<uint64_t>(Value()));
+        a_.cmp(d, RDX);
+        a_.jcc(CC_E, cold);
+        a_.bind(back);
+        cold_.push_back([this, na = n.a, nb = n.b, d, &cold, &back, call_helper]() {
+            a_.bind(cold);
+            // (The operands are fetched again: the load above may have written over a scratch register one of them was in.)
+            const Reg o2 = use_g(na, RAX);
+            const Reg i2 = use_g(nb, RCX);
+            call_helper(o2, i2);
+            if (d != RAX) a_.mov(d, RAX);
+            a_.jmp(back);
+        });
+        commit_g(id, d);
         return;
     }
     case K::CheckProto: {

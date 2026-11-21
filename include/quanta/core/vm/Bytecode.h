@@ -894,6 +894,9 @@ struct KeyedFeedback {
     // typed array of that type, 0xFF anything else or more than one kind. The optimizing tier compiles an element access for the
     // kind it names.
     uint8_t elem_kind = 0;
+    // An indexed access at this site has read or written the elements of an ordinary object, or of an array that has holes (plain_element_slot / plain_element_store): the
+    // optimizing tier compiles it for that.
+    bool plain_elems = false;
 
     // SetKeyed-only: mirrors FeedbackBody::TransitionEntry (caches adding a
     // brand-new own property, keyed by the shape BEFORE the add, the

@@ -8960,6 +8960,13 @@ QUANTA_HANDLER Value h_GetKeyedElement(HANDLER_PARAMS);
     note_typed_elem_slow(f, fb, kind);
 }
 
+// An indexed access at this site went through the plain-element road: the optimizing tier can compile it for that.
+[[gnu::noinline]] void note_plain_elem(const Frame& f, uint32_t fb) {
+    auto* ic = f.chunk->ic_feedback.get();
+    if (!ic || fb >= ic->keyed_feedback.size()) return;
+    ic->keyed(fb)->plain_elems = true;
+}
+
 // Indexing an array whose density is already known, or a plain typed array, is
 // a bounds check and a load, and this handler is kept to exactly that: it calls
 // nothing, so the compiler gives it no frame to build and tear down around the
@@ -9000,6 +9007,7 @@ QUANTA_HANDLER Value h_GetKeyedElement(HANDLER_PARAMS) {
         }
         if (plain_element_slot(recv, index, dense)) {
             acc = dense->get_element_unchecked(index);
+            note_plain_elem(f, read_u16(code, pc + 2));
             pc += 4;
             DISPATCH();
         }
@@ -9063,6 +9071,7 @@ QUANTA_HANDLER Value h_SetKeyedElement(HANDLER_PARAMS) {
             DISPATCH();
         }
         if (plain_element_store(recv, index, acc)) {
+            note_plain_elem(f, read_u16(code, pc + 3));
             pc += 5;
             DISPATCH();
         }
