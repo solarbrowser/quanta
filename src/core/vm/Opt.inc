@@ -1344,6 +1344,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
                     if (const Value* sp = bo->get_shape_slot_unchecked(ep->obj_slot_index)) lookup_peek_.push_back({v, *sp});
             }
         }
+        if (!root) g_.n[v].imm2 = reinterpret_cast<uint64_t>(F().chunk->names[nidx]);      // (an entry that went stale is checked again at run time, as a root's is)
         set(acc(), v);
         if (fused) set(dst, v);
         return true;
@@ -4412,6 +4413,7 @@ inline bool via_call_pristine_in(const BytecodeChunk& chunk, uint32_t pc, const 
     return false;
 }
 
+static const uint32_t g_stale_calls_limit = std::getenv("QUANTA_STALE_CALLS") ? static_cast<uint32_t>(std::atoi(std::getenv("QUANTA_STALE_CALLS"))) : 200000;
 inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, uint64_t this_bits, const uint64_t* argv) noexcept {
     constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1, kNotFn = ~0ull - 2;
     // The unit wrote the receiver and the arguments as Values into its frame; they are read where they lie.
@@ -4459,6 +4461,9 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
             } else if (it->second && it->second->closed) {
                 // No more rebuilds: the callee is the helper's from now on, and the thunk table is not asked again.
                 { nstate = 2; const_cast<BytecodeChunk*>(nc0)->native_off |= is_new ? 2 : 1; }
+            } else if (it->second && it->second->stale && g_thunk_rebuilt_total >= g_thunk_rebuild_total && it->second->runs_before_stale < 1000 &&
+                       ++it->second->stale_calls < g_stale_calls_limit) {
+                // (The rebuild budget is spent and the unit had not run much: this callee goes the helper's way until it has shown it is hot.)
             } else if (it->second && it->second->stale) {
                 // The unit was found wrong and learned from: build it again (a few times at most), for this call's callee.
                 if (!native_thunk_rebuild(*f, *it->second, fn, th, args, argc)) { it->second->closed = true; { nstate = 2; const_cast<BytecodeChunk*>(nc0)->native_off |= is_new ? 2 : 1; } }
@@ -4721,6 +4726,10 @@ inline QUANTA_JIT_ABI uint64_t helper_lookup_refresh(VM::Frame* f, uint64_t byte
 // would look the name up -- the binding is still a plain data property in the same place -- and given the current epoch. 1 when the entry is good again.
 inline QUANTA_JIT_ABI uint64_t helper_lookup_revalidate(VM::Frame* f, uint64_t byte_off) noexcept {
     return revalidate_global_entry(*f, static_cast<uint32_t>(byte_off / JitLookupLayout::kSize)) ? 1 : 0;
+}
+// The same for an inlined callee's entry (an address baked into the unit, with the name it is for).
+inline QUANTA_JIT_ABI uint64_t helper_lookup_revalidate_entry(uint64_t entry, uint64_t name) noexcept {
+    return revalidate_entry(*reinterpret_cast<const std::string*>(name), *reinterpret_cast<BytecodeChunk::LookupCacheEntry*>(entry)) ? 1 : 0;
 }
 // An array literal of constants, as Op::CreateArrayConst makes it.
 inline QUANTA_JIT_ABI uint64_t helper_new_array_const(const Value* values, uint64_t count, Context* ctx) noexcept {
@@ -6640,15 +6649,22 @@ inline void Emitter::emit_node(int32_t id) {
         Label& form_dict = new_label();
         Label& form_obj = new_label();
         Label& reval = new_label();
-        if (n.aux & 0x100) {
+        const bool reval_ok = (n.aux & 0x100) || n.imm2;
+        if (reval_ok) {
             // A descriptor was defined somewhere since the entry was learned: the entry is checked again (not the whole lookup made again) and the unit goes on.
-            cold_.push_back([this, &reval, &again, dl = &dl, off = n.imm]() {
+            cold_.push_back([this, &reval, &again, dl = &dl, off = n.imm, root = (n.aux & 0x100) != 0, name = n.imm2]() {
                 a_.bind(reval);
                 int32_t bytes;
                 save_live(bytes);
-                a_.mov(abi::A0, RBX);
-                a_.mov_imm64(abi::A1, off);
-                call_c(reinterpret_cast<const void*>(&helper_lookup_revalidate));
+                if (root) {
+                    a_.mov(abi::A0, RBX);
+                    a_.mov_imm64(abi::A1, off);
+                    call_c(reinterpret_cast<const void*>(&helper_lookup_revalidate));
+                } else {
+                    a_.mov_imm64(abi::A0, off);
+                    a_.mov_imm64(abi::A1, name);
+                    call_c(reinterpret_cast<const void*>(&helper_lookup_revalidate_entry));
+                }
                 restore_live(bytes);
                 a_.test(RAX, RAX);
                 a_.jcc(CC_E, *dl);
@@ -6687,7 +6703,7 @@ inline void Emitter::emit_node(int32_t id) {
             a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(JitObjectLayout::descriptor_epoch_addr()));
             a_.mov_load(RAX, mem(RAX));
             a_.cmp_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::descriptor_epoch())));
-            a_.jcc(CC_NE, (n.aux & 0x100) ? reval : dl);
+            a_.jcc(CC_NE, reval_ok ? reval : dl);
             a_.cmp32_mem_imm(mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_type())), 0);
             a_.jcc(CC_NE, dl);
             a_.mov_load(d, mem(RDX, static_cast<int32_t>(JitObjectLayout::descriptor_value())));
@@ -6710,7 +6726,7 @@ inline void Emitter::emit_node(int32_t id) {
             a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(JitObjectLayout::descriptor_epoch_addr()));
             a_.mov_load(RAX, mem(RAX));
             a_.cmp_load(RAX, mem(RCX, static_cast<int32_t>(JitLookupLayout::descriptor_epoch())));
-            a_.jcc(CC_NE, (n.aux & 0x100) ? reval : dl);
+            a_.jcc(CC_NE, reval_ok ? reval : dl);
             a_.mov_load32(RDX, mem(RCX, static_cast<int32_t>(JitLookupLayout::obj_slot_index())));
             a_.and_imm(RDX, 0xFFFF);                 // the kind and the flag lie after the index
             a_.mov_load(R11, mem(R11, static_cast<int32_t>(JitObjectLayout::butterfly())));

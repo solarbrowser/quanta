@@ -2787,6 +2787,8 @@ struct NativeThunk {
     uint32_t argc = 0;
     bool ok = false;
     uint32_t deopts = 0;
+    uint32_t runs_before_stale = 0;
+    uint32_t stale_calls = 0;  // calls the helper made for the callee while the thunk was stale and the rebuild budget was spent
     bool closed = false;       // no more rebuilds
     bool stale = false;        // its unit was found wrong (guards failing, learned from): its caches are cleared and the next call through the helper builds it again
     uint32_t ui = 0;           // the unit that is current, in its chunk's JitCode
@@ -3067,8 +3069,14 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         // Learn from it: the second time a site fails, the next compile leaves it to the interpreter.
         opt::Avoid& av = opt::avoid_table()[&chunk];
         // (Counted per kind of guard: a second kind of guard failing at a site that was already learned from is learned from too.)
-        const uint64_t site = (static_cast<uint64_t>(gpc) << 32) | (static_cast<uint64_t>(static_cast<uint16_t>(evar + 1)) << 16) | (lg & 0xFFFFu);
-        if (opt::config().log) std::fprintf(stderr, "[opt]   learning: fails so far %u, recompiles %u of %u, epoch rebuilds %u, evar %d\n", av.fails.count(site) ? av.fails[site] : 0u, av.recompiles, opt::config().max_recompiles, av.epoch_rebuilds, evar);
+        // (A thunk's unit has one root pc for every guard of its inlined callees: the site is the callee's own instruction, or the first failures of different guards would share one count.)
+        const uint32_t site_key_pc = inlined && g_native_by_chunk.count(&chunk) ? (raw_pc | (static_cast<uint32_t>(cu.inl_states[st].func) << 20)) : gpc;
+        const uint64_t site = (static_cast<uint64_t>(site_key_pc) << 32) | (static_cast<uint64_t>(static_cast<uint16_t>(evar + 1)) << 16) | (lg & 0xFFFFu);
+        if (opt::config().log) std::fprintf(stderr, "[opt]   learning: kind %s gpc %u (callee op %s): fails so far %u, recompiles %u of %u, epoch rebuilds %u, evar %d\n", gkind ? gkind : "?", gpc, inlined ? op_name(static_cast<Op>(cu.inl[cu.inl_states[st].func].chunk->code[cu.inl_states[st].pc])) : "-", av.fails.count(site) ? av.fails[site] : 0u, av.recompiles, opt::config().max_recompiles, av.epoch_rebuilds, evar);
+        // A thunk's callee guards are learned from at every failure, also those of the activations of a unit that is already dead (a recursive callee has many on the stack): the
+        // rebuild then starts from all that they met, not from one guard per rebuild.
+        const bool thunk_callee = inlined && !hoisted_fail && evar != -2 && gkind && g_native_by_chunk.count(&chunk) && std::strcmp(gkind, "CheckFn") && std::strcmp(gkind, "CallNative");
+        if (thunk_callee && !opt::config().stress && ++av.fails[site] >= opt::config().avoid_after) av.generic_in.insert({cu.inl[cu.inl_states[st].func].chunk, cu.inl_states[st].pc});
         if (!opt::config().stress && hoisted_fail && av.recompiles < opt::config().max_recompiles) {
             // A check taken out of a loop failed before the loop was entered: the next build leaves that loop's checks where they are.
             av.recompiles++;
@@ -3082,7 +3090,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             jc->opt_units[ui].entries.clear();
             chunk.direct = nullptr;
             refused.erase({&chunk, target});
-        } else if (!opt::config().stress && evar != -2 && ++av.fails[site] == opt::config().avoid_after && av.recompiles < opt::config().max_recompiles) {
+        } else if (!opt::config().stress && evar != -2 && (thunk_callee ? av.fails[site] == opt::config().avoid_after : ++av.fails[site] == opt::config().avoid_after) && av.recompiles < opt::config().max_recompiles) {
             av.recompiles++;
             // An integer speculation that failed (a sum or a product that left the int32 range, a loop variable that was not an integer): the next build keeps that
             // operation (or the variables entering that loop) as doubles instead of leaving the instruction to the interpreter.
@@ -3517,10 +3525,12 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
     ninfo.rt = made.rt.get();
     ninfo.argc = argc;
     ninfo.nregs = 2 + argc;
-    const bool saved_inl = opt::config().inl;
+    const bool saved_inl = opt::config().inl, saved_sta = opt::config().sta_lookup;
+    opt::config().sta_lookup = true;       // (a callee that assigns a global stays in the thunk's unit: as a step it would refuse the inline, and every call would take the helper's way)
     opt::config().inl = true;       // (the thunk exists to have its callee inlined, whatever the call sites around it were allowed)
     const bool compiled = opt::compile(*ch, 0, &peek, made, &ninfo);
     opt::config().inl = saved_inl;
+    opt::config().sta_lookup = saved_sta;
     if (opt::config().log) std::fprintf(stderr, "[native] thunk for \"%s\" argc %u: %s\n", fn->get_name().c_str(), argc, compiled ? "compiled" : "refused");
     if (compiled && made.native_off) {
         t->held.push_back(Value(fn));
@@ -3565,7 +3575,8 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
     ninfo.rt = made.rt.get();
     ninfo.argc = t.argc;
     ninfo.nregs = 2 + t.argc;
-    const bool saved_inl = opt::config().inl;
+    const bool saved_inl = opt::config().inl, saved_sta = opt::config().sta_lookup;
+    opt::config().sta_lookup = true;       // (a callee that assigns a global stays in the thunk's unit: as a step it would refuse the inline, and every call would take the helper's way)
     opt::config().inl = true;
     bool compiled = opt::compile(ch, 0, &peek, made, &ninfo);
     if (!compiled) {
@@ -3580,6 +3591,7 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
         }
     }
     opt::config().inl = saved_inl;
+    opt::config().sta_lookup = saved_sta;
     if (opt::config().log) std::fprintf(stderr, "[native] thunk rebuilt (%u): %s\n", static_cast<unsigned>(t.rebuilds) + 1, compiled ? "compiled" : "refused");
     if (!compiled || !made.native_off) return false;
     t.held.push_back(Value(fn));
@@ -3661,12 +3673,11 @@ inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status, JitRt* exi
             (jc->opt_units[nui].entries.empty() || ++nt->deopts > 24)) {
             nt->ok = false;
             nt->stale = true;
+            nt->runs_before_stale = rt->native_runs;
             for (auto& [ic, w] : nt->ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
             nt->ics.clear();
-            // A thunk that ran a lot is worth rebuilding past the global budget (the budget exists for cold, one-off units).
-            const bool hot = rt->native_runs >= 1000;
-            if (nt->rebuilds >= g_thunk_rebuild_limit || (g_thunk_rebuilt_total >= g_thunk_rebuild_total && !hot)) nt->closed = true;
-            if (opt::config().log) std::fprintf(stderr, "[native] thunk stale (rebuilds so far %u, runs %u)\n", static_cast<unsigned>(nt->rebuilds), static_cast<unsigned>(rt->native_runs));
+            if (nt->rebuilds >= g_thunk_rebuild_limit) nt->closed = true;
+            if (opt::config().log) std::fprintf(stderr, "[native] thunk stale \"%s\" (rebuilds so far %u, runs %u)\n", nt->chunk->ic_feedback->call_sites[0].fns[0]->get_name().c_str(), static_cast<unsigned>(nt->rebuilds), static_cast<unsigned>(rt->native_runs));
         }
         if (r == 1) {
             result = cf->acc;

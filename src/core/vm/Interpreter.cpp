@@ -4903,12 +4903,8 @@ QUANTA_HANDLER Value h_gen_CheckLookupResolvable(HANDLER_PARAMS) {
 // A global's lookup entry whose descriptor epoch has moved (some descriptor was defined somewhere since it was learned): checked again the way a lookup
 // would find the name -- the binding is still a plain data property in the same place -- and given the current epoch, instead of being resolved from the
 // scope chain again. True when the entry is good again.
-bool revalidate_global_entry(Frame& f, uint32_t idx) {
-    const BytecodeChunk& chunk = *f.chunk;
-    if (idx >= chunk.names.size()) return false;
-    auto& e = f.lookup_cache_data[idx];
+bool revalidate_entry(const std::string& name, BytecodeChunk::LookupCacheEntry& e) {
     if (e.shadow_epoch != Environment::binding_shadow_epoch() || !e.env) return false;
-    const std::string& name = *chunk.names[idx];
     if (e.obj_shape()) {
         uint32_t slot = 0;
         bool writable = false;
@@ -4924,6 +4920,11 @@ bool revalidate_global_entry(Frame& f, uint32_t idx) {
     }
     e.descriptor_epoch = Object::descriptor_epoch();
     return true;
+}
+bool revalidate_global_entry(Frame& f, uint32_t idx) {
+    const BytecodeChunk& chunk = *f.chunk;
+    if (idx >= chunk.names.size()) return false;
+    return revalidate_entry(*chunk.names[idx], f.lookup_cache_data[idx]);
 }
 
 template <bool Fused>
