@@ -4571,6 +4571,11 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_binary(VM::Frame* f, uint64_t l, uint64
             return std::bit_cast<uint64_t>(Value(bop == BinaryExpression::Operator::STRICT_EQUAL ? eq : !eq));
         }
     }
+    if (bop == BinaryExpression::Operator::INSTANCEOF) {
+        // The common `instanceof` (an object, an unbound function, no Proxy, no Symbol.hasInstance anywhere): a walk up the prototype chain, as the interpreter's handler does it.
+        bool res;
+        if (instanceof_quick(std::bit_cast<Value>(l), std::bit_cast<Value>(r), res)) return std::bit_cast<uint64_t>(Value(res));
+    }
     return rt_run(f, static_cast<uint32_t>(meta >> 8), [&](Context& ctx) {
         return VM::binary_slow(ctx, bop, std::bit_cast<Value>(l), std::bit_cast<Value>(r));
     });
