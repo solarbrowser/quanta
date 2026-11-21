@@ -1171,8 +1171,12 @@ struct BytecodeChunk {
     mutable uint8_t opt_entry = 0;
     // A unit calls this chunk: a body too short to be worth entering from the interpreter is worth it from a unit, where the
     // alternative is a nested interpreter loop. entry_too_small: the tier declined for that reason alone.
-    mutable bool unit_callee = false;
-    mutable bool entry_too_small = false;
+    mutable bool unit_callee : 1 = false;
+    mutable bool entry_too_small : 1 = false;
+    // The helper that calls a function from generated code has decided this one will not get a native unit (bit 0 for a call, bit 1 for a `new`): it does not look again.
+    mutable uint8_t native_off : 2 = 0;
+    // A constructor whose body is only `this.name = <parameter or small constant>` stores (Interpreter.cpp, ctor_leaf_construct): 0 not looked at, 1 yes, 2 no, 3 yes but a call just failed.
+    mutable uint8_t ctor_leaf : 2 = 0;
     mutable uint8_t opt_loops = 0;     // 1: the tier has declined this chunk's loops, so a call no longer offers them at its first back edge
     mutable uint16_t opt_calls = 0;
 

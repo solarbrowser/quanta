@@ -7222,6 +7222,91 @@ QUANTA_HANDLER Value h_gen_Construct(HANDLER_PARAMS);
 // h_CallLean). Anything else -- a Proxy, a non-constructor -- is the generated handler's.
 QUANTA_HANDLER Value h_ConstructPlain(HANDLER_PARAMS);
 
+// A constructor whose body is nothing but `this.name = <parameter or small constant>` stores (the most common constructor there is: `function P(x, y) { this.x = x; this.y = y; }`) needs
+// no frame: when each store is the property-adding transition its site has already learned, the object is made and filled in place, which is what the stores would have done, and
+// nothing in between can run script, throw or be seen. What does not fit (a store the site has not learned, a setter on the chain, a prototype that changed) is the ordinary road's,
+// before anything is stored.
+constexpr int kCtorLeafMax = 8;
+struct CtorLeafStore { uint8_t is_const; uint8_t param; Value constant; uint16_t name; uint16_t fb; };
+
+static int decode_ctor_leaf(const BytecodeChunk& c, CtorLeafStore* out) {
+    const uint8_t* code = c.code.data();
+    const size_t n = c.code.size();
+    if ((c.handlers && !c.handlers->empty()) || n < 8 || static_cast<Op>(code[0]) != Op::LdaThisStar) return -1;
+    const uint8_t rt = code[1];
+    if (rt < c.parameter_count) return -1;
+    size_t pc = 2;
+    int cnt = 0;
+    while (pc < n) {
+        const Op op = static_cast<Op>(code[pc]);
+        if (op == Op::LdaUndefined && pc + 2 == n && static_cast<Op>(code[pc + 1]) == Op::Return) return cnt > 0 ? cnt : -1;
+        CtorLeafStore st{};
+        switch (op) {
+        case Op::Ldar: if (code[pc + 1] >= c.parameter_count) return -1; st.param = code[pc + 1]; pc += 2; break;
+        case Op::LdaSmi: st.is_const = 1; st.constant = Value(static_cast<double>(static_cast<int8_t>(code[pc + 1]))); pc += 2; break;
+        case Op::LdaZero: st.is_const = 1; st.constant = Value(0.0); pc += 1; break;
+        case Op::LdaNull: st.is_const = 1; st.constant = Value::null(); pc += 1; break;
+        case Op::LdaTrue: st.is_const = 1; st.constant = Value(true); pc += 1; break;
+        case Op::LdaFalse: st.is_const = 1; st.constant = Value(false); pc += 1; break;
+        case Op::LdaUndefined: st.is_const = 1; st.constant = Value(); pc += 1; break;
+        default: return -1;
+        }
+        if (pc + 6 > n || static_cast<Op>(code[pc]) != Op::SetNamed || code[pc + 1] != rt || cnt == kCtorLeafMax) return -1;
+        st.name = read_u16(code, pc + 2);
+        st.fb = read_u16(code, pc + 4);
+        pc += 6;
+        out[cnt++] = st;
+    }
+    return -1;
+}
+
+[[gnu::always_inline]] inline bool ctor_leaf_construct(Function* fn, Object* proto, const Value* argv, uint32_t argc, Value& out) {
+    static const bool off = std::getenv("QUANTA_NO_CTOR_LEAF") != nullptr;
+    const FunctionExecutable* exe = fn->get_executable().get();
+    const BytecodeChunk& chunk = *exe->bytecode_chunk;
+    if (chunk.ctor_leaf == 2 || off) return false;
+    CtorLeafStore st[kCtorLeafMax];
+    int n;
+    if (UNLIKELY(chunk.ctor_leaf == 0)) {
+        n = (fn->is_class_constructor() || fn->is_arrow() || exe->owner_realm() != g_current_realm) ? -1 : decode_ctor_leaf(chunk, st);
+        if (n < 0) { chunk.ctor_leaf = 2; return false; }
+        chunk.ctor_leaf = 1;
+    } else {
+        if (UNLIKELY(exe->owner_realm() != g_current_realm)) return false;
+        n = decode_ctor_leaf(chunk, st);
+        if (n < 0) { chunk.ctor_leaf = 2; return false; }
+    }
+    Object* self = fn->new_construct_object(proto);
+    Shape* to[kCtorLeafMax];
+    Shape* cur = self->get_shape();
+    const uint64_t epoch = Object::proto_epoch();
+    for (int i = 0; i < n; i++) {
+        const FeedbackBody* fb = st[i].fb < chunk.feedback.size() ? chunk.feedback[st[i].fb].peek() : nullptr;
+        Shape* next = nullptr;
+        if (fb && !fb->transition_mega)
+            for (uint8_t k = 0; k < fb->transition_count; k++) {
+                const auto& te = fb->transitions[k];
+                if (te.from_shape == cur && te.prototype == proto && te.proto_epoch == epoch) { next = te.to_shape; break; }
+            }
+        if (!next) {
+            // (a site that fails twice in a row is left to the ordinary road for good)
+            chunk.ctor_leaf = chunk.ctor_leaf == 1 ? 3 : 2;
+            return false;
+        }
+        to[i] = next;
+        cur = next;
+    }
+    for (int i = 0; i < n; i++) {
+        const Value v = st[i].is_const ? st[i].constant : (st[i].param < argc ? argv[st[i].param] : Value());
+        write_barrier_for(self, v);
+        self->add_shape_property_cached(*chunk.names[st[i].name], v, to[i]);
+    }
+    chunk.ctor_leaf = 1;
+    fn->learn_construct_slot_hint(self);
+    out = Value(self);
+    return true;
+}
+
 // `new F(...)` as a stackless call, for the commonest F (construct_plain's: a base constructor that
 // is not a default one). The object is made as construct_plain makes it and handed to the callee as
 // `this`; what the call changes on the context is kept in the frame's slot and put back when it ends,
@@ -7236,6 +7321,12 @@ QUANTA_HANDLER Value h_ConstructPlain(HANDLER_PARAMS);
                   : proto_value.is_object()   ? proto_value.as_object() : nullptr;
     Frame* callee;
     if (proto) {
+        Value made;
+        if (ctor_leaf_construct(fn, proto, regs + code[pc + 2], code[pc + 3], made)) {
+            acc = made;
+            pc += 6;
+            DISPATCH();
+        }
         Object* self = fn->new_construct_object(proto);
         if (inline_call_enter(f, fn, regs + code[pc + 2], code[pc + 3], Value(self), pc + 6, callee)) {
             // The brand and fields of a class come on before its body (InitializeInstanceElements); it

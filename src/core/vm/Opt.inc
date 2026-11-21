@@ -4373,10 +4373,10 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     Context& ctx = *f->ctx;
     f->instr_pc = static_cast<uint32_t>(meta >> 8);
     if (__builtin_expect(meta & 0x20, 0) && !via_call_pristine(*f, f->instr_pc, fv)) return kNotFn;      // `fn.call(this, ...)`: the interpreter takes it from here
-    if (__builtin_expect(g_native_test, 1) && !(meta & 0x20)) {
-        const bool is_new = (meta & 0x10) != 0;
-        const FunctionExecutable* ex = fn->get_executable().get();
-        const BytecodeChunk* nc0 = ex ? ex->bytecode_chunk.get() : nullptr;
+    const bool is_new = (meta & 0x10) != 0;
+    const FunctionExecutable* ex = fn->get_executable().get();
+    const BytecodeChunk* nc0 = ex ? ex->bytecode_chunk.get() : nullptr;
+    if (__builtin_expect(g_native_test, 1) && !(meta & 0x20) && !(nc0 && (nc0->native_off >> (is_new ? 1 : 0) & 1))) {
         auto* nch = nc0 ? &const_cast<BytecodeChunk*>(nc0)->ensure_ic_feedback() : nullptr;
         if (nch && (is_new ? nch->native_new_state : nch->native_state) != 2) {
             uint8_t& nstate = is_new ? nch->native_new_state : nch->native_state;
@@ -4389,13 +4389,13 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                 // (A thunk of a closure is no use to the next closure of the same code: a program that makes closures all the time gets a few thunks per function.)
                 if (nstate == 0 && ++ncalls >= g_native_at) {
                     ncalls = 0;
-                    if (nmade >= 3) nstate = 2;
+                    if (nmade >= 3) { nstate = 2; const_cast<BytecodeChunk*>(nc0)->native_off |= is_new ? 2 : 1; }
                     else {
                         nmade++;
                         nstate = 1;
                         if (!g_native_thunks.count(key)) {
                             g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc, is_new));
-                            if (!g_native_thunks[key] || !g_native_thunks[key]->ok) nstate = 2;       // (nothing to look for any more)
+                            if (!g_native_thunks[key] || !g_native_thunks[key]->ok) { nstate = 2; const_cast<BytecodeChunk*>(nc0)->native_off |= is_new ? 2 : 1; }       // (nothing to look for any more)
                         }
                     }
                 } else if (nstate == 1 && nmade < 3 && ++ncalls >= g_native_at) {
@@ -4406,10 +4406,10 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                 }
             } else if (it->second && it->second->closed) {
                 // No more rebuilds: the callee is the helper's from now on, and the thunk table is not asked again.
-                nstate = 2;
+                { nstate = 2; const_cast<BytecodeChunk*>(nc0)->native_off |= is_new ? 2 : 1; }
             } else if (it->second && it->second->stale) {
                 // The unit was found wrong and learned from: build it again (a few times at most), for this call's callee.
-                if (!native_thunk_rebuild(*f, *it->second, fn, th, args, argc)) { it->second->closed = true; nstate = 2; }
+                if (!native_thunk_rebuild(*f, *it->second, fn, th, args, argc)) { it->second->closed = true; { nstate = 2; const_cast<BytecodeChunk*>(nc0)->native_off |= is_new ? 2 : 1; } }
             } else if (it->second && it->second->ok) {
                 if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[6])) {
                     bool have = false;
@@ -4428,6 +4428,13 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     }
     Value r;
     if (__builtin_expect(meta & 0x10, 0)) {
+        // A constructor of nothing but `this.name = parameter` stores is made in place (see ctor_leaf_construct), with no activation.
+        {
+            const Value pv = fn->constructor_prototype();
+            Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
+            Value made;
+            if (proto && fn->fast_callable() && ctor_leaf_construct(fn, proto, args, argc, made)) return std::bit_cast<uint64_t>(made);
+        }
         // `new`: h_ConstructPlain's call, new.target set for its duration.
         const Value old_new_target = ctx.get_new_target();
         ctx.set_new_target(fv);
