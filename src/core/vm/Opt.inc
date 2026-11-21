@@ -1039,7 +1039,8 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     // (A site the dense-array guards kept failing at is a step, unless the interpreter has met the plain-element road there: that is compiled for what it is.)
     const bool plain_site = (op == Op::GetKeyed && plain_keyed(pc + 2)) || (op == Op::SetKeyed && plain_keyed(pc + 3));
     if (cf_ == 0 && avoided(pc) && !plain_site) { if (config().log) std::fprintf(stderr, "[opt] pc %u avoided\n", pc); return false; }
-    if (cf_ != 0 && avoid_ && !avoid_->generic_in.empty() && avoid_->generic_in.count({F().chunk, pc})) { if (config().log) std::fprintf(stderr, "[opt] callee pc %u made generic\n", pc); return false; }
+    const bool generic_here = cf_ != 0 && avoid_ && !avoid_->generic_in.empty() && avoid_->generic_in.count({F().chunk, pc});
+    if (generic_here && !plain_site) { if (config().log) std::fprintf(stderr, "[opt] callee pc %u made generic\n", pc); return false; }
     auto reg = [&](uint32_t at) -> uint32_t { return F().var_base + code[at]; };
     auto ok_reg = [&](uint32_t r) { return r < F().acc_var; };
     // Looks at a node and lets go of it before anything is emitted (emitting can move g_.n).
@@ -1561,7 +1562,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             set(acc(), guarded(K::LoadTyped, Rep::F64, obj, idx, static_cast<uint32_t>(kind)));
             return true;
         }
-        if (!dense_array_receiver(rcv) || (plain_site && cf_ == 0 && avoided(pc))) {
+        if (!dense_array_receiver(rcv) || (plain_site && (cf_ == 0 ? avoided(pc) : generic_here))) {
             // (What was a step: not a dense array just now, and the interpreter has met the plain-element road at this site.)
             if (plain_keyed(pc + 2) && object_value(value(rcv)) && numeric_value(value(acc()))) {
                 const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(acc())));
@@ -1600,7 +1601,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             guarded(K::StoreTyped, Rep::None, obj, idx, static_cast<uint32_t>(kind), 0, val);
             return true;
         }
-        if (!dense_array_receiver(rcv) || (plain_site && cf_ == 0 && avoided(pc))) {
+        if (!dense_array_receiver(rcv) || (plain_site && (cf_ == 0 ? avoided(pc) : generic_here))) {
             if (config().log && !(plain_keyed(pc + 3) && object_value(value(rcv)) && numeric_value(value(kreg)))) std::fprintf(stderr, "[opt] SetKeyed pc %u: not dense; plain feedback %d, receiver object %d (node %s), key numeric %d\n", in.pc, int(plain_keyed(pc + 3)), int(object_value(value(rcv))), kname(g_.n[resolve(value(rcv))].op), int(numeric_value(value(kreg))));
             if (plain_keyed(pc + 3) && object_value(value(rcv)) && numeric_value(value(kreg))) {
                 const int32_t idx = guarded(K::ToIndex, Rep::I32, num(value(kreg)));
