@@ -5063,6 +5063,20 @@ inline bool Emitter::allocate() {
                 active.pop_back();
             } else i++;
         }
+        // A double operation whose first operand ends here takes that operand's register: the emitted code is then the one instruction and not a copy and the instruction.
+        if (fp) {
+            const Node& nd = g_.n[id];
+            if ((nd.op == K::AddF || nd.op == K::SubF || nd.op == K::MulF || nd.op == K::DivF) && nd.a >= 0 && nd.a != nd.b && needs_loc(nd.a) && loc_[nd.a].kind == kXmm &&
+                end[nd.a] == start[id]) {
+                auto it = std::find(active.begin(), active.end(), nd.a);
+                if (it != active.end()) {
+                    loc_[id] = loc_[nd.a];
+                    active.erase(it);
+                    active.push_back(id);
+                    continue;
+                }
+            }
+        }
         if (freem) {
             const int bit = __builtin_ctz(freem);
             freem &= ~(1u << bit);
