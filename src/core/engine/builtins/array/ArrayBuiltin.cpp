@@ -597,6 +597,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             return Value(array.release());
         }, 1);
 
+    array_constructor->set_intrinsic(3);      // (`new Array()` and `new Array(n)` are made by the JIT's call helper without the generic construct)
     auto isArray_fn = ObjectFactory::create_native_function("isArray",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;

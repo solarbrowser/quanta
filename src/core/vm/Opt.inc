@@ -4486,6 +4486,15 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     }
     Value r;
     if (__builtin_expect(meta & 0x10, 0)) {
+        // `new Array()` and `new Array(length)` of the one realm there is: the array the Array constructor makes, without the construct's own object and the lookups behind it.
+        if (fn->intrinsic() == 3 && !Engine::multi_engine() && (argc == 0 || (argc == 1 && args[0].is_number()))) {
+            const double n = argc ? args[0].as_number() : 0.0;
+            if (n >= 0 && n < 4294967296.0 && n == std::floor(n)) {
+                std::unique_ptr<Object> arr = ObjectFactory::create_array();
+                if (argc && !arr->set_array_length_coerced(static_cast<uint32_t>(n))) { /* (cannot fail on a fresh array) */ }
+                return std::bit_cast<uint64_t>(Value(arr.release()));
+            }
+        }
         // A constructor of nothing but `this.name = parameter` stores is made in place (see ctor_leaf_construct), with no activation.
         {
             const Value pv = fn->constructor_prototype();
