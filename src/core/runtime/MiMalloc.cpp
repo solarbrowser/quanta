@@ -46,9 +46,10 @@
 // kernel backs mimalloc's arena with 2MB pages that stay fully resident however
 // little of each is in use: measured with THP=always, 32MB of a 99MB mimalloc
 // mapping was huge-page backed at a moment when the live allocations were 62MB.
-// Turning it off lowered peak RSS on every benchmark for +-3% time: code.js
-// 211 -> 199MB, typescript.js 111 -> 98MB, markdown.js 31 -> 18MB, vdom.js
-// 27.5 -> 19MB. Only the default is set, so MIMALLOC_ALLOW_THP still wins.
+// Turning it off lowered peak RSS on every benchmark for +-3% time: a 3 MB
+// bundled parser-and-printer script 211 -> 199MB, a TypeScript compiler bundle
+// 111 -> 98MB, a markdown renderer 31 -> 18MB, a virtual-DOM library 27.5 -> 19MB.
+// Only the default is set, so MIMALLOC_ALLOW_THP still wins.
 // Priority 101 so it runs before any allocation that could fix the option.
 __attribute__((constructor(101))) static void quanta_mimalloc_defaults() {
     mi_option_set_default(mi_option_allow_thp, 0);

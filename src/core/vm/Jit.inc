@@ -2770,7 +2770,7 @@ bool chunk_has_loop(const BytecodeChunk& chunk) noexcept {
 }
 
 // How many times a native thunk whose guards failed is built again: QUANTA_THUNK_REBUILDS for one thunk (4), QUANTA_THUNK_REBUILD_TOTAL for the process (10). A rebuild gives Richards -5%,
-// DeltaBlue -5.6%, RayTrace -1.6% (instructions a score), but code.js (a 3 MB parser and printer) peaks at 246 MB instead of 208 with every rebuild it makes (67): the first ten cost
+// DeltaBlue -5.6%, RayTrace -1.6% (instructions a score), but a 3 MB bundled parser-and-printer script peaks at 246 MB instead of 208 with every rebuild it makes (67): the first ten cost
 // nothing (206 MB), 12 cost 226, all of them 242, and the cause is not found (not the thunk's own memory: 3 MB over 99 builds; not the roots it holds, not the collector's cadence,
 // not the safepoint count; a rebuilt unit's generic string `+` and the collector's phase are what it follows).
 inline const uint32_t g_thunk_rebuild_total = [] { const char* e = std::getenv("QUANTA_THUNK_REBUILD_TOTAL"); return static_cast<uint32_t>(e ? std::atoi(e) : 10); }();
