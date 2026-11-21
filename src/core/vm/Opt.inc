@@ -275,6 +275,7 @@ struct Avoid {
     std::map<uint64_t, uint32_t> fails;               // site -> failures so far
     std::set<std::pair<const BytecodeChunk*, uint32_t>> no_inline;   // call sites (chunk, pc) that are not worth inlining
     std::set<std::pair<const BytecodeChunk*, uint32_t>> fallback;    // inlined call sites whose callee check failed: what matches none of the callees is called through the runtime
+    std::set<std::pair<const BytecodeChunk*, uint32_t>> generic_in;   // instructions of inlined callees (chunk, pc) whose speculation failed (in a native thunk): made through the interpreter's generic operation
     std::set<uint32_t> nohoist;                                      // pcs of loop headers whose hoisted checks failed before entering the loop: nothing is hoisted out of those
     bool fallback_all = false;                                       // one did: every inlined call of this chunk's units is built that way (the profile was too short for this chunk's callees)
     uint32_t recompiles = 0;
@@ -1022,6 +1023,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     const Op op = static_cast<Op>(in.op);
     const uint32_t pc = in.pc;
     if (cf_ == 0 && avoided(pc)) { if (config().log) std::fprintf(stderr, "[opt] pc %u avoided\n", pc); return false; }
+    if (cf_ != 0 && avoid_ && !avoid_->generic_in.empty() && avoid_->generic_in.count({F().chunk, pc})) { if (config().log) std::fprintf(stderr, "[opt] callee pc %u made generic\n", pc); return false; }
     auto reg = [&](uint32_t at) -> uint32_t { return F().var_base + code[at]; };
     auto ok_reg = [&](uint32_t r) { return r < F().acc_var; };
     // Looks at a node and lets go of it before anything is emitted (emitting can move g_.n).
@@ -4278,6 +4280,9 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                     nmade++;
                     if (!g_native_thunks.count(key)) g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc, is_new));
                 }
+            } else if (it->second && it->second->stale && !it->second->closed) {
+                // The unit was found wrong and learned from: build it again (a few times at most), for this call's callee.
+                if (!native_thunk_rebuild(*f, *it->second, fn, th, args, argc)) it->second->closed = true;
             } else if (it->second && it->second->ok) {
                 if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[6])) {
                     bool have = false;
@@ -6858,6 +6863,7 @@ inline void Emitter::emit_native_tail(Label& restore_full) {
     a_.jcc(CC_E, threw);
     a_.mov(abi::A0, RBX);
     a_.mov(abi::A1, RAX);
+    a_.mov(abi::A2, R14);                      // (which unit it is: a thunk can have been built again while this activation of the old one ran)
     call_c(reinterpret_cast<const void*>(&native_exit));
     a_.jmp(restore);                           // (native_exit has unlinked the frame itself)
     a_.bind(threw);

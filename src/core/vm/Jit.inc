@@ -2780,13 +2780,17 @@ struct NativeThunk {
     uint32_t argc = 0;
     bool ok = false;
     uint32_t deopts = 0;
-    bool closed = false;       // given up on
+    bool closed = false;       // no more rebuilds
+    bool stale = false;        // its unit was found wrong (guards failing, learned from): its caches are cleared and the next call through the helper builds it again
+    uint32_t ui = 0;           // the unit that is current, in its chunk's JitCode
+    uint8_t rebuilds = 0;
     std::vector<std::pair<JitCallIC*, int>> ics;     // the cache ways that point at this entry
 };
 inline thread_local std::unordered_map<const BytecodeChunk*, NativeThunk*> g_native_by_chunk;
 inline thread_local std::unordered_map<uint64_t, std::unique_ptr<NativeThunk>> g_native_thunks;
 inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, bool construct);
-inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept;
+inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status, JitRt* rt) noexcept;
+inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, const Value& this_value, const Value* argv, uint32_t argc);
 #include "Opt.inc"
 
 // The interpreter's offer at a hot back edge (see osr_try in Interpreter.cpp).
@@ -3086,6 +3090,11 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
                 const BytecodeChunk* sc = inlined ? cu.inl[cu.inl_states[st].func].chunk : &chunk;
                 av.fallback.insert({sc, inlined ? cu.inl_states[st].pc : state_pc});
                 av.fallback_all = true;
+            }
+            else if (inlined && g_native_by_chunk.count(&chunk)) {
+                // A thunk: its callee is the point of it. The instruction that failed (of the callee, or of one it inlined) is made through the interpreter's generic operation
+                // the next time, so the unit does not leave there again; the interpreter has taken the call on and has learned what the instruction meets.
+                av.generic_in.insert({cu.inl[cu.inl_states[st].func].chunk, cu.inl_states[st].pc});
             }
             else if (inlined) av.no_inline.insert({&chunk, site_pc});
             else if (int_guard) av.nonarrow.insert(gpc);
@@ -3522,6 +3531,63 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
     return raw;
 }
 
+// The unit of a thunk again, built from the same chunk (what the failed guards taught is in the chunk's Avoid entry, and the compile reads it).
+inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, const Value& this_value, const Value* argv, uint32_t argc) {
+    BytecodeChunk& ch = *t.chunk;
+    Value bank[8];
+    bank[0] = Value(fn);
+    bank[1] = this_value;
+    for (uint32_t i = 0; i < argc && i < 4; i++) bank[2 + i] = argv[i];
+    Frame peek{nullptr, nullptr, std::span<const Value>(), nullptr, true, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, Value(), Value(), 0, 0, 0, true};
+    peek.chunk = &ch;
+    peek.ctx = caller.ctx;
+    peek.regs = bank;
+    peek.code = ch.code.data();
+    peek.constants = ch.constants.data();
+    peek.this_value = this_value;
+    // The call site it is for is the one it was made for, with the callee the call has now.
+    if (ch.ic_feedback && !ch.ic_feedback->call_sites.empty()) {
+        auto& cs = ch.ic_feedback->call_sites[0];
+        cs.fns[0] = fn;
+        cs.ids[0] = fn->get_executable().get();
+    }
+    JitCode::OptUnit made;
+    JitCode* jc = opt::ensure_jitcode(ch);
+    opt::Emitter::NativeInfo ninfo;
+    ninfo.tmpl = t.tmpl.get();
+    ninfo.rt = made.rt.get();
+    ninfo.argc = t.argc;
+    ninfo.nregs = 2 + t.argc;
+    const bool saved_inl = opt::config().inl;
+    opt::config().inl = true;
+    bool compiled = opt::compile(ch, 0, &peek, made, &ninfo);
+    if (!compiled) {
+        // An instruction that the interpreter's generic operations cannot do for it (the callee would need a step) stays as the feedback now says: the unit is built without what was
+        // made generic.
+        auto& av = opt::avoid_table()[&ch];
+        if (!av.generic_in.empty()) {
+            av.generic_in.clear();
+            made = JitCode::OptUnit();
+            ninfo.rt = made.rt.get();
+            compiled = opt::compile(ch, 0, &peek, made, &ninfo);
+        }
+    }
+    opt::config().inl = saved_inl;
+    if (opt::config().log) std::fprintf(stderr, "[native] thunk rebuilt (%u): %s\n", static_cast<unsigned>(t.rebuilds) + 1, compiled ? "compiled" : "refused");
+    if (!compiled || !made.native_off) return false;
+    t.held.push_back(Value(fn));
+    for (const auto& d : made.rtdescs) if (d->owner) t.held.push_back(Value(d->owner));
+    t.entry = reinterpret_cast<decltype(t.entry)>(made.base + made.native_off);
+    t.slim = made.base + made.native_slim_off;
+    jc->opt_units.push_back(std::move(made));
+    t.ui = static_cast<uint32_t>(jc->opt_units.size() - 1);
+    t.deopts = 0;
+    t.stale = false;
+    t.ok = true;
+    t.rebuilds++;
+    return true;
+}
+
 #endif
 
 
@@ -3558,20 +3624,21 @@ inline void native_frame_complete(Frame* f) {
     f->rare_pop = false;
 }
 
-inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept {
+inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status, JitRt* exit_rt) noexcept {
     constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1, kNotFn = ~0ull - 2;
     native_frame_complete(f);
-    if (status == opt::kStatusDeopt || status == opt::kStatusResume) {
-        // A thunk whose guards keep failing costs more than it saves: its call sites go back to the ordinary call.
+    NativeThunk* nt = nullptr;
+    {
         auto it = g_native_by_chunk.find(f->chunk);
-        if (it != g_native_by_chunk.end() && ++it->second->deopts > 24 && it->second->ok) {
-            it->second->ok = false;
-            for (auto& [ic, w] : it->second->ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
-            it->second->closed = true;
-            if (opt::config().log) std::fprintf(stderr, "[native] thunk given up on\n");
-        }
+        if (it != g_native_by_chunk.end()) nt = it->second;
     }
-    if (opt::config().log) { JitCode* j = f->chunk->jit.get(); JitRt* r = j->opt_units[0].rt.get(); std::fprintf(stderr, "[native] exit status %lu last_deopt %u func %d pc %u\n", (unsigned long)status, r->last_deopt, r->last_deopt < j->opt_units[0].inl_states.size() ? j->opt_units[0].inl_states[r->last_deopt].func : -9, f->pc); }
+    uint32_t nui = nt ? nt->ui : 0;
+    if (nt) {
+        // The unit this activation is of (not necessarily the current one).
+        JitCode* j = f->chunk->jit.get();
+        for (uint32_t k = 0; k < j->opt_units.size(); k++) if (j->opt_units[k].rt.get() == exit_rt) { nui = k; break; }
+    }
+    if (opt::config().log) { JitCode* j = f->chunk->jit.get(); JitRt* r = j->opt_units[nui].rt.get(); std::fprintf(stderr, "[native] exit status %lu last_deopt %u func %d pc %u\n", (unsigned long)status, r->last_deopt, r->last_deopt < j->opt_units[nui].inl_states.size() ? j->opt_units[nui].inl_states[r->last_deopt].func : -9, f->pc); }
     Frame* cf = f;
     BytecodeChunk& chunk = const_cast<BytecodeChunk&>(*f->chunk);
     Context& ctx = *f->ctx;
@@ -3579,8 +3646,18 @@ inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status) noexcept {
     bool rethrow = false;
     try {
         JitCode* jc = chunk.jit.get();
-        JitRt* rt = jc->opt_units[0].rt.get();
-        const int r = opt_unit_exit(*cf, chunk, jc, 0, 0, rt, status);
+        JitRt* rt = jc->opt_units[nui].rt.get();
+        const int r = opt_unit_exit(*cf, chunk, jc, static_cast<long>(nui), 0, rt, status);
+        // The guard that failed taught the chunk something: the unit is dead (opt_unit_exit emptied its entries), or fails too often: it is built again, from what was learned.
+        if (nt && !nt->stale && nui == nt->ui && (status == opt::kStatusDeopt || status == opt::kStatusResume) &&
+            (jc->opt_units[nui].entries.empty() || ++nt->deopts > 24)) {
+            nt->ok = false;
+            nt->stale = true;
+            for (auto& [ic, w] : nt->ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
+            nt->ics.clear();
+            if (nt->rebuilds >= 4) nt->closed = true;
+            if (opt::config().log) std::fprintf(stderr, "[native] thunk stale (rebuilds so far %u)\n", static_cast<unsigned>(nt->rebuilds));
+        }
         if (r == 1) {
             result = cf->acc;
         } else {
