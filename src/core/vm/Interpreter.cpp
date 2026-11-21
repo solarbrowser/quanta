@@ -3018,8 +3018,11 @@ template <bool NoteCall = true>
 
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
     PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
-    if (UNLIKELY(chunk.uses_lookup_cache || private_feedback_data))
-        inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+    if (UNLIKELY(chunk.uses_lookup_cache || private_feedback_data)) {
+        const size_t private_n = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.size() : 0;
+        if (!fn->instance_caches_ready(chunk.uses_lookup_cache ? chunk.names.size() : 0, private_n, lookup_cache_data, private_feedback_data))
+            inline_instance_caches(chunk, fn, lookup_cache_data, private_feedback_data);
+    }
 
     Value* bank = arena.top;
     Value* regs = bank + 2;

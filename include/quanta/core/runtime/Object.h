@@ -2069,6 +2069,20 @@ public:
         return ensure_instance_data().feedback.private_feedback;
     }
 
+    // The instance caches as a call finds them when they are already made and have the sizes the chunk asks for (the stackless call's fast road: no allocation, no
+    // growth, no call). False for anything else, which is inline_instance_caches' to make.
+    bool instance_caches_ready(size_t lookup_n, size_t private_n, BytecodeChunk::LookupCacheEntry*& lookup, PrivateFeedback*& priv) const {
+        const NonNativeInstanceData* d = instance_data();
+        if (!d) return false;
+        const auto& lc = d->feedback.lookup_cache;
+        const auto& pf = d->feedback.private_feedback;
+        // (Pointer comparisons: size() divides by the size of an entry.)
+        if (lc.data() + lookup_n > lc.data() + lc.size() || pf.data() + private_n > pf.data() + pf.size()) return false;
+        if (lookup_n) lookup = const_cast<BytecodeChunk::LookupCacheEntry*>(lc.data());
+        if (private_n) priv = const_cast<PrivateFeedback*>(pf.data());
+        return true;
+    }
+
     // The spec's internal slots (see ClassSlots). Reading never allocates: a
     // function that is neither a method nor a class constructor answers from
     // one shared empty instance, so the common call pays a null check.
