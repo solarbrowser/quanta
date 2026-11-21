@@ -1180,6 +1180,8 @@ struct BytecodeChunk {
     mutable uint8_t native_off : 2 = 0;
     // A constructor whose body is only `this.name = <parameter or small constant>` stores (Interpreter.cpp, ctor_leaf_construct): 0 not looked at, 1 yes, 2 no, 3 yes but a call just failed.
     mutable uint8_t ctor_leaf : 2 = 0;
+    // The baseline JIT has code for this chunk: a stackless frame of it is run in that code (Jit.inc, h_RunCompiledFrame).
+    mutable bool bl_compiled : 1 = false;
     mutable uint8_t opt_loops = 0;     // 1: the tier has declined this chunk's loops, so a call no longer offers them at its first back edge
     mutable uint16_t opt_calls = 0;
 

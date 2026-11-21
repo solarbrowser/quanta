@@ -3025,7 +3025,8 @@ void compile_chunk(const BytecodeChunk& chunk) noexcept {
         }
         chunk.jit = std::move(compiled);
         chunk.jit_state = 1;
-        chunk.inline_state = kInlineNever | (chunk.inline_state & kInlineKeepBits);   // generated code runs it now: no stackless entry
+        chunk.bl_compiled = true;
+        chunk.inline_state &= kInlineKeepBits;          // (undecided: the verdict is made the next call, with the generated code in view, and a stackless frame of it runs there)
         g_cfg.compiled++;
         if (g_cfg.log) std::fprintf(stderr, "[jit] #%u compiled %u bytes of bytecode -> %zu bytes of code (%zu mapped)\n", ordinal,
                                     static_cast<unsigned>(chunk.code.size()), chunk.jit->code_bytes, chunk.jit->mem_size);
@@ -3167,6 +3168,41 @@ bool tally(JitCode* jc) noexcept {
     }
     if (jc->owner_thread != &g_thread_marker) return run_dispatch(f);
     return run_from(f, jc);
+}
+
+// Throws the exception generated code left pending (nothing to throw: returns).
+[[gnu::noinline]] void rethrow_pending_exception() {
+    std::exception_ptr ep = std::move(g_pending_exc);
+    g_pending_exc = nullptr;
+    if (ep) std::rethrow_exception(ep);
+}
+
+// A stackless frame the interpreter has just made for a chunk that has generated code (the callee of an interpreter call): its code runs on that frame, as it does on the
+// one run() makes. Whatever the code leaves to the interpreter, the interpreter carries on with, since the frame is an ordinary stackless one: it returns to its caller
+// through h_ReturnInline either way.
+QUANTA_HANDLER Value run_compiled_frame(HANDLER_PARAMS) {
+    JitCode* cj = f.chunk->jit.get();
+    if (UNLIKELY(!cj || !cj->entry || cj->disabled || cj->owner_thread != &g_thread_marker || ((++cj->entries) & 1023) == 0 && tally(cj)))
+        [[clang::musttail]] return kHandlers[code[pc]](f, pc, acc, regs, code);
+    f.pc = 0;
+    f.acc = Value();
+    f.inline_ok = false;                 // (a step of the generated code runs one instruction: a stackless call from it would never come back to it)
+    const uint64_t status = cj->entry(&f, cj, cj->rt.base + cj->start_off);
+    f.inline_ok = true;
+    if (LIKELY(status == kExitFinished)) {
+        // Generated code that leaves an exception no handler of its own takes finishes with it pending: the caller looks for a handler, as after any call.
+        if (UNLIKELY(f.ctx->has_exception())) {
+            Frame* const caller = f.caller;
+            inline_frame_pop(f);
+            [[clang::musttail]] return h_ExceptionAt(*caller, caller->instr_pc, Value(), caller->regs, caller->code);
+        }
+        [[clang::musttail]] return h_ReturnInline(f, 0, f.acc, f.regs, f.code);
+    }
+    if (status == kExitRethrow) {
+        rethrow_pending_exception();
+        [[clang::musttail]] return h_ReturnInline(f, 0, Value(), f.regs, f.code);
+    }
+    [[clang::musttail]] return kHandlers[f.code[f.pc]](f, f.pc, f.acc, f.regs, f.code);       // kExitBail: Frame::pc and Frame::acc say where
 }
 
 #ifdef QUANTA_OPT_BACKEND
