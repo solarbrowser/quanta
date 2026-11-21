@@ -2024,6 +2024,7 @@ inline bool Builder::generic_op(const Insn& in) {
         d->owner = F().gbody ? F().gbody : (F().fnp ? F().fnp : (g_.frame ? g_.frame->owner : nullptr));   // (the function whose executable holds this site's feedback: a forwarding constructor's body, not the forwarder; the unit keeps it alive, see jit_trace)
         d->pc = root_pc;
         d->is_length = *d->name == "length";
+        d->is_prototype = *d->name == "prototype";
         JitCode::OptUnit::RtDesc* dp = d.get();
         g_.rtdescs.push_back(std::move(d));
         const int32_t v = emit(K::Rt, Rep::Tagged, tagged(value(rcv)), -1, kRtGetNamed, reinterpret_cast<uint64_t>(dp));
@@ -4449,6 +4450,8 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
     // What the interpreter's read handler answers from the site's cache before it asks the general path.
     const Value rv = std::bit_cast<Value>(recv);
     if (d->is_length && rv.is_string()) return std::bit_cast<uint64_t>(Value(static_cast<double>(rv.as_string()->utf16_length())));
+    // `F.prototype` of a function whose prototype is the field (what the interpreter's read handler answers first): no name checks, no descriptor walk.
+    if (d->is_prototype && rv.is_function() && rv.as_function()->has_plain_prototype()) return std::bit_cast<uint64_t>(rv.as_function()->constructor_prototype());
     if (rv.is_object_like()) {
         Object* obj = rv.is_function() ? static_cast<Object*>(rv.as_function()) : rv.as_object();
         if (const FeedbackBody* fb = d->slot->peek()) {
@@ -4484,6 +4487,41 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_getnamed(VM::Frame* f, uint64_t recv, u
 }
 inline QUANTA_JIT_ABI uint64_t helper_rt_setnamed(VM::Frame* f, uint64_t recv, uint64_t val, uint64_t desc) noexcept {
     const auto* d = reinterpret_cast<const JitCode::OptUnit::RtDesc*>(desc);
+    // What VM::set_named answers from the site's cache before it asks anything else (an own data slot, or the property-adding transition the site has seen), for an
+    // ordinary object: no frame bookkeeping, no exception wrapper.
+    if (const Value rv = std::bit_cast<Value>(recv); rv.is_object()) {
+        Object* obj = rv.as_object();
+        const FeedbackBody* fb = d->slot->peek();
+        if (fb && !fb->mega && obj->get_type() != Object::ObjectType::Custom && VM::shape_fast_path_ok(obj->get_type())) {
+            const Value v = std::bit_cast<Value>(val);
+            Shape* shape = obj->get_shape();
+            if (!obj->has_any_descriptor_override()) {
+                for (uint8_t i = 0; i < fb->count; i++) {
+                    if (fb->entries[i].shape() != shape) continue;
+                    if (!fb->entries[i].is_accessor) {
+                        if (Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index)) {
+                            VM::write_barrier_for(obj, v);
+                            *slot = v;
+                            return std::bit_cast<uint64_t>(Value());
+                        }
+                    }
+                    break;
+                }
+            }
+            if (!fb->transition_mega && !obj->has_descriptor_override(*d->name) && obj->is_extensible()) {
+                Object* proto0 = obj->get_prototype_raw();
+                const uint64_t epoch = Object::proto_epoch();
+                for (uint8_t i = 0; i < fb->transition_count; i++) {
+                    const auto& te = fb->transitions[i];
+                    if (te.from_shape == shape && te.prototype == proto0 && te.proto_epoch == epoch) {
+                        VM::write_barrier_for(obj, v);
+                        obj->add_shape_property_cached(*d->name, v, te.to_shape);
+                        return std::bit_cast<uint64_t>(Value());
+                    }
+                }
+            }
+        }
+    }
     const bool rooted = d->owner && (d->owner != f->owner || f->feedback_rooted);
     return rt_run(f, d->pc, [&](Context& ctx) { VM::set_named(ctx, std::bit_cast<Value>(recv), *d->name, std::bit_cast<Value>(val), d->slot, d->owner, rooted); return Value(); });
 }
