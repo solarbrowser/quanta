@@ -3526,11 +3526,14 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
     ninfo.argc = argc;
     ninfo.nregs = 2 + argc;
     const bool saved_inl = opt::config().inl, saved_sta = opt::config().sta_lookup;
+    const auto saved_calls = opt::config().max_helper_calls;
+    opt::config().max_helper_calls = ~0u;      // (the calls out of a thunk's unit go to other thunks' native entries: the limit is for dispatchers that call through the helper)
     opt::config().sta_lookup = true;       // (a callee that assigns a global stays in the thunk's unit: as a step it would refuse the inline, and every call would take the helper's way)
     opt::config().inl = true;       // (the thunk exists to have its callee inlined, whatever the call sites around it were allowed)
     const bool compiled = opt::compile(*ch, 0, &peek, made, &ninfo);
     opt::config().inl = saved_inl;
     opt::config().sta_lookup = saved_sta;
+    opt::config().max_helper_calls = saved_calls;
     if (opt::config().log) std::fprintf(stderr, "[native] thunk for \"%s\" argc %u: %s\n", fn->get_name().c_str(), argc, compiled ? "compiled" : "refused");
     if (compiled && made.native_off) {
         t->held.push_back(Value(fn));
@@ -3576,6 +3579,8 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
     ninfo.argc = t.argc;
     ninfo.nregs = 2 + t.argc;
     const bool saved_inl = opt::config().inl, saved_sta = opt::config().sta_lookup;
+    const auto saved_calls = opt::config().max_helper_calls;
+    opt::config().max_helper_calls = ~0u;      // (the calls out of a thunk's unit go to other thunks' native entries: the limit is for dispatchers that call through the helper)
     opt::config().sta_lookup = true;       // (a callee that assigns a global stays in the thunk's unit: as a step it would refuse the inline, and every call would take the helper's way)
     opt::config().inl = true;
     bool compiled = opt::compile(ch, 0, &peek, made, &ninfo);
@@ -3592,6 +3597,7 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
     }
     opt::config().inl = saved_inl;
     opt::config().sta_lookup = saved_sta;
+    opt::config().max_helper_calls = saved_calls;
     if (opt::config().log) std::fprintf(stderr, "[native] thunk rebuilt (%u): %s\n", static_cast<unsigned>(t.rebuilds) + 1, compiled ? "compiled" : "refused");
     if (!compiled || !made.native_off) return false;
     t.held.push_back(Value(fn));
