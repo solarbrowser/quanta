@@ -4625,6 +4625,12 @@ private:
     const char* cur_kind_ = "?";
     K cur_op_ = K::Trap;
     std::map<std::pair<int32_t, int>, Label*> guard_labels_;
+    // Where in the code each node's instructions are (offset, the node's kind): for the census of where the instructions of a unit go (QUANTA_OPT_BIN writes it, tools/jit/hotunit.py reads it).
+    std::vector<std::pair<uint32_t, const char*>> code_map_;
+    void mark(const char* kind) { code_map_.push_back({static_cast<uint32_t>(a_.size()), kind}); }
+public:
+    const std::vector<std::pair<uint32_t, const char*>>& code_map() const { return code_map_; }
+private:
     const NativeInfo* native_ = nullptr;
     Label* native_restore_ = nullptr;   // (a native unit that returns a value leaves through here, in rax)
     int32_t native_off_ = 0;            // where the frame of a native entry lives in the unit's native frame
@@ -6680,7 +6686,7 @@ inline void Emitter::compute_fusion() {
 #ifdef QUANTA_JIT_ARCH_A64
         const bool fusable = ck == K::CmpI;
 #else
-        const bool fusable = ck == K::CmpI || ck == K::LtF || ck == K::GtF || ck == K::LeF || ck == K::GeF;
+        const bool fusable = ck == K::CmpI || ck == K::LtF || ck == K::GtF || ck == K::LeF || ck == K::GeF || ck == K::EqF || ck == K::NeF;
 #endif
         if (!fusable) continue;
         int32_t last = -1;
@@ -6702,6 +6708,21 @@ inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
         if (fused_cmp_[blk] >= 0) {
             const Node& cn = g_.n[fused_cmp_[blk]];
 #ifndef QUANTA_JIT_ARCH_A64
+            if (cn.op == K::EqF || cn.op == K::NeF) {
+                // Equal is ZF set and PF clear (a NaN sets both); not equal is the rest.
+                const Xmm a = use_x(cn.a, XMM0);
+                const Xmm b = use_x(cn.b, XMM1);
+                a_.ucomisd(a, b);
+                Label& other = new_label();
+                if (cn.op == K::EqF) {
+                    if (t.t == next_blk) { a_.jcc(CC_NE, *blk_label_[t.f]); a_.jcc(CC_P, *blk_label_[t.f]); }
+                    else { a_.jcc(CC_P, other); a_.jcc(CC_E, *blk_label_[t.t]); a_.bind(other); goto_blk(t.f); }
+                } else {
+                    if (t.t == next_blk) { a_.jcc(CC_P, other); a_.jcc(CC_E, *blk_label_[t.f]); a_.bind(other); }
+                    else { a_.jcc(CC_NE, *blk_label_[t.t]); a_.jcc(CC_P, *blk_label_[t.t]); goto_blk(t.f); }
+                }
+                return;
+            }
             if (cn.op != K::CmpI) {
                 // (ucomisd leaves "unordered" as ZF=CF=1: above and above-or-equal are false for a NaN, their inverses true.)
                 const Xmm a = use_x(cn.a, XMM0);
@@ -6890,6 +6911,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
     if (native_) native_restore_ = &new_label();
 #endif
 
+    mark("prologue");
     // Prologue: the entry address arrives in the third argument register.
 #ifdef QUANTA_JIT_ARCH_A64
     a_.enter_frame();
@@ -6924,10 +6946,12 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
                 cur_ls_ = LiveSet();
                 break;
             }
+            mark(kname(g_.n[id].op));
             emit_node(id);
             if (why_) break;
         }
         if (why_) break;
+        mark("term/phi-moves");
         emit_term(blk, i);
     }
     if (why_) return false;
@@ -6955,15 +6979,19 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
         a_.mov_imm32(RAX, 1);
         a_.jmp(epilogue_);
     }
+    mark("cold:slow paths+guard exits");
     for (size_t i = 0; i < cold_.size(); i++) cold_[i]();   // may append more
+    mark("cold:deopt stubs");
     for (size_t s = 0; s < state_label_.size(); s++) {
         if (!state_label_[s]) continue;
         a_.bind(*state_label_[s]);
         emit_deopt_stub(static_cast<int32_t>(s));
     }
     if (why_) return false;
+    mark("native entry");
     if (native_) emit_native_entry();
     if (why_) return false;
+    mark("epilogue");
     a_.bind(epilogue_);
     Label& restore = new_label();
     if (native_) {
@@ -7167,6 +7195,10 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         if (FILE* out = std::fopen(path.c_str(), "wb")) {
             std::fwrite(bytes.data(), 1, bytes.size(), out);
             std::fclose(out);
+            if (FILE* mf = std::fopen((config().bin_dir + "/unit_" + std::to_string(n) + ".map").c_str(), "wb")) {
+                for (auto& [off, kind] : em.code_map()) std::fprintf(mf, "%u %s\n", off, kind);
+                std::fclose(mf);
+            }
             if (FILE* idx = std::fopen((config().bin_dir + "/index.txt").c_str(), "ab")) {
                 std::fprintf(idx, "%u %s pc=%u bytecode=%u code=%zu inlined=%u base=%llx entries=", n, (peek && peek->owner) ? peek->owner->get_name().c_str() : "?", pc,
                              static_cast<unsigned>(chunk.code.size()), bytes.size(), g.inl_count, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(start)));
