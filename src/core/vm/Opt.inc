@@ -4561,8 +4561,18 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_binary(VM::Frame* f, uint64_t l, uint64
         const Value res = VM::binary_slow(ctx, static_cast<BinaryExpression::Operator>(meta & 0xFF), lv, rv);
         std::fprintf(stderr, "[rt] op=%u l=%016llx r=%016llx -> %016llx\n", unsigned(meta & 0xFF), (unsigned long long)l, (unsigned long long)r, (unsigned long long)std::bit_cast<uint64_t>(res));
     }
+    // Strict (in)equality of two objects cannot throw or run script: answered here, without the runtime wrapper.
+    const auto bop = static_cast<BinaryExpression::Operator>(meta & 0xFF);
+    if (bop == BinaryExpression::Operator::STRICT_EQUAL || bop == BinaryExpression::Operator::STRICT_NOT_EQUAL) {
+        const Value lv = std::bit_cast<Value>(l), rv = std::bit_cast<Value>(r);
+        // Two objects (or functions) are equal when they are the same one; no number or string content is looked at.
+        if (lv.is_object_like() && rv.is_object_like()) {
+            const bool eq = l == r;
+            return std::bit_cast<uint64_t>(Value(bop == BinaryExpression::Operator::STRICT_EQUAL ? eq : !eq));
+        }
+    }
     return rt_run(f, static_cast<uint32_t>(meta >> 8), [&](Context& ctx) {
-        return VM::binary_slow(ctx, static_cast<BinaryExpression::Operator>(meta & 0xFF), std::bit_cast<Value>(l), std::bit_cast<Value>(r));
+        return VM::binary_slow(ctx, bop, std::bit_cast<Value>(l), std::bit_cast<Value>(r));
     });
 }
 inline QUANTA_JIT_ABI uint64_t helper_rt_typeof(VM::Frame* f, uint64_t v, uint64_t, uint64_t) noexcept {
