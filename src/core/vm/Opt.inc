@@ -282,6 +282,7 @@ struct Avoid {
     std::map<uint64_t, uint32_t> fails;               // site -> failures so far
     std::set<std::pair<const BytecodeChunk*, uint32_t>> no_inline;   // call sites (chunk, pc) that are not worth inlining
     std::set<std::pair<const BytecodeChunk*, uint32_t>> fallback;    // inlined call sites whose callee check failed: what matches none of the callees is called through the runtime
+    std::set<std::pair<const BytecodeChunk*, uint32_t>> warm_in;      // blocks of inlined callees (chunk, first pc) that a unit left through its cold-block trap (in a native thunk): built as code the next time
     std::set<std::pair<const BytecodeChunk*, uint32_t>> generic_in;   // instructions of inlined callees (chunk, pc) whose speculation failed (in a native thunk): made through the interpreter's generic operation
     std::set<uint32_t> nohoist;                                      // pcs of loop headers whose hoisted checks failed before entering the loop: nothing is hoisted out of those
     bool fallback_all = false;                                       // one did: every inlined call of this chunk's units is built that way (the profile was too short for this chunk's callees)
@@ -496,7 +497,7 @@ private:
     // The definition of `v` as an operand: loads it if it is the memory state.
     int32_t value(uint32_t v) {
         int32_t d = resolve(read_var(v, cb_));
-        if (d == kMem && v > g_.acc_var) { fail("an inlined variable read before it was set"); return emit(K::ConstTagged, Rep::Tagged, -1, -1, 0, 0); }
+        if (d == kMem && v > g_.acc_var) { if (config().log) std::fprintf(stderr, "[opt] inlined var %u (var_base %u, cf %d, params %u) read before set at pc %u\n", v, F().var_base, cf_, (unsigned)F().chunk->parameter_count, cur_pc_); fail("an inlined variable read before it was set"); return emit(K::ConstTagged, Rep::Tagged, -1, -1, 0, 0); }
         if (d == kMem) {
             d = (v == g_.acc_var) ? emit(K::LoadAcc, Rep::Tagged, -1, -1, 0, memver_[v]) : emit(K::LoadReg, Rep::Tagged, -1, -1, v, memver_[v]);
             write_var(v, cb_, d);
@@ -1076,7 +1077,7 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     }
     case Op::Star: {
         const uint32_t r = reg(pc + 1);
-        if (!ok_reg(r)) return false;
+        if (!ok_reg(r)) { if (config().log) std::fprintf(stderr, "[opt] Star r%u not ok (acc_var %u var_base %u, cf %d)\n", r, F().acc_var, F().var_base, cf_); return false; }
         set(r, value(acc()));
         return true;
     }
@@ -1850,7 +1851,7 @@ inline bool Builder::translate_block(int32_t blk) {
         B0.term.t = B0.succs[0];
         return true;
     }
-    if (B0.cold) {
+    if (B0.cold && !(cf_ != 0 && avoid_ && !avoid_->warm_in.empty() && avoid_->warm_in.count({F().chunk, F().insns[B0.first_insn].pc}))) {
         // Never executed: reaching it means the speculation was wrong; leave through the deopt path (which, in a callee,
         // rebuilds the interpreter frames).
         begin_op(F().insns[B0.first_insn].pc);

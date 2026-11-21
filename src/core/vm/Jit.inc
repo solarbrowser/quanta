@@ -3076,7 +3076,8 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         // A thunk's callee guards are learned from at every failure, also those of the activations of a unit that is already dead (a recursive callee has many on the stack): the
         // rebuild then starts from all that they met, not from one guard per rebuild.
         const bool thunk_callee = inlined && !hoisted_fail && evar != -2 && gkind && g_native_by_chunk.count(&chunk) && std::strcmp(gkind, "CheckFn") && std::strcmp(gkind, "CallNative");
-        if (thunk_callee && !opt::config().stress && ++av.fails[site] >= opt::config().avoid_after) av.generic_in.insert({cu.inl[cu.inl_states[st].func].chunk, cu.inl_states[st].pc});
+        if (thunk_callee && !opt::config().stress && ++av.fails[site] >= opt::config().avoid_after && std::strcmp(gkind, "Trap")) av.generic_in.insert({cu.inl[cu.inl_states[st].func].chunk, cu.inl_states[st].pc});
+        if (thunk_callee && !std::strcmp(gkind, "Trap")) av.warm_in.insert({cu.inl[cu.inl_states[st].func].chunk, cu.inl_states[st].pc});
         if (!opt::config().stress && hoisted_fail && av.recompiles < opt::config().max_recompiles) {
             // A check taken out of a loop failed before the loop was entered: the next build leaves that loop's checks where they are.
             av.recompiles++;
@@ -3109,7 +3110,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
             else if (inlined && g_native_by_chunk.count(&chunk)) {
                 // A thunk: its callee is the point of it. The instruction that failed (of the callee, or of one it inlined) is made through the interpreter's generic operation
                 // the next time, so the unit does not leave there again; the interpreter has taken the call on and has learned what the instruction meets.
-                av.generic_in.insert({cu.inl[cu.inl_states[st].func].chunk, cu.inl_states[st].pc});
+                if (std::strcmp(gkind, "Trap")) av.generic_in.insert({cu.inl[cu.inl_states[st].func].chunk, cu.inl_states[st].pc});
             }
             else if (inlined) av.no_inline.insert({&chunk, site_pc});
             else if (int_guard) av.nonarrow.insert(gpc);
