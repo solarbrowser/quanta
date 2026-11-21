@@ -13,7 +13,9 @@
 // the `friend struct Jit*Layout` declarations in Object and Environment
 // already point.
 
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/TypedArray.h"
@@ -22,6 +24,7 @@
 #include <memory>
 #include <tuple>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <vector>
 
@@ -121,6 +124,33 @@ struct JitCallIC {
     uint8_t next = 0;                 // the way the next one goes to
 };
 
+// A call site of generated code (Jit.inc: emit_call) that has met a function it can enter directly: the function's bits (compared by the generated code) and what the
+// call is made with. The function is kept alive by the owning JitCode (bl_held), so its bits cannot be another function's.
+struct BlPlan {
+    class Function* fn = nullptr;
+    const BytecodeChunk* chunk = nullptr;
+    struct JitCode* jc = nullptr;                 // the callee chunk's generated code
+    const void* realm = nullptr;
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = nullptr;
+    PrivateFeedback* private_feedback_data = nullptr;
+    // (what the call stub reads, at fixed places: see Jit.inc, the stub kStubCall)
+    const uint8_t* code = nullptr;
+    const Value* constants = nullptr;
+    const void* entry = nullptr;                  // the callee's generated code, entered as run() enters it
+    const void* start = nullptr;                  // ... at the native address of pc 0
+    uint32_t nregs = 0;
+    uint32_t nparams = 0;
+    uint32_t strict_expect = 0;                   // the strict flag's mask in the context if the callee runs strict, else 0
+    int32_t osr_budget = 0;
+    bool strict = false;                          // the callee runs strict
+    bool sloppy_this = false;                     // a sloppy callee that reads `this`: a primitive receiver is the ordinary call's
+};
+struct BlSite {
+    uint64_t fn_bits = 0;                         // must stay first: generated code compares it with the callee
+    BlPlan* plan = nullptr;
+    uint32_t fills = 0;
+};
+
 struct JitCode {
     JitRt rt;                          // must stay first: r14 points at it
     void* mem = nullptr;
@@ -147,6 +177,11 @@ struct JitCode {
     bool disabled = false;
     uint32_t start_off = 0;        // native offset of the instruction at pc 0
     bool has_handlers = false;     // the chunk has try regions: a step must stop at their landing pads
+    // Call sites that enter a function directly (see BlSite). The deque keeps their addresses, which the generated code holds.
+    std::deque<BlSite> bl_sites;
+    std::vector<std::unique_ptr<BlPlan>> bl_plans;
+    std::vector<Value> bl_held;
+    std::unique_ptr<ValueVectorRoot> bl_root;      // made with the first held function
 
     // Optimizing tier (Opt.inc). Separate from `entry`/`native_off` above: its code can be entered
     // only at the points listed in each unit, and a chunk that was never baseline-compiled still
@@ -222,6 +257,16 @@ void jit_trace(const JitCode* code, Visitor& v);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Winvalid-offsetof"
 #endif
+
+// What the generated code of a direct call (the call stub, Jit.inc) reads and writes of the context, the call stack and the function.
+struct JitCallLayout {
+    static size_t ctx_lexical_env() { return offsetof(Context, lexical_environment_); }
+    static size_t ctx_filename() { return offsetof(Context, current_filename_); }          // const std::string* (what the call stack's frame names)
+    static size_t function_closure_context() { return offsetof(Function, closure_context_); }
+    static size_t stack_frames() { return offsetof(CallStack, frames_); }                   // the vector's first word: the frames
+    static size_t stack_depth() { return offsetof(CallStack, depth_); }
+    static void probe_set_exception(Context& c) { c.has_exception_ = true; }
+};
 
 // Field offsets of Object the generated code uses.
 struct JitObjectLayout {

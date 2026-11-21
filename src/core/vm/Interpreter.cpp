@@ -2773,7 +2773,7 @@ static bool arrow_env_ok(Function* fn) {
     return !fn->has_own_property("__contains_eval__") && !fn->has_own_property("__in_cfi__");
 }
 
-[[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn) {
+[[gnu::noinline]] uint8_t inline_classify(const FunctionExecutable& exe, const BytecodeChunk& chunk, Function* fn, bool baseline_compiled = false) {
     // Decided by the body alone, so it does not wait for the JIT: a leaf is answered without ever
     // running, which means nothing ever moves its jit_state off "not seen yet".
     if (exe.fast_leaf && !fn->is_arrow()) {
@@ -2790,7 +2790,7 @@ static bool arrow_env_ok(Function* fn) {
     if (chunk.jit_state != 1 && chunk.jit_state != 2 && !undecided_loop) return 0;
     const bool strict = fn->is_strict() || exe.fast_strict;
     uint8_t v = kInlineNever;
-    const bool declined = chunk.jit_state == 2 || undecided_loop;
+    const bool declined = chunk.jit_state == 2 || undecided_loop || baseline_compiled;      // (a chunk the baseline compiler has: the verdict is what a direct call of it needs)
     if (declined && !chunk.env_mode && chunk.register_count <= kInlineMaxRegs &&
         !exe.fast_uses_super && !exe.fast_leaf) {
         v = kInlineOk | (strict ? kInlineStrict : 0) | (exe.fast_uses_this ? kInlineWantsThis : 0);

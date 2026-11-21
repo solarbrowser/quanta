@@ -129,6 +129,10 @@ struct Config {
     std::unordered_map<uint64_t, uint64_t> site_counts;
     uint64_t step_total = 0;
     // Layout of the one bitfield the generated code tests.
+    // Where the bits of the context the call stub tests live (found by selfcheck): the byte and the mask of each.
+    bool ctx_bits_ok = false;
+    size_t strict_off = 0, pending_off = 0, exc_off = 0;
+    uint8_t strict_mask = 0, pending_mask = 0, exc_mask = 0;
     bool this_needs_super_inline = false;
     size_t this_needs_super_off = 0;
     uint8_t this_needs_super_mask = 0;
@@ -228,6 +232,22 @@ bool selfcheck() {
             g_cfg.this_needs_super_off = where;
             g_cfg.this_needs_super_mask = mask;
         }
+    }
+    // The same for the other flags a direct call of generated code looks at.
+    {
+        auto probe = [](auto&& set, size_t& off, uint8_t& mask) {
+            alignas(Context) unsigned char buf[sizeof(Context)];
+            std::memset(buf, 0, sizeof(buf));
+            Context* c = reinterpret_cast<Context*>(buf);
+            set(*c);
+            int changed = 0;
+            for (size_t i = 0; i < sizeof(buf); i++) if (buf[i]) { changed++; off = i; mask = buf[i]; }
+            return changed == 1 && mask != 0 && (mask & (mask - 1)) == 0;
+        };
+        const bool a = probe([](Context& c) { c.set_strict_mode(true); }, g_cfg.strict_off, g_cfg.strict_mask);
+        const bool b = probe([](Context& c) { c.set_pending_construct_call(true); }, g_cfg.pending_off, g_cfg.pending_mask);
+        const bool d = probe([](Context& c) { JitCallLayout::probe_set_exception(c); }, g_cfg.exc_off, g_cfg.exc_mask);
+        g_cfg.ctx_bits_ok = a && b && d && g_cfg.this_needs_super_inline;
     }
     return true;
 }
@@ -1008,6 +1028,13 @@ QUANTA_JIT_ABI int32_t binary_op(Frame* f, uint32_t pc, uint32_t op) noexcept {
 // h_gen_CallResolved. A call is by far the most frequent thing the generated
 // code cannot do inline, and routing it through `step` would pay the stop-byte
 // machinery for an instruction that never needs it.
+inline const bool g_cfg_bl_calls = [] { const char* e = std::getenv("QUANTA_BL_CALLS"); return !(e && e[0] == '0'); }();
+// A call site that enters its callee directly (see BlSite). `kind` is call_op's. bl_call_fast is the site's hit: the callee is the function the site was
+// filled with. call_op_site is its miss: the ordinary call, and the site learns the callee.
+QUANTA_JIT_ABI int32_t bl_call_fast(Frame* f, uint32_t pc, uint32_t kind, BlSite* site) noexcept;
+QUANTA_JIT_ABI int32_t call_op_site(Frame* f, uint32_t pc, uint32_t kind, BlSite* site) noexcept;
+QUANTA_JIT_ABI int32_t bl_finish_site(Frame* f, uint32_t pc, uint32_t kind, uint64_t what) noexcept;
+
 QUANTA_JIT_ABI int32_t call_op(Frame* f, uint32_t pc, uint32_t kind) noexcept {
     JitCode* jc = f->chunk->jit.get();
     if (__builtin_expect(g_cfg.stats, 0)) { g_cfg.steps[f->chunk->code[pc]]++; g_cfg.step_total++; }
@@ -1154,7 +1181,7 @@ bool op_unsupported(Op op) {
 // may clobber rax, rcx, rdx, rsi, rdi, r8-r11 and the flags. CF = 0 on a hit,
 // CF = 1 on a miss, in which case nothing visible has changed.
 // ---------------------------------------------------------------------------
-enum StubId { kStubGetNamed = 0, kStubSetNamed, kStubLookup, kStubGetKeyed, kStubSetKeyed, kStubCount };
+enum StubId { kStubGetNamed = 0, kStubSetNamed, kStubLookup, kStubGetKeyed, kStubSetKeyed, kStubCall, kStubCount };
 
 struct StubSet {
     void* mem = nullptr;
@@ -1208,6 +1235,21 @@ void stub_slots(Assembler& a, Reg obj, Label& miss) {
     a.mov_load32(RCX, mem(RSI, -static_cast<int32_t>(sizeof(Value))));
     a.and32_imm(RCX, static_cast<int32_t>(JitObjectLayout::kShapeCapacityMask));
 }
+
+// What a frame of a direct call needs on the native stack: the frame, the call's environment record, the arrays block scopes use, and the register bank.
+struct alignas(16) BlFrameBlock {
+    alignas(Frame) unsigned char frame_storage[sizeof(Frame)];
+    CallInfo call_info;
+    Environment* env_saves[64];
+    Environment* resolved_envs[8];
+    alignas(16) Value bank[kInlineMaxRegs + 4];
+};
+
+// What the call stub hands to C++ when the callee left generated code before finishing (defined with the direct calls below).
+QUANTA_JIT_ABI uint64_t bl_stub_exit(Frame* cf, uint64_t status) noexcept;
+static_assert(sizeof(std::span<const Value>) == 2 * sizeof(void*), "the stub stores a span as two words");
+static constexpr uint32_t kEntryMaxDepth = 96;      // (see the optimizing tier's native entries: how deep calls nest on the native stack)
+alignas(16) inline const uint64_t g_undefined_pair[2] = {kUndefinedBits, kUndefinedBits};      // two undefined values, for filling a register bank two at a time
 
 bool build_stubs() {
     StubSet& t = t_stubs;
@@ -1460,6 +1502,194 @@ bool build_stubs() {
         a.clc(); a.ret();
         a.bind(miss); a.stc(); a.ret();
     }
+#ifndef QUANTA_JIT_ARCH_A64
+    // ---- call: a direct call of generated code to generated code ---------
+    // In: rbx = the caller's frame, rcx = &BlSite, rsi = the arguments (the caller's registers from args_start), edx = argc, r8 = `this`.
+    // Out: CF set: declined, nothing done. Else edx says what happened and rax holds the result when edx = 0:
+    //   0 the callee finished (its value in rax), 1 it finished with an exception pending (rax is not a value), 3 it left generated code and the interpreter finished it
+    //   (the value is in the caller's Frame::acc), 2 it threw and the exception is the caller's now.
+    // Everything the callee's generated code reads of its frame is stored here; the rest of the frame is as the interpreter's own frames have it.
+    {
+        offs[kStubCall] = a.size();
+        Label miss, have_env, loop_fill, loop_args, args_done, slow_exit;
+        using Blk = BlFrameBlock;
+        constexpr int32_t kFrame = static_cast<int32_t>(offsetof(Blk, frame_storage));
+        constexpr int32_t kCi = static_cast<int32_t>(offsetof(Blk, call_info));
+        constexpr int32_t kSaves = static_cast<int32_t>(offsetof(Blk, env_saves));
+        constexpr int32_t kResolved = static_cast<int32_t>(offsetof(Blk, resolved_envs));
+        constexpr int32_t kBank = static_cast<int32_t>(offsetof(Blk, bank));
+        // The block, a shadow area for the call out, and what puts rsp back on a 16-byte boundary at it (a call leaves rsp 8 off).
+        constexpr int32_t kBlock = static_cast<int32_t>((sizeof(Blk) + 15) & ~size_t(15)) + 8;
+        const int32_t shadow = static_cast<int32_t>(abi::kShadow);
+        auto F = [&](size_t field) { return mem(RSP, shadow + kFrame + static_cast<int32_t>(field)); };
+        const int32_t frame_off = shadow + kFrame;
+        CallStack& cstack = CallStack::established();
+        const uint64_t cs_addr = reinterpret_cast<uint64_t>(&cstack);
+        // The context and the callee.
+        a.mov_load(R9, mem(RCX, static_cast<int32_t>(offsetof(BlSite, plan))));
+        a.mov_load(R10, mem(RBX, static_cast<int32_t>(kOffCtx)));
+        a.test8_mem_imm(mem(R10, static_cast<int32_t>(g_cfg.this_needs_super_off)), g_cfg.this_needs_super_mask);
+        a.jcc(CC_NE, miss);
+        a.test8_mem_imm(mem(R10, static_cast<int32_t>(g_cfg.pending_off)), g_cfg.pending_mask);
+        a.jcc(CC_NE, miss);
+        a.movzx8_load(R11, mem(R10, static_cast<int32_t>(g_cfg.strict_off)));
+        a.and32_imm(R11, g_cfg.strict_mask);
+        a.cmp32_load(R11, mem(R9, static_cast<int32_t>(offsetof(BlPlan, strict_expect))));
+        a.jcc(CC_NE, miss);
+        a.mov_imm64(R11, cs_addr);
+        a.mov_load(RAX, mem(R11, static_cast<int32_t>(JitCallLayout::stack_depth())));
+        a.cmp_imm(RAX, static_cast<int32_t>(kEntryMaxDepth));
+        a.jcc(CC_A, miss);
+        a.mov_load(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, jc))));
+        a.cmp8_mem_imm(mem(RAX, static_cast<int32_t>(offsetof(JitCode, disabled))), 0);
+        a.jcc(CC_NE, miss);
+        a.mov_imm64(RAX, reinterpret_cast<uint64_t>(&Engine::live_engines_));
+        a.cmp_mem_imm(mem(RAX, 0), 1);
+        a.jcc(CC_A, miss);
+        // The callee's outer environment: its closure's, else the context's own.
+        a.mov_load(RDI, mem(R9, static_cast<int32_t>(offsetof(BlPlan, fn))));
+        a.mov_load(RAX, mem(RDI, static_cast<int32_t>(JitObjectLayout::function_closure_environment())));
+        a.test(RAX, RAX);
+        a.jcc(CC_NE, have_env);
+        a.cmp_mem_imm(mem(RDI, static_cast<int32_t>(JitCallLayout::function_closure_context())), 0);
+        a.jcc(CC_NE, miss);
+        a.mov_load(RAX, mem(R10, static_cast<int32_t>(JitCallLayout::ctx_lexical_env())));
+        a.bind(have_env);
+        a.mov(R13, RAX);                     // (the caller's accumulator was stored before the call: from here on r13 is this stub's)
+        // Past the last decline: the block.
+        a.sub_imm(RSP, kBlock + shadow);
+        a.mov_store(F(offsetof(Frame, owner)), RDI);
+        // The registers: undefined, two at a time (the bank has room for one more than the callee has), then the arguments over the first ones.
+        a.mov_imm64(RAX, reinterpret_cast<uint64_t>(&g_undefined_pair[0]));
+        a.movups_load(XMM0, mem(RAX, 0));
+        a.mov_load32(R11, mem(R9, static_cast<int32_t>(offsetof(BlPlan, nregs))));
+        a.lea(RDI, mem(RSP, shadow + kBank));
+        a.bind(loop_fill);
+        a.movups_store(mem(RDI, 0), XMM0);
+        a.add_imm(RDI, 16);
+        a.sub32_imm(R11, 2);
+        a.jcc(CC_G, loop_fill);
+        a.mov_store(F(offsetof(Frame, args)), RSI);                       // the span: the data pointer, then the size
+        a.mov_store(F(offsetof(Frame, args) + sizeof(void*)), RDX);
+        a.mov_load32(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, nparams))));
+        a.cmp32(RDX, RAX);
+        a.cmov(CC_B, RAX, RDX);                                           // eax = min(argc, nparams)
+        a.lea(RDI, mem(RSP, shadow + kBank));
+        a.test32(RAX, RAX);
+        a.jcc(CC_E, args_done);
+        a.bind(loop_args);
+        a.mov_load(R11, mem(RSI, 0));
+        a.mov_store(mem(RDI, 0), R11);
+        a.add_imm(RSI, 8);
+        a.add_imm(RDI, 8);
+        a.sub32_imm(RAX, 1);
+        a.jcc(CC_NE, loop_args);
+        a.bind(args_done);
+        // The frame.
+        a.mov_load(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, chunk))));
+        a.mov_store(F(offsetof(Frame, chunk)), RAX);
+        a.mov_store(F(offsetof(Frame, ctx)), R10);
+        a.mov_store8_imm(F(offsetof(Frame, feedback_rooted)), 1);
+        a.lea(RAX, mem(RSP, shadow + kBank));
+        a.mov_store(F(offsetof(Frame, regs)), RAX);
+        a.lea(RAX, mem(RSP, shadow + kSaves));
+        a.mov_store(F(offsetof(Frame, env_saves)), RAX);
+        a.lea(RAX, mem(RSP, shadow + kResolved));
+        a.mov_store(F(offsetof(Frame, resolved_envs)), RAX);
+        a.mov_load(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, lookup_cache_data))));
+        a.mov_store(F(offsetof(Frame, lookup_cache_data)), RAX);
+        a.mov_load(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, private_feedback_data))));
+        a.mov_store(F(offsetof(Frame, private_feedback_data)), RAX);
+        a.mov_load(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, code))));
+        a.mov_store(F(offsetof(Frame, code)), RAX);
+        a.mov_load(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, constants))));
+        a.mov_store(F(offsetof(Frame, constants)), RAX);
+        a.mov_store(F(offsetof(Frame, entry_env)), R13);
+        a.mov_store(F(offsetof(Frame, this_value)), R8);
+        a.mov_imm64(RAX, kUndefinedBits);
+        a.mov_store(F(offsetof(Frame, acc)), RAX);
+        a.xor_(R11, R11);
+        a.mov_store32(F(offsetof(Frame, pc)), R11);
+        a.mov_store32(F(offsetof(Frame, instr_pc)), R11);
+        a.mov_store8_imm(F(offsetof(Frame, env_save_top)), 0);
+        a.mov_store8_imm(F(offsetof(Frame, this_resolved)), 1);
+        a.lea(RAX, mem(RSP, shadow + kCi));
+        a.mov_store(F(offsetof(Frame, call_info)), RAX);
+        a.mov_store(mem(RSP, shadow + kCi + static_cast<int32_t>(offsetof(CallInfo, lexical_environment_))), R13);
+        a.mov_store(mem(RSP, shadow + kCi + static_cast<int32_t>(offsetof(CallInfo, variable_environment_))), R13);
+        a.mov_store(F(offsetof(Frame, current_lexical_env)), R13);
+        a.mov_store(F(offsetof(Frame, current_variable_env)), R13);
+        a.mov_store8_imm(F(offsetof(Frame, jit_halted)), 0);
+        a.mov_load32(RAX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, osr_budget))));
+        a.mov_store32(F(offsetof(Frame, osr_budget)), RAX);
+        a.mov_store(F(offsetof(Frame, caller)), RBX);
+        a.mov_load(RAX, mem(RBX, static_cast<int32_t>(offsetof(Frame, base))));
+        a.test(RAX, RAX);
+        a.cmov(CC_E, RAX, RBX);                                           // base = caller->base, or the caller itself
+        a.mov_store(F(offsetof(Frame, base)), RAX);
+        a.mov_store(F(offsetof(Frame, active)), R11);
+        a.mov_store32(F(offsetof(Frame, return_pc)), R11);
+        a.mov_store32(F(offsetof(Frame, value_words)), R11);
+        // inline_ok, env_call, construct_call, rare_pop, native_entered follow one another: five bytes, and the padding after the last
+        static_assert(offsetof(Frame, env_call) == offsetof(Frame, inline_ok) + 1 && offsetof(Frame, construct_call) == offsetof(Frame, inline_ok) + 2 &&
+                          offsetof(Frame, rare_pop) == offsetof(Frame, inline_ok) + 3 && offsetof(Frame, native_entered) == offsetof(Frame, inline_ok) + 4 &&
+                          sizeof(Frame) >= offsetof(Frame, inline_ok) + 8,
+                      "the frame's flag bytes are stored with one write");
+        a.mov_store(F(offsetof(Frame, inline_ok)), R11);
+        // The callee is the base's innermost frame and the call stack's top.
+        a.lea(RCX, mem(RSP, frame_off));
+        a.mov_store(mem(RAX, static_cast<int32_t>(offsetof(Frame, active))), RCX);
+        a.mov_imm64(RAX, cs_addr);
+        a.mov_load(RDI, mem(RAX, static_cast<int32_t>(JitCallLayout::stack_depth())));
+        a.mov_load(R11, mem(RAX, static_cast<int32_t>(JitCallLayout::stack_frames())));
+        a.mov(RDX, RDI);
+        a.shl_imm(RDX, 4);
+        a.add(R11, RDX);                                                  // &frames[depth]
+        a.mov_load(RDX, mem(R10, static_cast<int32_t>(JitCallLayout::ctx_filename())));
+        a.mov_store(mem(R11, 0), RDX);
+        a.mov_load(RDX, mem(R9, static_cast<int32_t>(offsetof(BlPlan, fn))));
+        a.mov_store(mem(R11, 8), RDX);
+        a.add_imm(RDI, 1);
+        a.mov_store(mem(RAX, static_cast<int32_t>(JitCallLayout::stack_depth())), RDI);
+        // Enter the callee: entry(frame, jc, start), as run() does.
+        a.mov_load(abi::A1, mem(R9, static_cast<int32_t>(offsetof(BlPlan, jc))));
+        a.mov_load(abi::A2, mem(R9, static_cast<int32_t>(offsetof(BlPlan, start))));
+        a.mov(abi::A0, RCX);
+        a.call_mem(mem(R9, static_cast<int32_t>(offsetof(BlPlan, entry))));
+        a.test(RAX, RAX);
+        a.jcc(CC_NE, slow_exit);
+        // Finished: the value, the frame popped, whether an exception is pending.
+        a.lea(RCX, mem(RSP, frame_off));
+        a.mov_load(RAX, mem(RCX, static_cast<int32_t>(offsetof(Frame, acc))));
+        a.mov_load(RDI, mem(RCX, static_cast<int32_t>(offsetof(Frame, base))));
+        a.mov_load(RSI, mem(RCX, static_cast<int32_t>(offsetof(Frame, caller))));
+        a.xor_(RDX, RDX);
+        a.cmp(RSI, RDI);
+        a.cmov(CC_NE, RDX, RSI);
+        a.mov_store(mem(RDI, static_cast<int32_t>(offsetof(Frame, active))), RDX);
+        a.mov_imm64(RDX, cs_addr);
+        a.sub32_mem_imm(mem(RDX, static_cast<int32_t>(JitCallLayout::stack_depth())), 1);
+        a.mov_load(RDI, mem(RCX, static_cast<int32_t>(offsetof(Frame, ctx))));
+        a.xor_(RDX, RDX);
+        a.test8_mem_imm(mem(RDI, static_cast<int32_t>(g_cfg.exc_off)), g_cfg.exc_mask);
+        a.setcc(CC_NE, RDX);
+        a.add_imm(RSP, kBlock + shadow);
+        a.clc();
+        a.ret();
+        // Left generated code before finishing: C++ finishes it (and pops the frame).
+        a.bind(slow_exit);
+        a.mov(abi::A1, RAX);
+        a.lea(abi::A0, mem(RSP, frame_off));
+        a.call_abs(reinterpret_cast<const void*>(&bl_stub_exit));
+        a.mov(RDX, RAX);                                                  // 3 or 2
+        a.add_imm(RSP, kBlock + shadow);
+        a.clc();
+        a.ret();
+        a.bind(miss);
+        a.stc();
+        a.ret();
+    }
+#endif
     (void)finish_labels;
 
     for (const Label* l : {&l_ret_hit, &l_ret_miss}) if (!l->fixups.empty()) return false;
@@ -2095,19 +2325,105 @@ void Compiler::emit_set_keyed(const Insn& in, size_t idx) {
 }
 
 void Compiler::emit_call(const Insn& in, uint32_t kind) {
+    const uint32_t next = in.pc + in.len;
+    if (kind == 2 || !g_cfg_bl_calls) {
+        spill_acc();
+        a_.mov(abi::A0, RBX);
+        a_.mov_imm32(abi::A1, in.pc);
+        a_.mov_imm32(abi::A2, kind);
+        a_.call_abs(reinterpret_cast<const void*>(&call_op));
+        reload_acc();
+        if (next < code_size_) {
+            a_.cmp32_imm(RAX, static_cast<int32_t>(next));
+            a_.jcc(CC_NE, step_other_);
+        } else {
+            a_.jmp(step_other_);
+        }
+        return;
+    }
+    // The callee is compared with the one the site last met (BlSite). A hit enters its generated code without the generic call; a miss does the ordinary call, which
+    // also teaches the site.
+    jc_->bl_sites.emplace_back();
+    BlSite* site = &jc_->bl_sites.back();
+    Label& miss = new_label();
+    Label& after = new_label();      // eax is call_op's answer: the pc to continue at, or a kStep code
+    Label& cont = new_label();       // the next instruction, with the result in r13
+    a_.mov_load(RAX, reg_mem(chunk_.code[in.pc + 1]));
+    a_.mov_imm64(RCX, reinterpret_cast<uint64_t>(site));
+    a_.cmp_load(RAX, mem(RCX, 0));
+    a_.jcc(CC_NE, miss);
     spill_acc();
+    auto after_code = [this, &after, &cont, next]() {
+        a_.bind(after);
+        reload_acc();
+        if (next < code_size_) {
+            a_.cmp32_imm(RAX, static_cast<int32_t>(next));
+            a_.jcc(CC_NE, step_other_);
+            a_.jmp(cont);
+        } else {
+            a_.jmp(step_other_);
+        }
+    };
+    auto miss_code = [this, &miss, &after, site, in, kind]() {
+        a_.bind(miss);
+        spill_acc();
+        a_.mov(abi::A0, RBX);
+        a_.mov_imm32(abi::A1, in.pc);
+        a_.mov_imm32(abi::A2, kind);
+        a_.mov_imm64(abi::A3, reinterpret_cast<uint64_t>(site));
+        a_.call_abs(reinterpret_cast<const void*>(&call_op_site));
+        a_.jmp(after);
+    };
+#ifndef QUANTA_JIT_ARCH_A64
+    if (g_cfg.ctx_bits_ok) {
+        // The stub (kStubCall) builds the callee's frame and enters its code. The registers the callee's frame needs are in the stub's convention (see there).
+        const uint32_t start = kind == 0 ? chunk_.code[in.pc + 2] : chunk_.code[in.pc + 3];
+        const uint32_t argc = kind == 0 ? chunk_.code[in.pc + 3] : chunk_.code[in.pc + 4];
+        Label& other = new_label();
+        Label& declined = new_label();
+        Label& poll = new_label();
+        a_.lea(RSI, reg_mem(start));
+        a_.mov_imm32(RDX, argc);
+        if (kind == 0) a_.mov_imm64(R8, kUndefinedBits); else a_.mov_load(R8, reg_mem(chunk_.code[in.pc + 2]));
+        a_.call_mem(mem(R14, static_cast<int32_t>(offsetof(JitRt, stubs) + kStubCall * sizeof(void*))));
+        a_.jcc(CC_B, declined);
+        a_.test32(RDX, RDX);
+        a_.jcc(CC_NE, other);
+        a_.mov(R13, RAX);
+        // The collector's poll, as a loop's back edge has it.
+        a_.sub32_mem_imm(mem(R14, offsetof(JitRt, sp_counter)), 1);
+        a_.jcc(CC_LE, poll);
+        a_.bind(cont);
+        cold_.push_back([this, &poll, &other, &declined, &miss, &cont, &after, in, kind, miss_code]() {
+            a_.bind(poll);
+            spill_acc();
+            a_.mov(abi::A0, RBX);
+            a_.call_abs(reinterpret_cast<const void*>(&safepoint));
+            a_.jmp(cont);
+            a_.bind(other);                           // edx = 1, 2 or 3
+            a_.mov(abi::A3, RDX);
+            a_.mov(abi::A0, RBX);
+            a_.mov_imm32(abi::A1, in.pc);
+            a_.mov_imm32(abi::A2, kind);
+            a_.call_abs(reinterpret_cast<const void*>(&bl_finish_site));
+            a_.jmp(after);
+            a_.bind(declined);
+            reload_acc();                             // (r13 was the stub's: the accumulator comes back from its slot)
+            a_.jmp(miss);
+            miss_code();
+        });
+        cold_.push_back([after_code]() { after_code(); });
+        return;
+    }
+#endif
     a_.mov(abi::A0, RBX);
     a_.mov_imm32(abi::A1, in.pc);
     a_.mov_imm32(abi::A2, kind);
-    a_.call_abs(reinterpret_cast<const void*>(&call_op));
-    reload_acc();
-    const uint32_t next = in.pc + in.len;
-    if (next < code_size_) {
-        a_.cmp32_imm(RAX, static_cast<int32_t>(next));
-        a_.jcc(CC_NE, step_other_);
-    } else {
-        a_.jmp(step_other_);
-    }
+    a_.mov(abi::A3, RCX);
+    a_.call_abs(reinterpret_cast<const void*>(&bl_call_fast));
+    after_code();
+    a_.bind(cont);
+    cold_.push_back([miss_code]() { miss_code(); });
 }
 
 // A slow path that asks a fast helper first and steps only if it declines.
@@ -3139,7 +3455,6 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
 }
 #endif
 
-constexpr uint32_t kEntryMaxDepth = 96;
 
 #ifdef QUANTA_OPT_BACKEND
 // A unit calling a function that has a unit of its own (K::CallFn): the callee gets a stackless frame in the arena, the
@@ -3421,6 +3736,218 @@ template <bool Virt, bool Stack = true>
     return true;
 }
 #undef POP
+
+// ---- calls from generated code to generated code (BlSite) ----
+
+static constexpr uint32_t kBlMaxSiteFills = 8;
+
+// Whether `fn` can be entered directly from a call site, and the plan if so. Everything it asks is fixed for the function (and the context it is called in is
+// asked again by bl_call_fast).
+static BlPlan* bl_make_plan(JitCode* jc, Function* fn) {
+    if (!fn->fast_callable() || fn->is_arrow()) return nullptr;
+    const FunctionExecutable* exe = fn->get_executable().get();
+    if (!exe || !exe->bytecode_chunk) return nullptr;
+    const BytecodeChunk& chunk = *exe->bytecode_chunk;
+    JitCode* cj = chunk.jit.get();
+    if (!cj || !cj->entry || chunk.jit_state != 1 || cj->disabled || cj->owner_thread != &g_thread_marker) return nullptr;
+    if (chunk.env_mode || exe->fast_leaf || exe->fast_uses_super || !exe->fast_no_closures || chunk.register_count > kInlineMaxRegs || chunk.parameter_count > kInlineMaxRegs) return nullptr;
+    // inline_classify wants the chunk undecided and writes its verdict into it; the chunk's own state, for generated code, is kInlineNever.
+    const uint8_t saved = chunk.inline_state;
+    chunk.inline_state = saved & kInlineKeepBits;
+    const uint8_t v = inline_classify(*exe, chunk, fn, true);
+    chunk.inline_state = saved;
+    if (!(v & kInlineOk) || (v & kInlineEnv)) return nullptr;
+    auto plan = std::make_unique<BlPlan>();
+    plan->fn = fn;
+    plan->chunk = &chunk;
+    plan->jc = cj;
+    plan->realm = exe->owner_realm();
+    plan->nregs = std::max<uint32_t>(chunk.register_count, chunk.parameter_count);
+    plan->nparams = chunk.parameter_count;
+    plan->strict = (v & kInlineStrict) != 0;
+    plan->sloppy_this = (v & (kInlineWantsThis | kInlineStrict)) == kInlineWantsThis;
+    plan->code = chunk.code.data();
+    plan->constants = chunk.constants.data();
+    plan->entry = reinterpret_cast<const void*>(cj->entry);
+    plan->start = cj->rt.base + cj->start_off;
+    plan->osr_budget = g_stackless_osr_budget;
+    plan->strict_expect = plan->strict ? static_cast<uint32_t>(g_cfg.strict_mask) : 0;
+    plan->lookup_cache_data = chunk.lookup_cache.data();
+    plan->private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
+    if (chunk.uses_lookup_cache || plan->private_feedback_data) {
+        const size_t private_n = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.size() : 0;
+        if (!fn->instance_caches_ready(chunk.uses_lookup_cache ? chunk.names.size() : 0, private_n, plan->lookup_cache_data, plan->private_feedback_data))
+            inline_instance_caches(chunk, fn, plan->lookup_cache_data, plan->private_feedback_data);
+    }
+    jc->bl_plans.push_back(std::move(plan));
+    return jc->bl_plans.back().get();
+}
+
+// The miss of a site: the ordinary call, then the site is given the callee (a few times: a site that keeps meeting new functions stops asking).
+QUANTA_JIT_ABI int32_t call_op_site(Frame* f, uint32_t pc, uint32_t kind, BlSite* site) noexcept {
+    const int32_t r = call_op(f, pc, kind);
+    if (site->fills < kBlMaxSiteFills) {
+        const Value& callee = f->regs[f->chunk->code[pc + 1]];
+        if (callee.is_function()) {
+            site->fills++;
+            JitCode* jc = f->chunk->jit.get();
+            if (BlPlan* plan = bl_make_plan(jc, callee.as_function())) {
+
+                jc->bl_held.push_back(callee);
+                if (!jc->bl_root) jc->bl_root = std::make_unique<ValueVectorRoot>(&jc->bl_held);
+                site->plan = plan;
+                site->fn_bits = std::bit_cast<uint64_t>(callee);
+            }
+        }
+    }
+    return r;
+}
+
+// A callee that left generated code before finishing: the interpreter runs the rest of it here (detached from the caller, which is in generated code), or the
+// exception it threw is handed up as the caller's own. Always pops the callee's frame.
+static int32_t bl_exit_slow(Frame* f, Frame* cf, JitCode* cj, uint64_t status, JitCode* jc, uint32_t pc, uint32_t next) noexcept {
+    Frame* const saved_caller = cf->caller;
+    cf->caller = nullptr;
+    cf->inline_ok = true;
+    int32_t result;
+    try {
+        Value v;
+        if (status == kExitRethrow) {
+            std::exception_ptr ep = std::move(g_pending_exc);
+            g_pending_exc = nullptr;
+            if (ep) std::rethrow_exception(ep);
+        } else {
+            v = kHandlers[cf->code[cf->pc]](*cf, cf->pc, cf->acc, cf->regs, cf->code);
+        }
+        f->acc = v;
+        cf->caller = saved_caller;
+        vframe_pop(*cf);
+        result = after_call(f, jc, pc, next);
+    } catch (...) {
+        g_pending_exc = std::current_exception();
+        cf->caller = saved_caller;
+        vframe_pop(*cf);
+        result = kStepRethrow;
+    }
+    (void)cj;
+    return result;
+}
+
+// The call stub's slow exit: the callee left generated code before finishing. The interpreter finishes it here (detached from the caller, which is in generated
+// code) or the exception it threw becomes the caller's; the frame is popped either way. 3: the value is in the caller's Frame::acc, 2: an exception is pending.
+QUANTA_JIT_ABI uint64_t bl_stub_exit(Frame* cf, uint64_t status) noexcept {
+    Frame* const caller = cf->caller;
+    cf->caller = nullptr;
+    cf->inline_ok = true;
+    uint64_t result = 3;
+    try {
+        Value v;
+        if (status == kExitRethrow) {
+            std::exception_ptr ep = std::move(g_pending_exc);
+            g_pending_exc = nullptr;
+            if (ep) std::rethrow_exception(ep);
+        } else {
+            v = kHandlers[cf->code[cf->pc]](*cf, cf->pc, cf->acc, cf->regs, cf->code);
+        }
+        caller->acc = v;
+    } catch (...) {
+        g_pending_exc = std::current_exception();
+        result = 2;
+    }
+    cf->caller = caller;
+    vframe_pop(*cf);
+    return result;
+}
+
+// What the generated code of a call site does after the stub reports something other than a plain value (1: an exception is pending after a finished callee,
+// 3: the callee's value is in the frame already, 2: the callee threw): call_op's contract, the pc to continue at or a kStep code.
+QUANTA_JIT_ABI int32_t bl_finish_site(Frame* f, uint32_t pc, uint32_t kind, uint64_t what) noexcept {
+    if (what == 2) return kStepRethrow;
+    return after_call(f, f->chunk->jit.get(), pc, pc + (kind == 0 ? 6u : 7u));
+}
+
+// The hit of a site: the callee is the function the plan was made for. Its frame is built on the native stack, its generated code entered, and the result left in
+// the caller's accumulator slot, with the contract of call_op (the pc to continue at, or one of the kStep codes).
+QUANTA_JIT_ABI int32_t bl_call_fast(Frame* f, uint32_t pc, uint32_t kind, BlSite* site) noexcept {
+    const BlPlan* p = site->plan;
+    JitCode* jc = f->chunk->jit.get();
+    const uint8_t* code = f->chunk->code.data();
+    Context& ctx = *f->ctx;
+    uint32_t args_start, argc, next;
+    Value this_value;
+    if (kind == 0) {
+        args_start = code[pc + 2]; argc = code[pc + 3]; next = pc + 6;
+    } else {
+        this_value = f->regs[code[pc + 2]];
+        args_start = code[pc + 3]; argc = code[pc + 4]; next = pc + 7;
+    }
+    JitCode* cj = p->jc;
+    CallStack& stack = CallStack::established();
+    if (UNLIKELY(ctx.this_needs_super() || ctx.is_strict_mode() != p->strict || ctx.has_pending_construct_call() || cj->disabled ||
+                 p->realm != g_current_realm || (p->sloppy_this && !this_value.is_object() && !this_value.is_function()) ||
+                 stack.depth() > kEntryMaxDepth || Engine::multi_engine()))
+        return call_op(f, pc, kind);
+    Function* fn = p->fn;
+    const BytecodeChunk& chunk = *p->chunk;
+    const Value* argv = f->regs + args_start;
+
+    BlFrameBlock vb;
+    Environment* outer_env = fn->get_closure_environment();
+    if (!outer_env && fn->get_closure_context()) outer_env = fn->get_closure_context()->get_lexical_environment();
+    if (!outer_env) outer_env = ctx.get_lexical_environment();
+    Value* regs = vb.bank;
+    init_register_bank(reinterpret_cast<unsigned char*>(regs), p->nregs);
+    const uint32_t copy = std::min<uint32_t>(p->nparams, argc);
+    for (uint32_t i = 0; i < copy; i++) regs[i] = argv[i];
+    vb.call_info.lexical_environment_ = outer_env;
+    vb.call_info.variable_environment_ = outer_env;
+    Frame* cf = reinterpret_cast<Frame*>(vb.frame_storage);
+    cf->chunk = &chunk;
+    cf->ctx = f->ctx;
+    cf->args = std::span<const Value>(argv, argc);
+    cf->owner = fn;
+    cf->feedback_rooted = true;
+    cf->regs = regs;
+    cf->env_saves = vb.env_saves;
+    cf->resolved_envs = vb.resolved_envs;
+    cf->lookup_cache_data = p->lookup_cache_data;
+    cf->private_feedback_data = p->private_feedback_data;
+    cf->code = chunk.code.data();
+    cf->constants = chunk.constants.data();
+    cf->entry_env = outer_env;
+    cf->this_value = this_value;
+    cf->acc = Value();
+    cf->pc = 0;
+    cf->instr_pc = 0;
+    cf->env_save_top = 0;
+    cf->this_resolved = true;
+    cf->call_info = &vb.call_info;
+    cf->current_lexical_env = outer_env;
+    cf->current_variable_env = outer_env;
+    cf->jit_halted = false;
+    cf->osr_budget = g_stackless_osr_budget;
+    cf->caller = f;
+    Frame* base = f->base ? f->base : f;
+    cf->base = base;
+    cf->active = nullptr;
+    cf->return_pc = 0;
+    cf->value_words = 0;
+    cf->inline_ok = false;
+    cf->env_call = false;
+    cf->construct_call = false;
+    cf->rare_pop = false;
+    cf->native_entered = false;
+    base->active = cf;
+    stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
+
+    const uint64_t status = cj->entry(cf, cj, cj->rt.base + cj->start_off);
+    if (LIKELY(status == kExitFinished)) {
+        f->acc = cf->acc;
+        vframe_pop(*cf);
+        return after_call(f, jc, pc, next);
+    }
+    return bl_exit_slow(f, cf, cj, status, jc, pc, next);
+}
 
 [[gnu::always_inline]] inline bool unit_call_direct(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
     const FunctionExecutable* exe = fn->get_executable().get();

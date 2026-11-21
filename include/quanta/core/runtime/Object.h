@@ -1609,6 +1609,7 @@ public:
 
 private:
     // The optimizing tier (Opt.inc) compares a callee's executable pointer in generated code.
+    friend struct JitCallLayout;
     friend struct JitObjectLayout;
     // Shared, decl-site-scoped data (AST body/params, compiled bytecode,
     // decl-site-invariant caches) -- see FunctionExecutable's own doc

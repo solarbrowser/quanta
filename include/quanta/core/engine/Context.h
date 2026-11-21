@@ -31,6 +31,7 @@ class ExecContextScope;
 
 class Context {
     friend struct JitEnvLayout;   // the baseline JIT reads lexical_environment_ directly
+    friend struct JitCallLayout;  // ... and the flag bits and the file name a direct call of generated code asks of it
 public:
     enum class Type {
         Global,

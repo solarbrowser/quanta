@@ -52,6 +52,7 @@ struct CallStackFrame {
  * Manages the JavaScript call stack for error reporting and debugging
  */
 class CallStack {
+    friend struct JitCallLayout;      // generated code pushes and pops a frame itself
 private:
     // Sized once to the depth limit rather than grown: a frame is pushed and
     // popped on every call, and letting the vector own that meant a capacity
