@@ -183,6 +183,8 @@ struct JitCode {
             // The bytes of the finished object the first `new` made (its header, the inline butterfly's core, its slots): the next ones copy them (the butterfly pointer is the cell's own).
             uint32_t tmpl_bytes = 0;
             uint64_t proto_bits = 0;      // the constructor's `prototype` value the copy is valid for
+            bool plain = false;           // a constructor of no plan: the object is the bare one `new` makes (copied while the constructor's slot hint is `hint`)
+            uint32_t hint = 0;
             uint64_t tmpl[(24 + 8 + 12 * 8) / 8] = {};
         };
         std::vector<std::unique_ptr<NewDesc>> descs;

@@ -110,6 +110,7 @@ enum class K : uint8_t {
     CheckPlainElems,      // Ptr a: deopt unless it is an ordinary object or an array whose indexed properties are plain elements (no index descriptor, an element storage)
     LoadElemPlain,        // Ptr a, I32 b -> Tagged: the element, deopt when it is out of the storage or a hole (the interpreter asks the prototype chain)
     StoreElemPlain,       // Ptr a, I32 b, Tagged c: plain_element_store, deopt (before doing anything) when it declines
+    StoreTrans,           // Ptr a (an object of the shape the guard before checked), Tagged b: adds the property: b into slot aux-1, the shape word becomes imm (a Shape*); deopt when the room is short
 };
 
 struct Node {
@@ -250,7 +251,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -264,7 +265,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
     case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem: case K::CheckDenseSt:
-    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain:
+    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain: case K::StoreTrans:
         return false;
     default: return true;
     }
@@ -1541,6 +1542,25 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             emit(K::StoreSlot, Rep::None, obj, val, slot);
             return true;
         }
+        if (F().gctor && F().this_var >= 0 && F().fnp && resolve(value(rcv)) == resolve(value(static_cast<uint32_t>(F().this_var)))) {
+            // `this.name = value` in an inlined constructor of no plan: the fresh object has the shape the site's one learned transition starts from, so the store is the
+            // transition: the value into the next slot and the new shape word, when the cell has the room.
+            const FeedbackBody& tfb = F().chunk->feedback[fbi].read();
+            if (tfb.transition_count == 1 && !tfb.transition_mega) {
+                const auto& te = tfb.transitions[0];
+                const Value pv = F().fnp->constructor_prototype();
+                Object* pobj = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
+                const uint32_t nc = te.to_shape ? te.to_shape->slot_count() : 0;
+                if (te.from_shape && te.to_shape && nc >= 1 && nc <= 64 && pobj && te.prototype == pobj && te.proto_epoch == Object::proto_epoch() &&
+                    object_value(value(rcv))) {
+                    const int32_t tobj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)));
+                    epoch_guard(0, te.proto_epoch);
+                    guarded(K::CheckShape, Rep::None, tobj, -1, 0, (reinterpret_cast<uint64_t>(te.from_shape) & ~JitObjectLayout::kShapeTypeMask) | static_cast<uint64_t>(Object::ObjectType::Ordinary));
+                    guarded(K::StoreTrans, Rep::None, tobj, tagged(value(acc())), nc, reinterpret_cast<uint64_t>(te.to_shape) & ~JitObjectLayout::kShapeTypeMask);
+                    return true;
+                }
+            }
+        }
         const FeedbackBody& fb = F().chunk->feedback[fbi].read();
         if (fb.count < 1 || fb.mega || fb.entries[0].is_accessor || (fb.entries[0].word & FeedbackBody::Entry::kSlow)) return false;
         // A site that also adds the property (a constructor's `this.x = ...` sees both: an object that has it, and a new one) would leave the unit for every object
@@ -2718,7 +2738,11 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
     }
     int32_t thisv;
     if (construct && C.gctor) {
-        thisv = guarded(K::NewObject, Rep::Tagged, fv, -1, 0, 0);
+        auto pd = std::make_unique<JitCode::OptUnit::NewDesc>();
+        pd->plain = true;
+        JitCode::OptUnit::NewDesc* plain_desc = pd.get();
+        g_.descs.push_back(std::move(pd));
+        thisv = guarded(K::NewObject, Rep::Tagged, fv, -1, 0, reinterpret_cast<uint64_t>(plain_desc));
         if (C.gbody) {
             // The forwarded-to method is still what the prototype holds, and `apply` is still the real one.
             const Graph::CtorPlan& plan = g_.ctors[C.plan];
@@ -3329,7 +3353,7 @@ inline void Builder::hoist_invariants() {
                 case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::LoadElemPlain: case K::StoreElemPlain: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
                 case K::StoreEnv: env_store = true; break;
                 case K::StoreLookup: env_store = true; slot_store = true; break;
-                case K::StoreSlot: slot_store = true; break;
+                case K::StoreSlot: case K::StoreTrans: slot_store = true; break;
                 case K::StoreElem: case K::StoreTyped: case K::DefineElem: elem_store = true; break;
                 case K::StoreReg: case K::StoreAcc: reg_store = true; break;
                 default: break;
@@ -4150,7 +4174,7 @@ inline void Builder::cse() {
         return op == K::Step || op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreElemPlain;
     };
     auto breaks_memory = [](K op) {
-        return op == K::Step || op == K::StoreSlot || op == K::StoreElem || op == K::StoreElemPlain || op == K::StoreEnv || op == K::StoreLookup || op == K::StoreReg || op == K::StoreAcc ||
+        return op == K::Step || op == K::StoreSlot || op == K::StoreTrans || op == K::StoreElem || op == K::StoreElemPlain || op == K::StoreEnv || op == K::StoreLookup || op == K::StoreReg || op == K::StoreAcc ||
                op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreTyped || op == K::DefineElem;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
@@ -4684,10 +4708,21 @@ inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_r
     Function* fn = fv.as_function();
     const Value pv = fn->constructor_prototype();
     Object* proto = pv.is_function() ? static_cast<Object*>(pv.as_function()) : pv.is_object() ? pv.as_object() : nullptr;
-    if (!d) {
+    if (!d || d->plain) {
         // A constructor of no plan: the object the interpreter's `new` makes, to be given its properties by the body.
         if (!proto) return 0;
-        const Value r(fn->new_construct_object(proto));
+        Object* self = fn->new_construct_object(proto);
+        if (d) {
+            const size_t n = self->inline_cell_bytes(sizeof(d->tmpl));
+            if (n && n % 8 == 0) {
+                auto* wd = const_cast<JitCode::OptUnit::NewDesc*>(d);
+                std::memcpy(wd->tmpl, static_cast<const void*>(self), n);
+                wd->tmpl_bytes = static_cast<uint32_t>(n);
+                wd->proto_bits = std::bit_cast<uint64_t>(pv);
+                wd->hint = fn->get_construct_slot_hint();
+            }
+        }
+        const Value r(self);
         uint64_t bits;
         std::memcpy(&bits, &r, 8);
         return bits;
@@ -4714,7 +4749,7 @@ inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_r
 inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
     if (__builtin_expect(d && d->tmpl_bytes != 0, 1)) {
         Function* fn = std::bit_cast<Value>(fn_bits).as_function();
-        if (__builtin_expect(std::bit_cast<uint64_t>(fn->constructor_prototype()) == d->proto_bits, 1)) {
+        if (__builtin_expect(std::bit_cast<uint64_t>(fn->constructor_prototype()) == d->proto_bits && (!d->plain || fn->get_construct_slot_hint() == d->hint), 1)) {
             // The object a `new` of this site made before, copied: header, core and slots as they were when it was finished, the butterfly pointer the cell's own.
             void* cell = Object::operator new(sizeof(Object), d->tmpl_bytes - sizeof(Object), Object::PureTag{});
             const uint64_t* src = d->tmpl;
@@ -7029,6 +7064,24 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg v = use_g(n.b, RDX);
         a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::butterfly())));
         a_.mov_store(mem(RCX, static_cast<int32_t>(n.aux * sizeof(Value))), v);
+        emit_barrier_check(n.b, o, v);
+        return;
+    }
+    case K::StoreTrans: {
+        const Reg o = use_g(n.a, RAX);
+        const Reg v = use_g(n.b, RDX);
+        Label& dl = deopt_label(n.state);
+        a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::butterfly())));
+        a_.mov_load32(R11, mem(RCX, -static_cast<int32_t>(sizeof(Value))));        // the core's capacity word
+        a_.and32_imm(R11, 0x1FFFFFFF);                                               // (the three flag bits are above it)
+        a_.cmp32_imm(R11, static_cast<int32_t>(n.aux));
+        a_.jcc(CC_B, dl);
+        a_.mov_store(mem(RCX, static_cast<int32_t>((n.aux - 1) * sizeof(Value))), v);
+        a_.mov_load(RCX, mem(o, static_cast<int32_t>(JitObjectLayout::shape())));
+        a_.and_imm(RCX, static_cast<int32_t>(JitObjectLayout::kShapeTypeMask));
+        a_.mov_imm64(R11, n.imm);
+        a_.or_(RCX, R11);
+        a_.mov_store(mem(o, static_cast<int32_t>(JitObjectLayout::shape())), RCX);
         emit_barrier_check(n.b, o, v);
         return;
     }
