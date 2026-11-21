@@ -3471,6 +3471,42 @@ inline void Builder::narrow_integers() {
     for (int32_t id : work) if (isint[id]) any = true;
     if (!any) {
         for (int32_t id : work) if (g_.n[id].op != K::Phi) g_.n[id].state = -1;
+        // No integer arithmetic to carry, but a comparison of a widened integer (a bit operation's result) with another one or with a whole constant is still an
+        // integer comparison: (a & b) != 0 needs neither the int-to-double conversion nor the float compare.
+        for (int32_t blk : g_.rpo) {
+            std::vector<int32_t> out;
+            bool changed = false;
+            const std::vector<int32_t> nodes = g_.b[blk].nodes;
+            for (int32_t id : nodes) {
+                uint32_t code = 99;
+                switch (g_.n[id].op) {
+                case K::LtF: code = 0; break;
+                case K::GtF: code = 1; break;
+                case K::LeF: code = 2; break;
+                case K::GeF: code = 3; break;
+                case K::EqF: code = 4; break;
+                case K::NeF: code = 5; break;
+                default: break;
+                }
+                if (g_.n[id].dead || code == 99) { out.push_back(id); continue; }
+                const int32_t xa = resolve(g_.n[id].a), xb = resolve(g_.n[id].b);
+                auto widened = [&](int32_t x) { return g_.n[x].op == K::I32ToF64; };
+                auto whole = [&](int32_t x) { return g_.n[x].op == K::ConstF64 && x < static_cast<int32_t>(isint.size()) && isint[x]; };
+                if (!((widened(xa) || whole(xa)) && (widened(xb) || whole(xb))) || (!widened(xa) && !widened(xb))) { out.push_back(id); continue; }
+                auto narrow = [&](int32_t x) {
+                    if (widened(x)) return resolve(g_.n[x].a);
+                    const int32_t c = add_node(blk, K::ConstI32, Rep::I32, -1, -1, 0, static_cast<uint32_t>(static_cast<int32_t>(dbl(g_.n[x].imm))));
+                    out.push_back(c);
+                    return c;
+                };
+                const int32_t ia = narrow(xa), ib = narrow(xb);
+                Node& nd = g_.n[id];
+                nd.op = K::CmpI; nd.rep = Rep::Bool; nd.aux = code; nd.a = ia; nd.b = ib;
+                out.push_back(id);
+                changed = true;
+            }
+            if (changed) g_.b[blk].nodes = std::move(out);
+        }
         return;
     }
     // Rewrite.
@@ -5329,23 +5365,41 @@ inline void Emitter::emit_node(int32_t id) {
         const Reg d = def_g(id, RAX);
         Label& cold = new_label();
         Label& back = new_label();
+#ifdef QUANTA_JIT_ARCH_A64
         a_.cvttsd2si64(RCX, s);
         a_.mov_imm64(RDX, 0x8000000000000000ull);
         a_.cmp(RCX, RDX);
         a_.jcc(CC_E, cold);
-#ifdef QUANTA_JIT_ARCH_A64
         // fcvtzs saturates instead of answering one indefinite value: both ends go to the cold path.
         a_.mov_imm64(RDX, 0x7FFFFFFFFFFFFFFFull);
         a_.cmp(RCX, RDX);
         a_.jcc(CC_E, cold);
-#endif
         a_.mov32(d, RCX);
+#else
+        // The 32-bit conversion answers 0x80000000 for anything outside int32 (INT_MIN itself too): "d - 1" overflows only for that one value, and the
+        // slow side converts again at 64 bits (a number from 2^31 up to 2^63 wraps modulo 2^32 and stays in the unit).
+        a_.cvttsd2si32(d, s);
+        a_.cmp32_imm(d, 1);
+        a_.jcc(CC_O, cold);
+#endif
         a_.bind(back);
         commit_g(id, d);
         Label* dl = &deopt_label(n.state);
         cold_.push_back([this, s, d, &cold, &back, dl]() {
             Label& zero = new_label();
             a_.bind(cold);
+#ifndef QUANTA_JIT_ARCH_A64
+            {
+                Label& wide = new_label();
+                a_.cvttsd2si64(RCX, s);
+                a_.mov_imm64(RDX, 0x8000000000000000ull);
+                a_.cmp(RCX, RDX);
+                a_.jcc(CC_E, wide);
+                a_.mov32(d, RCX);
+                a_.jmp(back);
+                a_.bind(wide);
+            }
+#endif
             a_.movapd(XMM1, s);
             a_.subsd(XMM1, s);          // NaN for NaN and the infinities, 0 for the finite out-of-range
             a_.ucomisd(XMM1, XMM1);
