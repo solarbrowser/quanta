@@ -160,6 +160,8 @@ public:
     void shl_imm(Reg r, uint8_t n) { shift_imm(4, r, n, true); }
     void shr_imm(Reg r, uint8_t n) { shift_imm(5, r, n, true); }
     void sar_imm(Reg r, uint8_t n) { shift_imm(7, r, n, true); }
+    void rol_imm(Reg r, uint8_t n) { shift_imm(0, r, n, true); }
+    void cmp16_imm(Reg r, uint16_t imm) { byte(0x66); if (r >> 3) byte(0x41); byte(0x81); modrm_rr(static_cast<Reg>(7), r); byte(static_cast<uint8_t>(imm & 0xFF)); byte(static_cast<uint8_t>(imm >> 8)); }
     void shl32_imm(Reg r, uint8_t n) { shift_imm(4, r, n, false); }
     void shr32_imm(Reg r, uint8_t n) { shift_imm(5, r, n, false); }
     void shl32_cl(Reg r) { if (r >> 3) byte(0x41); byte(0xD3); modrm_rr(static_cast<Reg>(4), r); }

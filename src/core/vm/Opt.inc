@@ -6499,6 +6499,21 @@ inline void Emitter::emit_node(int32_t id) {
     case K::CheckObj: {
         const Reg s = use_g(n.a, RAX);
         const Reg d = def_g(id, RAX);
+#ifndef QUANTA_JIT_ARCH_A64
+        if (n.aux != 4) {
+            // Rotated, the tag is the low 16 bits (one 16-bit compare) and the pointer the high 48 (one shift): the checked value itself stays intact for the
+            // deoptimization when the result goes to another register than the operand.
+            const Reg t = d != s ? d : RCX;
+            a_.mov(t, s);
+            a_.rol_imm(t, 16);
+            a_.cmp16_imm(t, n.aux == 2 ? 0x7FF4 : n.aux == 3 ? 0x7FF9 : 0x7FF7);      // aux 2: a string, 3: a function
+            a_.jcc(CC_NE, deopt_label(n.state));
+            a_.shr_imm(t, 16);
+            if (t != d) a_.mov(d, t);
+            commit_g(id, d);
+            return;
+        }
+#endif
         a_.mov(RCX, s);
         a_.shr_imm(RCX, 48);
         if (n.aux == 4) {
@@ -6740,7 +6755,7 @@ inline void Emitter::compute_fusion() {
 #ifdef QUANTA_JIT_ARCH_A64
         const bool fusable = ck == K::CmpI;
 #else
-        const bool fusable = ck == K::CmpI || ck == K::LtF || ck == K::GtF || ck == K::LeF || ck == K::GeF || ck == K::EqF || ck == K::NeF;
+        const bool fusable = ck == K::CmpI || ck == K::LtF || ck == K::GtF || ck == K::LeF || ck == K::GeF || ck == K::EqF || ck == K::NeF || ck == K::IsNullish;
 #endif
         if (!fusable) continue;
         int32_t last = -1;
@@ -6775,6 +6790,17 @@ inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
                     if (t.t == next_blk) { a_.jcc(CC_P, other); a_.jcc(CC_E, *blk_label_[t.f]); a_.bind(other); }
                     else { a_.jcc(CC_NE, *blk_label_[t.t]); a_.jcc(CC_P, *blk_label_[t.t]); goto_blk(t.f); }
                 }
+                return;
+            }
+            if (cn.op == K::IsNullish) {
+                // undefined is 0x7FF0 in the top 16 bits, null 0x7FF1.
+                const Reg a = use_g(cn.a, RAX);
+                a_.mov(RCX, a);
+                a_.shr_imm(RCX, 48);
+                a_.sub32_imm(RCX, 0x7FF0);
+                a_.cmp32_imm(RCX, 1);
+                if (t.t == next_blk) { a_.jcc(CC_A, *blk_label_[t.f]); }
+                else { a_.jcc(CC_BE, *blk_label_[t.t]); goto_blk(t.f); }
                 return;
             }
             if (cn.op != K::CmpI) {
