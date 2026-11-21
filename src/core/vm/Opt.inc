@@ -338,6 +338,7 @@ struct Config {
     uint32_t deopt_ratio = 16;        // QUANTA_OPT_DEOPT_RATIO=n: a unit is given up on once it has left more than max_deopts times AND more than one run in n
     uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
     uint32_t inline_depth = 4;
+    uint32_t inline_recursion = 99;   // QUANTA_OPT_RECUR: how many times a function may stand inside itself in the chain of inlined calls (the root counts)
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
     uint32_t max_helper_calls = 32;   // QUANTA_OPT_MAXHELPERCALLS: refuse a region that leaves more calls than this to the call helper
@@ -388,6 +389,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_STALOOKUP")) c.sta_lookup = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_RECUR")) c.inline_recursion = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_HOIST")) { c.hoist = e[0] && e[0] != '0'; c.hoist_every = e[0] == '2'; }
         if (const char* e = std::getenv("QUANTA_OPT_NATIVECALLS")) c.native_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_LOOPPHIS")) c.loop_phis = e[0] && e[0] != '0';
@@ -1910,6 +1912,12 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
                 if (ac.uses_this || ac.uses_super || ac.needs_arguments || fn->has_internal_slot("__arrow_new_target__")) return no(4);
             }
             const BytecodeChunk& c = *exe->bytecode_chunk;
+            if (!construct) {
+                // A function inlined into itself (a recursion): each level is another copy of its guards, and one that fails takes the whole unit with it.
+                uint32_t same = 0;
+                for (int32_t k = fi; k >= 0; k = g_.funcs[k].parent) if (g_.funcs[k].chunk == &c) same++;
+                if (same > config().inline_recursion) return no(15);
+            }
             if (construct) {
                 Graph::CtorPlan plan;
                 uint32_t n = 0;
@@ -4358,9 +4366,12 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                     nmade++;
                     if (!g_native_thunks.count(key)) g_native_thunks[key].reset(native_thunk_make(*f, fn, th, args, argc, is_new));
                 }
-            } else if (it->second && it->second->stale && !it->second->closed) {
+            } else if (it->second && it->second->closed) {
+                // No more rebuilds: the callee is the helper's from now on, and the thunk table is not asked again.
+                nstate = 2;
+            } else if (it->second && it->second->stale) {
                 // The unit was found wrong and learned from: build it again (a few times at most), for this call's callee.
-                if (!native_thunk_rebuild(*f, *it->second, fn, th, args, argc)) it->second->closed = true;
+                if (!native_thunk_rebuild(*f, *it->second, fn, th, args, argc)) { it->second->closed = true; nstate = 2; }
             } else if (it->second && it->second->ok) {
                 if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[6])) {
                     bool have = false;
