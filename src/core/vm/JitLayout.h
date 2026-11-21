@@ -101,6 +101,7 @@ struct JitRt {
     uint32_t last_guard = ~0u;         // the K op of the guard that took the last deoptimization (several guards share one state)
     uint32_t last_reason = 0;
     int32_t stress = 0;                // QUANTA_OPT_DEOPT_STRESS: guards left before the next forced deoptimization
+    uint32_t native_runs = 0;          // activations through the native entry (a thunk's unit): how hot the callee is
     uint64_t opt_runs = 0, opt_exits = 0, opt_cycles = 0, opt_iters = 0;
     uint32_t opt_pc = 0;           // optimizing tier: the frame state a deoptimization came from
     // Optimizing tier: where a deoptimization inside an inlined callee leaves the variables that have no

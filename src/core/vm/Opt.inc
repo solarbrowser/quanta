@@ -7332,6 +7332,7 @@ inline void Emitter::emit_native_entry() {
     a_.mov_store8(mem(RBX, static_cast<int32_t>(FrameOff::native_entered)), R11);
     a_.lea(R12, mem(RBX, bank_rel - frame_rel));       // (the registers of the unit: the bank)
     a_.mov_imm64(R14, reinterpret_cast<uint64_t>(native_->rt));
+    a_.sub32_mem_imm(mem(R14, static_cast<int32_t>(offsetof(JitRt, native_runs))), -1);
     for (int32_t blk : order_)
         if (g_.b[blk].synthetic && g_.b[blk].osr_pc == 0) { a_.jmp(*blk_label_[blk]); return; }
     why_ = "no entry for pc 0";

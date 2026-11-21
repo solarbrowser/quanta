@@ -3663,8 +3663,10 @@ inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status, JitRt* exi
             nt->stale = true;
             for (auto& [ic, w] : nt->ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
             nt->ics.clear();
-            if (nt->rebuilds >= g_thunk_rebuild_limit || g_thunk_rebuilt_total >= g_thunk_rebuild_total) nt->closed = true;
-            if (opt::config().log) std::fprintf(stderr, "[native] thunk stale (rebuilds so far %u)\n", static_cast<unsigned>(nt->rebuilds));
+            // A thunk that ran a lot is worth rebuilding past the global budget (the budget exists for cold, one-off units).
+            const bool hot = rt->native_runs >= 1000;
+            if (nt->rebuilds >= g_thunk_rebuild_limit || (g_thunk_rebuilt_total >= g_thunk_rebuild_total && !hot)) nt->closed = true;
+            if (opt::config().log) std::fprintf(stderr, "[native] thunk stale (rebuilds so far %u, runs %u)\n", static_cast<unsigned>(nt->rebuilds), static_cast<unsigned>(rt->native_runs));
         }
         if (r == 1) {
             result = cf->acc;
