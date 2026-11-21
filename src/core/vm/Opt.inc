@@ -4524,6 +4524,7 @@ private:
     K cur_op_ = K::Trap;
     std::map<std::pair<int32_t, int>, Label*> guard_labels_;
     const NativeInfo* native_ = nullptr;
+    Label* native_restore_ = nullptr;   // (a native unit that returns a value leaves through here, in rax)
     int32_t native_off_ = 0;            // where the frame of a native entry lives in the unit's native frame
     uint32_t native_entry_off_ = 0;
     uint32_t native_slim_off_ = 0;
@@ -5678,13 +5679,15 @@ inline void Emitter::emit_node(int32_t id) {
             Label& generic = new_label();
             Label& after = new_label();
             a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(ic));
-            a_.cmp32_mem_imm(mem(RAX, static_cast<int32_t>(offsetof(JitCallIC, any))), 0);
-            a_.jcc(CC_E, generic);
             Label* hit[JitCallIC::kWays];
             for (int w = 0; w < JitCallIC::kWays; w++) {
                 hit[w] = &new_label();
                 a_.cmp_load(abi::A1, mem(RAX, static_cast<int32_t>(offsetof(JitCallIC, fn_bits) + 8 * w)));
                 a_.jcc(CC_E, *hit[w]);
+                if (w == 0) {       // (a site that has found nothing: one test, not four compares)
+                    a_.cmp32_mem_imm(mem(RAX, static_cast<int32_t>(offsetof(JitCallIC, any))), 0);
+                    a_.jcc(CC_E, generic);
+                }
             }
             a_.jmp(generic);
             for (int w = 0; w < JitCallIC::kWays; w++) {
@@ -6608,6 +6611,14 @@ inline void Emitter::emit_term(int32_t blk, size_t layout_index) {
     }
     case T::Return: {
         const Reg v = use_g(t.cond, RAX);
+#ifdef QUANTA_NATIVE_SLIM
+        if (native_) {
+            // A native unit hands its value back in rax at once: no status, no accumulator.
+            if (v != RAX) a_.mov(RAX, v);
+            a_.jmp(*native_restore_);
+            return;
+        }
+#endif
         a_.mov_store(mem(RBX, static_cast<int32_t>(kOffAcc)), v);
         a_.xor32(RAX, RAX);
         a_.jmp(epilogue_);
@@ -6713,7 +6724,7 @@ inline void Emitter::emit_native_entry() {
 // What a unit entered through its native entry does at the end: the value (or an exception pending, or a finish the interpreter has to do) goes to the native caller.
 inline void Emitter::emit_native_tail(Label& restore_full) {
 #ifdef QUANTA_NATIVE_SLIM
-    Label& restore = new_label();
+    Label& restore = *native_restore_;
     Label& restore_slim = new_label();
 #else
     Label& restore = restore_full;
@@ -6753,6 +6764,9 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
     blk_label_.assign(g_.b.size(), nullptr);
     state_label_.assign(g_.states.size(), nullptr);
     for (int32_t blk : order_) blk_label_[blk] = &new_label();
+#ifdef QUANTA_NATIVE_SLIM
+    if (native_) native_restore_ = &new_label();
+#endif
 
     // Prologue: the entry address arrives in the third argument register.
 #ifdef QUANTA_JIT_ARCH_A64
