@@ -4614,6 +4614,14 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_setnamed(VM::Frame* f, uint64_t recv, u
     // ordinary object: no frame bookkeeping, no exception wrapper.
     if (const Value rv = std::bit_cast<Value>(recv); rv.is_object()) {
         Object* obj = rv.as_object();
+        // The store this site made last time: the same shape, prototype and epoch, an object with nothing special about it.
+        if (obj->get_shape() == d->t_from && d->t_from && static_cast<uint8_t>(obj->get_type()) == d->t_type && !obj->has_any_descriptor_override() && obj->is_extensible() &&
+            obj->get_prototype_raw() == d->t_proto && Object::proto_epoch() == d->t_epoch) {
+            const Value v = std::bit_cast<Value>(val);
+            VM::write_barrier_for(obj, v);
+            obj->add_shape_property_cached(*d->name, v, d->t_to);
+            return std::bit_cast<uint64_t>(Value());
+        }
         const FeedbackBody* fb = d->slot->peek();
         if (fb && !fb->mega && obj->get_type() != Object::ObjectType::Custom && VM::shape_fast_path_ok(obj->get_type())) {
             const Value v = std::bit_cast<Value>(val);
@@ -4639,6 +4647,8 @@ inline QUANTA_JIT_ABI uint64_t helper_rt_setnamed(VM::Frame* f, uint64_t recv, u
                     if (te.from_shape == shape && te.prototype == proto0 && te.proto_epoch == epoch) {
                         VM::write_barrier_for(obj, v);
                         obj->add_shape_property_cached(*d->name, v, te.to_shape);
+                        auto* wd = const_cast<JitCode::OptUnit::RtDesc*>(d);
+                        wd->t_from = shape; wd->t_to = te.to_shape; wd->t_proto = proto0; wd->t_epoch = epoch; wd->t_type = static_cast<uint8_t>(obj->get_type());
                         return std::bit_cast<uint64_t>(Value());
                     }
                 }

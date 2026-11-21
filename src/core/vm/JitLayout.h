@@ -191,7 +191,11 @@ struct JitCode {
         std::vector<std::unique_ptr<NativeDesc>> natives;
         // A property access the unit makes through the interpreter's generic path (K::Rt): the name, the site's feedback,
         // the function the access is made for, and the root's pc a throw is reported at.
-        struct RtDesc { const std::string* name = nullptr; FeedbackSlot* slot = nullptr; Function* owner = nullptr; uint32_t pc = 0; bool is_length = false; bool is_prototype = false; KeyedFeedback* kf = nullptr; };
+        struct RtDesc {
+            const std::string* name = nullptr; FeedbackSlot* slot = nullptr; Function* owner = nullptr; uint32_t pc = 0; bool is_length = false; bool is_prototype = false; KeyedFeedback* kf = nullptr;
+            // The property-adding store this site did last (helper_rt_setnamed): the shape it started from and ended in, the prototype and the epoch it was valid under.
+            Shape* t_from = nullptr; Shape* t_to = nullptr; Object* t_proto = nullptr; uint64_t t_epoch = 0; uint8_t t_type = 0;
+        };
         std::vector<std::unique_ptr<RtDesc>> rtdescs;
         std::vector<InlFrame> inl;
         struct InlState { int32_t func = 0; uint32_t pc = 0; std::vector<uint32_t> vars; };   // vars: global variable numbers
