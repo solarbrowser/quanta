@@ -2769,11 +2769,13 @@ bool chunk_has_loop(const BytecodeChunk& chunk) noexcept {
     compile_chunk(chunk);
 }
 
-// How many times a native thunk whose guards failed is built again (QUANTA_THUNK_REBUILDS). Zero: it is given up on at the first failure. Every rebuild up to 4 gave
-// Richards +3%, DeltaBlue +4%, RayTrace +3%, EarleyBoyer +7.5% (instructions a score), but code.js (a 3 MB parser and printer) peaked at 246 MB instead of 208-214: the very
-// first rebuild costs all of it (241-248 MB with one, 208 with none), and the cause is not found (it is not the thunk's own memory: 3 MB over 99 builds; not the roots it holds,
-// not the garbage collector's cadence, not the safepoint count -- the generic string `+` of a rebuilt unit (rt_mask bit 1) and the collector's phase are what it follows).
-inline const uint8_t g_thunk_rebuild_limit = [] { const char* e = std::getenv("QUANTA_THUNK_REBUILDS"); return static_cast<uint8_t>(e ? std::atoi(e) : 0); }();
+// How many times a native thunk whose guards failed is built again: QUANTA_THUNK_REBUILDS for one thunk (4), QUANTA_THUNK_REBUILD_TOTAL for the process (10). A rebuild gives Richards -5%,
+// DeltaBlue -5.6%, RayTrace -1.6% (instructions a score), but code.js (a 3 MB parser and printer) peaks at 246 MB instead of 208 with every rebuild it makes (67): the first ten cost
+// nothing (206 MB), 12 cost 226, all of them 242, and the cause is not found (not the thunk's own memory: 3 MB over 99 builds; not the roots it holds, not the collector's cadence,
+// not the safepoint count; a rebuilt unit's generic string `+` and the collector's phase are what it follows).
+inline const uint32_t g_thunk_rebuild_total = [] { const char* e = std::getenv("QUANTA_THUNK_REBUILD_TOTAL"); return static_cast<uint32_t>(e ? std::atoi(e) : 10); }();
+inline uint32_t g_thunk_rebuilt_total = 0;
+inline const uint8_t g_thunk_rebuild_limit = [] { const char* e = std::getenv("QUANTA_THUNK_REBUILDS"); return static_cast<uint8_t>(e ? std::atoi(e) : 4); }();
 struct NativeThunk {
     // The functions the unit stands on (the callee, and the ones its runtime accesses learn into) stay alive as long as the thunk does: nothing else traces it.
     std::vector<Value> held;
@@ -3590,6 +3592,7 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
     t.stale = false;
     t.ok = true;
     t.rebuilds++;
+    g_thunk_rebuilt_total++;
     return true;
 }
 
@@ -3660,7 +3663,7 @@ inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status, JitRt* exi
             nt->stale = true;
             for (auto& [ic, w] : nt->ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
             nt->ics.clear();
-            if (nt->rebuilds >= g_thunk_rebuild_limit) nt->closed = true;
+            if (nt->rebuilds >= g_thunk_rebuild_limit || g_thunk_rebuilt_total >= g_thunk_rebuild_total) nt->closed = true;
             if (opt::config().log) std::fprintf(stderr, "[native] thunk stale (rebuilds so far %u)\n", static_cast<unsigned>(nt->rebuilds));
         }
         if (r == 1) {
