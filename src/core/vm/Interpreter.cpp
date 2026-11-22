@@ -2872,11 +2872,10 @@ static bool arrow_env_ok(Function* fn) {
 // Returns false, with nothing changed, for anything it does not take: a sloppy callee given a
 // primitive `this`, a constructor call, another realm, or an environment that cannot be seeded
 // by index.
-[[gnu::noinline]] bool inline_call_enter_env(Frame& f, Function* fn, const FunctionExecutable& exe,
+[[gnu::noinline]] bool inline_call_enter_env(Frame* fp, Context& ctx, Function* fn, const FunctionExecutable& exe,
                                               const BytecodeChunk& chunk, const Value* argv, uint32_t argc,
                                               const Value& this_value, uint32_t return_pc, Frame*& out,
-                                              uint8_t verdict) {
-    Context& ctx = *f.ctx;
+                                              uint8_t verdict, Environment* existing = nullptr) {
     if (UNLIKELY(exe.owner_realm() != g_current_realm || !fn->fast_env_callable() ||
                  (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()))) {
         return false;
@@ -2919,12 +2918,13 @@ static bool arrow_env_ok(Function* fn) {
     // The environment, seeded before anything is committed: if it cannot be laid down by index
     // it is simply dropped again.
     const auto& plan = chunk.env->env_seed_plan;
-    Environment* call_env = Environment::create(Environment::Type::Function, outer_env, chunk.env->env_slot_total, 4);
-    if (UNLIKELY(!call_env->fresh_with_room(plan.size()))) {
+    // `existing`: the environment an optimized unit made for this call before it left (the frame is being rebuilt around it).
+    Environment* call_env = existing ? existing : Environment::create(Environment::Type::Function, outer_env, chunk.env->env_slot_total, 4);
+    if (UNLIKELY(!existing && !call_env->fresh_with_room(plan.size()))) {
         Collector::release_env(call_env);
         return false;
     }
-    {
+    if (!existing) {
         size_t at = 0;
         for (const auto& se : plan) {
             Environment::BindingSlot slot{Value(), true, true, false};
@@ -2960,7 +2960,7 @@ static bool arrow_env_ok(Function* fn) {
     slot.call_info.variable_environment_ = call_env;
     Frame* callee = inline_slot_frame(slot);
     callee->chunk = &chunk;
-    callee->ctx = f.ctx;
+    callee->ctx = &ctx;
     callee->args = std::span<const Value>(argv, argc);
     callee->owner = fn;
     callee->regs = regs;
@@ -2973,8 +2973,8 @@ static bool arrow_env_ok(Function* fn) {
     callee->env_save_top = 0;
     callee->current_lexical_env = call_env;
     callee->current_variable_env = call_env;
-    callee->caller = &f;
-    Frame* base = f.base ? f.base : &f;
+    callee->caller = fp;
+    Frame* base = fp ? (fp->base ? fp->base : fp) : callee;
     callee->base = base;
     callee->return_pc = return_pc;
     callee->value_words = words;
@@ -2998,7 +2998,7 @@ static bool arrow_env_ok(Function* fn) {
         new (st.roots[1]) EnvironmentRoot(&callee->current_variable_env);
     }
 
-    base->active = callee;
+    if (fp) base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
     out = callee;
     return true;
@@ -3011,9 +3011,11 @@ namespace {
 
 // Starts a stackless call of `fn` from `f` if everything allows it; true with the callee's
 // frame in `out` (the caller has only to dispatch it), false with nothing touched.
+// `fp` is the calling frame, or null for a call from native code, whose frame then stands alone as the root of its own run (it has no caller, and its return hands the value back
+// to whoever started it).
 template <bool NoteCall = true>
-[[gnu::always_inline]] inline bool inline_call_enter(Frame& f, Function* fn, const Value* argv, uint32_t argc,
-                                                       const Value& this_value, uint32_t return_pc, Frame*& out) {
+[[gnu::always_inline]] inline bool inline_call_enter_p(Frame* fp, Context& ctx, Function* fn, const Value* argv, uint32_t argc,
+                                                       const Value& this_value, uint32_t return_pc, Frame*& out, Environment* existing = nullptr) {
     const FunctionExecutable& exe = *fn->get_executable().get();
     const BytecodeChunk& chunk = *exe.bytecode_chunk;
     if (UNLIKELY(static_cast<uint8_t>(chunk.jit_state - 1) > 1)) bl_consider(chunk);      // (0 not seen, 3 and 4 counting: neither 1 compiled nor 2 never)
@@ -3024,8 +3026,7 @@ template <bool NoteCall = true>
         if (!(verdict & kInlineOk)) return false;
     }
     if (UNLIKELY(verdict & kInlineEnv))
-        return inline_call_enter_env(f, fn, exe, chunk, argv, argc, this_value, return_pc, out, verdict);
-    Context& ctx = *f.ctx;
+        return inline_call_enter_env(fp, ctx, fn, exe, chunk, argv, argc, this_value, return_pc, out, verdict, existing);
     const bool offer_loops = UNLIKELY(verdict & kInlineHasOpt);
     // An arrow reads the `this` it was created with, not the receiver, and has a new.target only if it captured one;
     // one that is inside a constructor still waiting for super() is the general path's.
@@ -3091,7 +3092,7 @@ template <bool NoteCall = true>
     // resolved_envs is not cleared: each slot is written by the resolve op before the op that reads it.
     Frame* callee = inline_slot_frame(slot);
     callee->chunk = &chunk;
-    callee->ctx = f.ctx;
+    callee->ctx = &ctx;
     callee->args = std::span<const Value>(argv, argc);
     callee->owner = fn;
     callee->regs = regs;
@@ -3104,8 +3105,8 @@ template <bool NoteCall = true>
     callee->env_save_top = 0;
     callee->current_lexical_env = outer_env;
     callee->current_variable_env = outer_env;
-    callee->caller = &f;
-    Frame* base = f.base ? f.base : &f;
+    callee->caller = fp;
+    Frame* base = fp ? (fp->base ? fp->base : fp) : callee;
     callee->base = base;
     callee->return_pc = return_pc;
     callee->value_words = words;
@@ -3119,10 +3120,16 @@ template <bool NoteCall = true>
         callee->strict_swap = true;
         callee->rare_pop = true;
     }
-    base->active = callee;
+    if (fp) base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
     out = callee;
     return true;
+}
+
+template <bool NoteCall = true>
+[[gnu::always_inline]] inline bool inline_call_enter(Frame& f, Function* fn, const Value* argv, uint32_t argc,
+                                                       const Value& this_value, uint32_t return_pc, Frame*& out, Environment* existing = nullptr) {
+    return inline_call_enter_p<NoteCall>(&f, *f.ctx, fn, argv, argc, this_value, return_pc, out, existing);
 }
 
 }  // namespace
@@ -10930,6 +10937,10 @@ Value run_dispatch(Frame& f) {
     return kHandlers[f.code[f.pc]](f, f.pc, f.acc, f.regs, f.code);
 }
 
+// A call from native code (generated code's helper) of a function the interpreter could run stackless: its frame is made in the arena like any stackless callee's but stands alone
+// as the root of its own run, so the call costs what a stackless call does and not what a nested interpreter activation does (defined after run_with_regs, which has the loop it shares).
+bool native_call_stackless(Context& ctx, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out);
+
 #include "Jit.inc"
 
 #ifndef QUANTA_JIT_ENABLED
@@ -11303,6 +11314,78 @@ template <bool Fast>
       // of them do; resume at the instruction that was executing.
       cur->pc = cur->instr_pc;
       run_target = cur;
+    }
+}
+
+// See the declaration above run_dispatch's neighbours (before Jit.inc).
+bool native_call_stackless(Context& ctx, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out) {
+    if (UNLIKELY(!inline_calls_enabled() || g_track_positions || Engine::multi_engine() || Function::is_borrowed_ctx(&ctx))) return false;
+    if (UNLIKELY(!fn->fast_callable() && !fn->maybe_env_callable())) return false;
+    Frame* root = nullptr;
+    if (!inline_call_enter_p<false>(nullptr, ctx, fn, argv, argc, this_value, 0, root)) return false;
+    // Whatever happens below -- a return, an exception nobody here handles, a C++ throw -- the frame and any stackless frames it still has running are given back.
+    struct Giveback {
+        Frame* root; Context* prev_context;
+        ~Giveback() {
+            while (root->active) inline_frame_pop(*root->active);
+            inline_frame_pop(*root);
+            Object::current_context_ = prev_context;
+        }
+    } giveback{root, Object::current_context_};
+    Object::current_context_ = &ctx;
+    Frame& frame = *root;
+    frame.pc = 0;
+    frame.acc = Value();
+    frame.instr_pc = 0;
+    frame.inline_ok = !(frame.chunk->jit && frame.chunk->jit->entry);
+    Frame* run_target = &frame;
+    bool first = true;
+    for (;;) {
+        try {
+            Value result;
+            if (first) {
+                first = false;
+                result = run_entry(frame);
+            } else {
+                result = run_dispatch(*run_target);
+            }
+            if (LIKELY(frame.active == nullptr)) { out = result; return true; }
+        } catch (const YieldException&) {
+            throw;
+        } catch (const GeneratorReturnException&) {
+            throw;
+        } catch (const std::exception& e) {
+            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string(e.what())));
+        } catch (...) {
+            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string("Error: Unknown error")));
+        }
+        Frame* cur = frame.active ? frame.active : &frame;
+        if (ctx.has_exception()) {
+            for (;;) {
+                int32_t handler_pc = -1;
+                uint32_t best_width = UINT32_MAX;
+                if (cur->chunk->handlers) for (const auto& h : *cur->chunk->handlers) {
+                    if (cur->instr_pc >= h.start_pc && cur->instr_pc < h.end_pc) {
+                        const uint32_t width = h.end_pc - h.start_pc;
+                        if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+                    }
+                }
+                if (handler_pc >= 0) {
+                    cur->acc = ctx.get_exception();
+                    ctx.clear_exception();
+                    cur->pc = static_cast<uint32_t>(handler_pc);
+                    run_target = cur;
+                    break;
+                }
+                if (cur == &frame) { out = Value(); return true; }
+                Frame* const up = cur->caller;
+                inline_frame_pop(*cur);
+                cur = up;
+            }
+            continue;
+        }
+        cur->pc = cur->instr_pc;
+        run_target = cur;
     }
 }
 

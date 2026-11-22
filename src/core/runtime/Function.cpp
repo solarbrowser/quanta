@@ -529,6 +529,8 @@ static void declare_pattern_parameter_names(Context& function_context, ASTNode* 
 // back must not run on it either (see call_native_in_realm).
 static constinit thread_local const Context* g_borrowed_ctx = nullptr;
 
+bool Function::is_borrowed_ctx(const Context* ctx) { return ctx == g_borrowed_ctx; }
+
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     switch (get_function_kind()) {
         case FunctionKind::Async: return static_cast<AsyncFunction*>(this)->call(ctx, args, this_value);

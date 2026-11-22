@@ -111,6 +111,8 @@ enum class K : uint8_t {
     LoadElemPlain,        // Ptr a, I32 b -> Tagged: the element, deopt when it is out of the storage or a hole (the interpreter asks the prototype chain)
     StoreElemPlain,       // Ptr a, I32 b, Tagged c: plain_element_store, deopt (before doing anything) when it declines
     StoreTrans,           // Ptr a (an object of the shape the guard before checked), Tagged b: adds the property: b into slot aux-1, the shape word becomes imm (a Shape*); deopt when the room is short
+    NewEnv,               // Tagged a (the callee): the bits of the call environment of an inlined environment-mode callee, made the way a call makes it (the arguments are stored after); deopt when it cannot be made
+    NewClosure,           // Tagged a (that environment's bits), Tagged b (the callee's `this`), imm: the ClosureTemplate: the closure the callee's CreateClosure makes; deopt when it cannot be made
 };
 
 struct Node {
@@ -190,6 +192,7 @@ struct Func {
     bool by_identity = false;            // the callee is recognized by the function, not its executable (its caches belong to it)
     BytecodeChunk::LookupCacheEntry* lookup = nullptr;   // the name cache its instructions use (the root's is the frame's)
     int32_t this_var = -1, fn_var = -1;  // variables holding the callee and its `this` (deoptimization rebuilds the frame from them)
+    int32_t env_var = -1;                // an environment-mode callee: the variable holding the bits of the environment the unit made for it (the one after the function's)
     bool leaf = false;                   // a body whose guards can deoptimize to the call itself: it has done nothing yet
     int32_t entry_state = -1;            // that state
     uint32_t params = 0;
@@ -251,7 +254,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -272,7 +275,7 @@ inline bool is_pure_removable(K k) {
 }
 
 // The frame slots a call through the runtime (K::CallFn) lays out: the arguments, the receiver, the argument count with the pc and flags, the site's cache.
-constexpr uint32_t kCallFnMaxArgs = 8;      // (a construction stays at 4: a five-argument one through the runtime miscompiled RayTrace's scene set-up, not yet understood)
+constexpr uint32_t kCallFnMaxArgs = 15;     // (a construction stays at 4: a five-argument one through the runtime miscompiled RayTrace's scene set-up, not yet understood)
 constexpr uint32_t kCallFnRecvSlot = kCallFnMaxArgs, kCallFnMetaSlot = kCallFnMaxArgs + 1, kCallFnIcSlot = kCallFnMaxArgs + 2, kCallFnAreaSlots = kCallFnMaxArgs + 4;
 
 constexpr uint64_t kTdzBits = 0x7FFC000000000000ull;      // QUIET_NAN | TAG_VM_TDZ
@@ -324,6 +327,7 @@ struct Config {
     bool int32 = true;                // QUANTA_OPT_INT32=0: numbers that stay int32 are kept as doubles (no AddI/SubI/MulI, no int32 loop variables)
     bool small_callee = false;         // QUANTA_OPT_SMALLCALLEE=1: a short function a unit calls through the interpreter is given a unit (+3 per cent DeltaBlue, +55 MB peak on a 3 MB bundle)
     bool callee_env = true;           // QUANTA_OPT_CALLENV=0: an inlined callee's reads of enclosing variables are steps
+    bool callee_envmode = true;       // QUANTA_OPT_ENVCALLEE=0: a callee that runs in an environment of its own is not inlined
     bool rt = true;                   // QUANTA_OPT_RT=0: what the tier cannot compile is stepped
     uint32_t rt_mask = 127;            // QUANTA_OPT_RTMASK: which generic operations: 1 binary, 2 typeof, 4 get named, 8 set named
     bool fast_enter = true;           // QUANTA_OPT_FASTENTER=0: the frame of a unit's callee is made by the general entry
@@ -390,6 +394,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_TYPED")) c.typed = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_SMALLCALLEE")) c.small_callee = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_CALLENV")) c.callee_env = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_ENVCALLEE")) c.callee_envmode = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RT")) c.rt = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_RTMASK")) c.rt_mask = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_FASTENTER")) c.fast_enter = e[0] && e[0] != '0';
@@ -533,6 +538,7 @@ private:
             if (fn.parent < 0) break;
             out.push_back(static_cast<uint32_t>(fn.this_var));
             out.push_back(static_cast<uint32_t>(fn.fn_var));
+            if (fn.env_var >= 0) out.push_back(static_cast<uint32_t>(fn.env_var));
             pc = fn.call_pc + fn.call_len;
             fi = fn.parent;
         }
@@ -1276,41 +1282,58 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     }
     case Op::LdaEnvSlot: case Op::LdaEnvSlotStar: {
         uint32_t no_hops = 0;
-        if (cf_ != 0 && !callee_env_hops(no_hops, false)) return false;
+        const bool eo = cf_ != 0 && F().env_var >= 0;       // an environment-mode callee: its own environment is the unit's NewEnv
+        if (cf_ != 0 && !eo && !callee_env_hops(no_hops, false)) return false;
         const bool fused = op == Op::LdaEnvSlotStar;
         const uint32_t slot = code[pc + 1], nidx = u16(pc + 2);
         const uint32_t dst = fused ? reg(pc + 4) : 0;
         if ((fused && !ok_reg(dst)) || nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
-        const int32_t v = guarded(K::LoadEnv, Rep::Tagged, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        const int32_t v = guarded(K::LoadEnv, Rep::Tagged, cf_ != 0 ? tagged(value(static_cast<uint32_t>(eo ? F().env_var : F().fn_var))) : -1, -1, slot | (eo ? 0x10000u : 0u), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         set(acc(), v);
         if (fused) set(dst, v);
         return true;
     }
     case Op::LdaEnvSlotAt: {
         uint32_t hops = code[pc + 1];
-        if (cf_ != 0 && !callee_env_hops(hops, true)) return false;
+        const bool eo = cf_ != 0 && F().env_var >= 0;
+        if (cf_ != 0 && !eo && !callee_env_hops(hops, true)) return false;
         const uint32_t slot = code[pc + 2], nidx = u16(pc + 3);
         if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
-        set(acc(), guarded(K::LoadEnv, Rep::Tagged, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx])));
+        set(acc(), guarded(K::LoadEnv, Rep::Tagged, cf_ != 0 ? tagged(value(static_cast<uint32_t>(eo ? F().env_var : F().fn_var))) : -1, -1, slot | (hops << 8) | (eo ? 0x10000u : 0u), reinterpret_cast<uint64_t>(F().chunk->names[nidx])));
         return true;
     }
     case Op::StaEnvSlotAt: {
         uint32_t hops = code[pc + 1];
         // An inlined callee's variables are found from the function it was called as (its closure's scope chain), as a load's are.
-        if (cf_ != 0 && !callee_env_hops(hops, true)) return false;
+        const bool eo = cf_ != 0 && F().env_var >= 0;
+        if (cf_ != 0 && !eo && !callee_env_hops(hops, true)) return false;
         const uint32_t slot = code[pc + 2], nidx = u16(pc + 3);
         if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots || hops > 16) return false;
         const int32_t val = tagged(value(acc()));
-        guarded(K::StoreEnv, Rep::None, val, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, slot | (hops << 8), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        guarded(K::StoreEnv, Rep::None, val, cf_ != 0 ? tagged(value(static_cast<uint32_t>(eo ? F().env_var : F().fn_var))) : -1, slot | (hops << 8) | (eo ? 0x10000u : 0u), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        return true;
+    }
+    case Op::StaEnvInit: case Op::StaEnvSlotInit: {
+        // The first assignment of a binding of an inlined environment-mode callee's own environment: it is found in the chunk's seed plan, and stored initialized.
+        if (cf_ == 0 || F().env_var < 0 || !F().chunk->env) { if (config().log) std::fprintf(stderr, "[opt] StaEnvInit: cf %d env_var %d\n", cf_, F().env_var); return false; }
+        const uint32_t nidx = op == Op::StaEnvInit ? u16(pc + 1) : u16(pc + 2);
+        if (nidx >= F().chunk->names.size()) return false;
+        const std::string* key = F().chunk->names[nidx];
+        const auto& plan = F().chunk->env->env_seed_plan;
+        uint32_t slot = 0;
+        for (; slot < plan.size(); slot++) if (plan[slot].key == key) break;
+        if (slot >= plan.size() || slot >= JitEnvLayout::kMaxSlots) { if (config().log) std::fprintf(stderr, "[opt] StaEnvInit '%s' not in the seed plan (%zu entries)\n", key->c_str(), plan.size()); return false; }
+        guarded(K::StoreEnv, Rep::None, tagged(value(acc())), tagged(value(static_cast<uint32_t>(F().env_var))), slot | 0x10000u | 0x20000u, reinterpret_cast<uint64_t>(key));
         return true;
     }
     case Op::StaEnvSlot: {
         uint32_t no_hops = 0;
-        if (cf_ != 0 && !callee_env_hops(no_hops, false)) return false;
+        const bool eo = cf_ != 0 && F().env_var >= 0;
+        if (cf_ != 0 && !eo && !callee_env_hops(no_hops, false)) return false;
         const uint32_t slot = code[pc + 1], nidx = u16(pc + 2);
         if (nidx >= F().chunk->names.size() || slot >= JitEnvLayout::kMaxSlots) return false;
         const int32_t val = tagged(value(acc()));
-        guarded(K::StoreEnv, Rep::None, val, cf_ != 0 ? tagged(value(static_cast<uint32_t>(F().fn_var))) : -1, slot, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        guarded(K::StoreEnv, Rep::None, val, cf_ != 0 ? tagged(value(static_cast<uint32_t>(eo ? F().env_var : F().fn_var))) : -1, slot | (eo ? 0x10000u : 0u), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         return true;
     }
 
@@ -1827,6 +1850,16 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         }
         return true;
     }
+    case Op::CreateClosure: {
+        // Only in an environment-mode callee the unit made the environment for: the closure captures that one.
+        if (cf_ == 0 || F().env_var < 0 || !F().chunk->closures) return false;
+        const uint32_t idx = u16(pc + 1);
+        if (idx >= F().chunk->closures->size()) return false;
+        const int32_t id = guarded(K::NewClosure, Rep::Tagged, tagged(value(static_cast<uint32_t>(F().env_var))), tagged(value(static_cast<uint32_t>(F().this_var))), 0,
+                                   reinterpret_cast<uint64_t>(&(*F().chunk->closures)[idx]));
+        set(acc(), id);
+        return true;
+    }
     case Op::Call: case Op::CallResolved: case Op::Construct: {
         const int32_t callee = site_of(cf_, pc);
         if (callee < 0) {
@@ -2025,7 +2058,11 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
             uint8_t v = c.inline_state;
             if (v & kInlineNever) return no(7);
             if (!(v & (kInlineOk | kInlineLeaf))) v = inline_classify(*exe, c, fn);
-            if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf)) || (v & kInlineEnv)) return no(8);
+            if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf))) return no(8);
+            if (v & kInlineEnv) {
+                // An environment-mode callee the unit can make the environment of itself: seedable by index, a few bindings.
+                if (!config().callee_envmode || !fn->fast_env_callable() || !c.env || !c.env->env_seed_ok || !c.env->env_keys_ready || c.env->env_seed_plan.size() > 24 || c.env_params_tdz) return no(8);
+            }
             const bool strict = (v & kInlineLeaf) ? (fn->is_strict() || exe->fast_strict) : (v & kInlineStrict) != 0;
             if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return no(9);
             // A sloppy body that reads `this` boxes a primitive receiver: only a method call can promise an object.
@@ -2258,7 +2295,7 @@ inline bool Builder::call_fn_ok(int32_t fi, const Insn& in) const {
 }
 
 inline bool Builder::call_fn(const Insn& in) {
-    if (!config().callfn || F().no_light) return false;
+    if (!config().callfn || F().no_light) { if (config().log && cf_ != 0) std::fprintf(stderr, "[opt] call_fn refused: callfn=%u no_light=%d\n", config().callfn, (int)F().no_light); return false; }
     if (config().callfn == 2) {
         // Only a call the profile has seen reach plain JS functions (not a native, not a site of many callees).
         bool known = false;
@@ -2277,7 +2314,7 @@ inline bool Builder::call_fn(const Insn& in) {
     const uint32_t this_r = resolved ? F().var_base + code[in.pc + 2] : 0;
     const uint32_t start = F().var_base + code[in.pc + (resolved ? 3 : 2)];
     const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
-    if (argc > kCallFnMaxArgs || (construct && argc > 4) || callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
+    if (argc > kCallFnMaxArgs || (construct && argc > 4) || callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) { if (config().log && cf_ != 0) std::fprintf(stderr, "[opt] call_fn refused: argc=%u construct=%d callee_r=%u acc_var=%u start=%u\n", argc, (int)construct, callee_r, F().acc_var, start); return false; }
     // The pc recorded for stack traces is the root's: a callee's own instructions have no frame to name.
     uint32_t root_pc = in.pc;
     for (int32_t k = cf_; k > 0; k = g_.funcs[k].parent) root_pc = g_.funcs[k].call_pc;
@@ -2550,9 +2587,11 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
     const BytecodeChunk& c = *exe->bytecode_chunk;
     if (!is_ctor || generic) inline_scan(target, c, n);
     const uint32_t nregs = std::max<uint32_t>(c.register_count, c.parameter_count);
-    if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + 3 > config().inline_vars) return -1;
+    const bool env_callee = !is_ctor && (c.inline_state & kInlineEnv) != 0;
+    const uint32_t nextra = env_callee ? 4 : 3;      // (registers, the accumulator, `this`, the function, and for an environment-mode callee its environment)
+    if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + nextra > config().inline_vars) return -1;
     inline_insns_ += n;
-    inline_vars_ += nregs + 3;
+    inline_vars_ += nregs + nextra;
     const bool leaf = (is_ctor && !generic) || (c.inline_state & kInlineLeaf) != 0;
     const bool strict = (is_ctor && !generic) || (leaf ? (target->is_strict() || exe->fast_strict) : (c.inline_state & kInlineStrict) != 0);
 
@@ -2564,6 +2603,7 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
     f.acc_var = f.var_base + nregs;
     f.this_var = static_cast<int32_t>(f.acc_var + 1);
     f.fn_var = static_cast<int32_t>(f.acc_var + 2);
+    if (env_callee) f.env_var = static_cast<int32_t>(f.acc_var + 3);
     f.call_pc = call.pc;
     f.call_len = call.len;
     f.cont_block = g_.funcs[fi].block_at[call.pc + call.len];
@@ -2588,7 +2628,7 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
         f.plan = static_cast<int32_t>(g_.ctors.size());
         g_.ctors.push_back(plan);
     }
-    g_.nvars += nregs + 3;
+    g_.nvars += nregs + nextra;
     g_.funcs.push_back(std::move(f));
     const int32_t ci = static_cast<int32_t>(g_.funcs.size() - 1);
     const size_t first = g_.b.size();
@@ -2798,6 +2838,17 @@ inline bool Builder::inline_define(const Insn& in, int32_t ci, int32_t fv_in, bo
     set(C.acc_var, undef);
     set(static_cast<uint32_t>(C.this_var), thisv);
     set(static_cast<uint32_t>(C.fn_var), fv);
+    if (C.env_var >= 0) {
+        // The environment the call makes, with the arguments stored in it (a call that sees one fewer than the chunk has parameters leaves the rest undefined, as seeded).
+        const BytecodeChunk::EnvBundle& eb = *C.chunk->env;
+        const int32_t e = guarded(K::NewEnv, Rep::Tagged, fv, -1, 0, 0);
+        set(static_cast<uint32_t>(C.env_var), e);
+        for (size_t k = 0; k < eb.env_seed_plan.size(); k++) {
+            const auto& se = eb.env_seed_plan[k];
+            if (se.param_index < 0 || static_cast<uint32_t>(se.param_index) >= argc) continue;
+            guarded(K::StoreEnv, Rep::None, tagged(value(start + static_cast<uint32_t>(se.param_index))), e, static_cast<uint32_t>(k) | 0x10000u, reinterpret_cast<uint64_t>(se.key));
+        }
+    }
     if (C.leaf) g_.funcs[ci].entry_state = entry_state;
     return true;
 }
@@ -4572,8 +4623,11 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     try {
         if (!(g_config_storage.direct && fn->fast_callable() && unit_call_direct(*f, fn, th, args, argc, r))) {
             if (const FunctionExecutable* e = fn->get_executable().get(); e && e->bytecode_chunk && !e->bytecode_chunk->unit_callee) note_unit_callee(*e->bytecode_chunk);
-            const std::span<const Value> call_args(args, argc);
-            r = fn->fast_callable() ? fn->call_fast_gate(ctx, call_args, th) : fn->call_register_args(ctx, call_args, th);
+            static const bool stackless = std::getenv("QUANTA_NATIVE_STACKLESS") != nullptr;
+            if (!(stackless && VM::native_call_stackless(ctx, fn, th, args, argc, r))) {
+                const std::span<const Value> call_args(args, argc);
+                r = fn->fast_callable() ? fn->call_fast_gate(ctx, call_args, th) : fn->call_register_args(ctx, call_args, th);
+            }
         }
     } catch (...) {
         g_pending_exc = std::current_exception();
@@ -4772,6 +4826,60 @@ inline const void* const kRtHelpers[] = {reinterpret_cast<const void*>(&helper_r
     uint64_t bits;
     std::memcpy(&bits, &r, 8);
     return bits;
+}
+// The call environment of an inlined environment-mode callee, made the way a call makes it: the scope its function captured is the outer one, the chunk's seed plan lays down the
+// bindings (the parameters undefined: the unit stores the arguments after). 0 when anything is not as the compile found it, and the unit leaves for the interpreter.
+inline QUANTA_JIT_ABI uint64_t helper_new_call_env(uint64_t fn_bits, VM::Frame* f) noexcept {
+    const Value fv = std::bit_cast<Value>(fn_bits);
+    if (!fv.is_function()) return 0;
+    Function* fn = fv.as_function();
+    const FunctionExecutable* exe = fn->get_executable().get();
+    if (!exe || !exe->bytecode_chunk) return 0;
+    const BytecodeChunk& chunk = *exe->bytecode_chunk;
+    if (!chunk.env || !chunk.env->env_seed_ok || !chunk.env->env_keys_ready) return 0;
+    Context& ctx = *f->ctx;
+    // (What inline_call_enter_env asks: a closure made here takes the enclosing new.target and class-field state off the context.)
+    if (!exe->fast_no_closures && (!ctx.get_new_target().is_undefined() || ctx.is_in_class_field_init())) return 0;
+    Environment* outer = fn->get_closure_environment();
+    if (!outer) return 0;
+    if (!exe->fast_no_closures) outer->mark_escaped();
+    const auto& plan = chunk.env->env_seed_plan;
+    Environment* e = Environment::create(Environment::Type::Function, outer, chunk.env->env_slot_total, 4);
+    if (!e->fresh_with_room(plan.size())) return 0;
+    size_t at = 0;
+    for (const auto& se : plan) {
+        Environment::BindingSlot slot{Value(), true, true, false};
+        if (se.param_index < 0) {
+            slot.mutable_flag = (se.flags & 2) == 0;
+            slot.initialized = (se.flags & 1) == 0;
+            if (se.flags & 2) slot.const_binding = true;
+        }
+        e->seed_binding(at++, se.key, slot);
+    }
+    return reinterpret_cast<uint64_t>(e);
+}
+// The closure an inlined callee's CreateClosure makes: instantiate_closure reads the environment and the `this` off the context, so they are put there for the call.
+inline QUANTA_JIT_ABI uint64_t helper_new_closure(VM::Frame* f, uint64_t env_bits, uint64_t this_bits, const ClosureTemplate* tpl) noexcept {
+    Context& ctx = *f->ctx;
+    Environment* env = reinterpret_cast<Environment*>(env_bits);
+    Environment* saved_lex = ctx.get_lexical_environment();
+    Environment* saved_var = ctx.get_variable_environment();
+    const Value saved_this = ctx.get_this_value();
+    ctx.set_lexical_environment(env);
+    ctx.set_variable_environment(env);
+    ctx.set_this_value(std::bit_cast<Value>(this_bits));
+    Value r;
+    bool threw = false;
+    try {
+        r = ::Quanta::instantiate_closure(ctx, *tpl, true);
+    } catch (...) {
+        threw = true;
+    }
+    ctx.set_lexical_environment(saved_lex);
+    ctx.set_variable_environment(saved_var);
+    ctx.set_this_value(saved_this);
+    if (threw || ctx.has_exception()) return 0;
+    return std::bit_cast<uint64_t>(r);
 }
 inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
     if (__builtin_expect(d && d->tmpl_bytes != 0, 1)) {
@@ -6386,6 +6494,49 @@ inline void Emitter::emit_node(int32_t id) {
         commit_g(id, d);
         return;
     }
+    case K::NewEnv: {
+        Label& dl = deopt_label(n.state);
+        const Reg fr = use_g(n.a, RAX);
+        a_.push(fr);
+        a_.push(RCX);
+        int32_t bytes;
+        save_live(bytes, &cur_ls_);
+        a_.mov_load(abi::A0, mem(RSP, bytes + kPushBytes));
+        a_.mov(abi::A1, RBX);
+        call_c(reinterpret_cast<const void*>(&helper_new_call_env));
+        restore_live(bytes, &cur_ls_);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::NewClosure: {
+        Label& dl = deopt_label(n.state);
+        const Reg ev = use_g(n.a, RAX);
+        const Reg tv = use_g(n.b, RCX);
+        a_.push(ev);
+        a_.push(tv);
+        int32_t bytes;
+        save_live(bytes, &cur_ls_);
+        a_.mov(abi::A0, RBX);
+        a_.mov_load(abi::A1, mem(RSP, bytes + kPushBytes));
+        a_.mov_load(abi::A2, mem(RSP, bytes));
+        a_.mov_imm64(abi::A3, n.imm);
+        call_c(reinterpret_cast<const void*>(&helper_new_closure));
+        restore_live(bytes, &cur_ls_);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
     case K::LoadProtoPoly: {
         const Reg o = use_g(n.a, RAX);
         const Reg d = def_g(id, RAX);
@@ -6619,6 +6770,8 @@ inline void Emitter::emit_node(int32_t id) {
         // A load with an operand reads the scope chain captured by that function (an inlined callee's variables from the
         // enclosing functions): anything unusual about the chain leaves through the deopt path.
         const bool from_fn = store ? n.b >= 0 : n.a >= 0;
+        // aux bit 16: the operand is the bits of an environment (an inlined callee's own), not a function whose captured scope is read
+        const bool env_operand = (n.aux & 0x10000) != 0;
         Label& dl = deopt_label(n.state);
         Label& via_ctx = new_label();
         Label& have = new_label();
@@ -6628,9 +6781,11 @@ inline void Emitter::emit_node(int32_t id) {
         if (from_fn) {
             const Reg fr = use_g(store ? n.b : n.a, RAX);
             a_.mov(RAX, fr);
-            a_.shl_imm(RAX, 16);
-            a_.shr_imm(RAX, 16);
-            a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(JitObjectLayout::function_closure_environment())));
+            if (!env_operand) {
+                a_.shl_imm(RAX, 16);
+                a_.shr_imm(RAX, 16);
+                a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(JitObjectLayout::function_closure_environment())));
+            }
         } else {
             a_.cmp_mem_imm(mem(RBX, static_cast<int32_t>(kOffCallInfo)), 0);
             a_.jcc(CC_E, via_ctx);
@@ -6643,7 +6798,7 @@ inline void Emitter::emit_node(int32_t id) {
         a_.bind(have);
         a_.test(RAX, RAX);
         a_.jcc(CC_E, slow);
-        for (uint32_t h = n.aux >> 8; h > 0; h--) {      // the enclosing scopes, for a variable of an outer function
+        for (uint32_t h = (n.aux >> 8) & 0xFF; h > 0; h--) {      // the enclosing scopes, for a variable of an outer function
             a_.mov_load(RAX, mem(RAX, static_cast<int32_t>(JitEnvLayout::outer())));
             a_.test(RAX, RAX);
             a_.jcc(CC_E, slow);
@@ -6667,12 +6822,19 @@ inline void Emitter::emit_node(int32_t id) {
         a_.mov_imm64(R11, n.imm);
         a_.cmp_load(R11, mem(base, disp + static_cast<int32_t>(JitEnvLayout::key())));
         a_.jcc(CC_NE, slow);
-        a_.cmp8_mem_imm(mem(base, disp + static_cast<int32_t>(JitEnvLayout::initialized())), 0);
-        a_.jcc(CC_E, slow);
+        // aux bit 17: the store initializes the binding (it may be uninitialized, or a constant)
+        const bool init_store = store && (n.aux & 0x20000) != 0;
+        if (!init_store) {
+            a_.cmp8_mem_imm(mem(base, disp + static_cast<int32_t>(JitEnvLayout::initialized())), 0);
+            a_.jcc(CC_E, slow);
+        }
         if (store) {
-            a_.cmp8_mem_imm(mem(base, disp + static_cast<int32_t>(JitEnvLayout::mutable_flag())), 0);
-            a_.jcc(CC_E, dl);
+            if (!init_store) {
+                a_.cmp8_mem_imm(mem(base, disp + static_cast<int32_t>(JitEnvLayout::mutable_flag())), 0);
+                a_.jcc(CC_E, dl);
+            }
             a_.mov_store(mem(base, disp + static_cast<int32_t>(JitEnvLayout::value())), v);
+            if (init_store) a_.mov_store8_imm(mem(base, disp + static_cast<int32_t>(JitEnvLayout::initialized())), 1);
             emit_env_barrier_check(n.a, v);
         } else {
             const Reg d = def_g(id, RDX);
@@ -7569,7 +7731,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
             if (g_.n[id].dead) continue;
             if (id == fused_cmp_[blk]) continue;
             switch (g_.n[id].op) {
-            case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject:
+            case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject: case K::NewEnv: case K::NewClosure:
                 cur_ls_ = live_across(id);
                 // (A native entry does not keep the allocator's registers: the call site keeps the ones that live across it.)
                 cur_ls_.callee_saved = g_.n[id].op == K::CallFn;
@@ -7813,7 +7975,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         unit.inl.resize(g.funcs.size());
         for (size_t k = 1; k < g.funcs.size(); k++) {
             const Func& fn = g.funcs[k];
-            unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len, fn.gctor, fn.gbody};
+            unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len, fn.gctor, fn.gbody, fn.env_var >= 0};
         }
         unit.inl_states.resize(g.states.size());
         for (size_t k = 0; k < g.states.size(); k++) {

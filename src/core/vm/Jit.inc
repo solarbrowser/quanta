@@ -3274,8 +3274,9 @@ Frame* opt_materialize(Frame& root, const JitCode::OptUnit& u, const JitRt* rt, 
         const Value fnv = fr.body ? Value(fr.body) : at(fr.var_base + fr.nregs + 2);
         Frame* cf = nullptr;
         parent->instr_pc = fr.call_pc;
+        Environment* made_env = fr.env ? reinterpret_cast<Environment*>(std::bit_cast<uint64_t>(at(fr.var_base + fr.nregs + 3))) : nullptr;
         if (!fnv.is_function() || !inline_call_enter(*parent, fnv.as_function(), nullptr, 0, at(fr.var_base + fr.nregs + 1),
-                                                     fr.call_pc + fr.call_len, cf)) {
+                                                     fr.call_pc + fr.call_len, cf, made_env)) {
             std::fprintf(stderr, "quanta: the optimizing tier could not rebuild an inlined frame\n");
             std::abort();
         }

@@ -212,6 +212,7 @@ struct JitCode {
             uint32_t var_base = 0, nregs = 0, call_pc = 0, call_len = 0;
             bool gctor = false;       // a constructor run for `new` whose body is not private (it can call): its interpreter frame is a construction's
             Function* body = nullptr; // (a forwarding constructor) the method whose body this frame runs
+            bool env = false;         // an environment-mode callee: the environment it runs in was made by the unit, and sits (as the bits of its address) in the variable after the function's
         };
         // What an inlined `new` allocates (helper_new_object): the object takes its final shape at once.
         struct NewDesc {

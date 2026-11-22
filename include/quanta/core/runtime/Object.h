@@ -2245,6 +2245,8 @@ public:
         const ClassSlots& slots = class_slots();
         return !slots.home_object && !slots.private_brands;
     }
+    // Whether `ctx` is the context a native of another realm lent to a script function it is calling back (that call must not run on it).
+    static bool is_borrowed_ctx(const Context* ctx);
     Value call_fast_gate(Context& ctx, std::span<const Value> args, Value this_value);
     // Arguments that live in the caller's VM registers, on the same terms
     // call_register_args states: already GC roots, and valid for the whole call.
