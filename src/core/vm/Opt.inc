@@ -116,6 +116,9 @@ enum class K : uint8_t {
     NewBlockEnv,          // Tagged a (the current environment's bits) -> Tagged: a block environment inside it for the bindings of loop_envs[aux] of the chunk imm (EnterLoopEnv); deopt when it cannot be made
     AdvanceEnv,           // Tagged a (the current block environment's bits) -> Tagged: the per-iteration copy of it (AdvanceLoopEnv), or the same one when nothing can tell them apart; deopt when it cannot be made
     EnvOuter,             // Tagged a (a block environment's bits) -> Tagged: the environment it was opened in (ExitLoopEnv)
+    IterElem,             // Ptr a (the array a for-of runs over), F64 b (the index): the element, or the done mark when the index is at the end; deopt when the array is not dense or the index is no index
+    IsIterDone,           // Tagged a (IterElem's result) -> Bool: the loop has run out
+    CheckIterArray,       // Ptr a: deopt unless it is a dense array that for-of walks by index (the array iteration protector is intact)
     FnEnv,                // Tagged a (a function) -> Tagged: the bits of the environment it captured; deopt when it captured none
 };
 
@@ -173,6 +176,7 @@ struct Insn { uint32_t pc; uint8_t op; uint8_t len; };
 // One function whose bytecode is part of the graph: the root, or a callee inlined into it. Variables are
 // numbered across all of them, each function's registers followed by its accumulator.
 struct Func {
+    bool handlers = false;               // the (root) chunk has try regions: an exception leaves the unit with the registers written back, for the interpreter's handler
     const BytecodeChunk* chunk = nullptr;
     int32_t parent = -1;                 // the function it was inlined into
     uint32_t var_base = 0, nregs = 0, acc_var = 0;
@@ -215,6 +219,7 @@ struct Func {
 };
 
 struct Graph {
+    bool root_handlers = false;               // the root chunk has try regions (see Func::handlers)
     const BytecodeChunk* chunk = nullptr;     // the root's
     const Frame* frame = nullptr;         // the activation the compile was triggered from, for peeking at register contents
     uint32_t entry_pc = 0;                // the requested entry (the one the frame is positioned at)
@@ -260,7 +265,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "FnEnv"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "FnEnv", "IterElem", "IsIterDone", "CheckIterArray"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -274,7 +279,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
     case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem: case K::CheckDenseSt:
-    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain: case K::StoreTrans:
+    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain: case K::StoreTrans: case K::IterElem: case K::CheckIterArray:
         return false;
     default: return true;
     }
@@ -583,6 +588,8 @@ private:
         return -1;
     }
     uint32_t inline_insns_ = 0, inline_vars_ = 0;
+    struct IterPending { int32_t arr, idx; uint32_t pc, next_r; };
+    std::unordered_map<int32_t, IterPending> iter_pending_;      // block -> what a for-of step before it leaves to be read when the loop goes on
     // The scope chain an inlined callee reads starts at its function's captured environment. A body that keeps no scope of
     // its own reads it directly; one that runs in an environment of its own with nothing bound in it has that empty scope
     // as the first hop, which is not there to count.
@@ -746,6 +753,8 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::LdaTdzStar: e.wr(acc); W(pc + 1); break;
     case Op::TypeOf: case Op::ToPropertyKey: e.rd(acc); e.wr(acc); break;
     case Op::EnterLoopEnv: case Op::AdvanceLoopEnv: case Op::ExitLoopEnv: break;
+    case Op::GetIterator: W(pc + 1); e.rd(acc); break;
+    case Op::IteratorNextOrJump: R(pc + 1); R(pc + 2); W(pc + 2); e.wr(acc); break;      // (the accumulator is set only when the loop goes on; the translation refuses a loop whose exit reads it)
     case Op::DefineOwn: R(pc + 1); e.rd(acc); break;
     case Op::DefineElement: R(pc + 1); R(pc + 2); e.rd(acc); break;
     case Op::CheckLookupResolvable: e.wr(acc); break;
@@ -802,6 +811,16 @@ inline void Builder::compute_liveness() {
         if (op != Op::Jump && op != Op::Return && op != Op::Throw && i + 1 < n) out[k++] = static_cast<int32_t>(i + 1);
         return k;
     };
+    // An instruction in a try region can throw into its handler before it has written anything: the handler's live registers are live before it.
+    std::vector<int32_t> handler_of(n, -1);
+    if (c.handlers) for (size_t i = 0; i < n; i++) {
+        uint32_t best_width = UINT32_MAX;
+        for (const auto& h : *c.handlers) {
+            const uint32_t pc = F().insns[i].pc;
+            if (pc < h.start_pc || pc >= h.end_pc || h.handler_pc >= c.code.size() || F().insn_at[h.handler_pc] < 0) continue;
+            if (h.end_pc - h.start_pc < best_width) { best_width = h.end_pc - h.start_pc; handler_of[i] = F().insn_at[h.handler_pc]; }
+        }
+    }
     std::vector<uint64_t> tmp(words);
     for (bool changed = true; changed;) {
         changed = false;
@@ -818,6 +837,8 @@ inline void Builder::compute_liveness() {
             } else {
                 for (uint32_t v = 0; v < fvars; v++) tmp[v >> 6] |= 1ull << (v & 63);
             }
+            if (handler_of[ri] >= 0)
+                for (uint32_t w = 0; w < words; w++) tmp[w] |= F().live_before[static_cast<size_t>(handler_of[ri]) * words + w];
             uint64_t* dst = &F().live_before[ri * words];
             for (uint32_t w = 0; w < words; w++)
                 if (dst[w] != tmp[w]) { dst[w] = tmp[w]; changed = true; }
@@ -995,7 +1016,7 @@ inline void Builder::step(const Insn& in, bool& ended) {
     // and the other values stay in the unit's registers across it; what it writes is read from the bank afterwards.
     Effects eff;
     bool light = false;
-    if (config().light && cf_ == 0 && !F().no_light && pos < 0 && op != Op::Throw && op != Op::Return) {
+    if (config().light && cf_ == 0 && !F().no_light && !F().handlers && pos < 0 && op != Op::Throw && op != Op::Return) {
         eff = op_effects(op, F().chunk->code.data(), in.pc, F().nregs, F().nregs);
         light = !eff.read_all;
     }
@@ -1048,7 +1069,7 @@ inline void Builder::step(const Insn& in, bool& ended) {
 // (rt_*) are called with the operands as values, so the unit keeps what it knows about its variables.
 inline bool Builder::translate(const Insn& in, bool& ended) {
     if (translate_fast(in, ended)) return true;
-    return config().rt && generic_op(in);
+    return config().rt && !g_.root_handlers && generic_op(in);
 }
 
 inline bool Builder::translate_fast(const Insn& in, bool& ended) {
@@ -1871,6 +1892,39 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         }
         return true;
     }
+    case Op::GetIterator: {
+        // for-of over a dense array: walked by index, the register that would hold `next` holds the number 0 (what ForOfStatement::get_iterator hands back for it).
+        if (cf_ != 0) return false;
+        const uint32_t next_r = reg(pc + 1);
+        if (!ok_reg(next_r)) return false;
+        const int32_t arr = guarded(K::CheckObj, Rep::Ptr, tagged(value(acc())));
+        guarded(K::CheckIterArray, Rep::None, arr);
+        set(next_r, const_of(Value(0.0)));
+        return true;
+    }
+    case Op::IteratorNextOrJump: {
+        // A for-of over a dense array (the index form). The exit path must not read what the step writes only when it continues (the accumulator, the index). The element is read at the start
+        // of the block that continues (see iter_pending_): the loop's end is decided here, by the index and the length.
+        if (cf_ != 0) return false;
+        const uint32_t iter_r = reg(pc + 1), next_r = reg(pc + 2);
+        Block& B = g_.b[cb_];
+        if (!ok_reg(iter_r) || !ok_reg(next_r) || B.succs.size() != 2) return false;
+        const uint32_t target_pc = static_cast<uint32_t>(static_cast<int64_t>(pc) + in.len + i16(pc + 3));
+        if (live_at(target_pc, F().acc_var) || live_at(target_pc, next_r)) return false;
+        const int32_t idxn = num(value(next_r));
+        if (idxn < 0) return false;
+        const int32_t arr = guarded(K::CheckObj, Rep::Ptr, tagged(value(iter_r)));
+        guarded(K::CheckDense, Rep::None, arr);
+        const int32_t len = emit(K::ArrayLen, Rep::F64, arr);
+        const int32_t done = emit(K::GeF, Rep::Bool, idxn, len);
+        iter_pending_[B.succs[1]] = {arr, idxn, pc, next_r};
+        B.term.kind = T::Branch;
+        B.term.cond = done;
+        B.term.t = B.succs[0];
+        B.term.f = B.succs[1];
+        ended = true;
+        return true;
+    }
     case Op::EnterLoopEnv: case Op::AdvanceLoopEnv: {
         if (cf_ == 0 || F().cur_env_var < 0 || !F().chunk->env) return false;
         const uint32_t idx = u16(pc + 1);
@@ -1975,6 +2029,15 @@ inline bool Builder::translate_block(int32_t blk) {
         return true;
     }
     if (B0.loop_header) emit(K::Poll, Rep::None);
+    if (auto ip = iter_pending_.find(blk); ip != iter_pending_.end()) {
+        // The loop goes on: the element, and the index after it. A hole or an element out of the storage leaves for the interpreter, which has not moved the index.
+        const IterPending p = ip->second;
+        begin_op(p.pc);
+        const int32_t i32 = guarded(K::ToIndex, Rep::I32, p.idx);
+        const int32_t el = guarded(K::LoadElem, Rep::Tagged, p.arr, i32);
+        set(acc(), el);
+        set(p.next_r, emit(K::AddF, Rep::F64, p.idx, const_of(Value(1.0))));
+    }
     bool ended = false;
     for (int32_t i = B0.first_insn; i <= B0.last_insn && !ended; i++) {
         const Insn in = F().insns[i];
@@ -2095,7 +2158,7 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
             if (v & kInlineNever || !(v & (kInlineOk | kInlineLeaf))) return no(8);
             if (v & kInlineEnv) {
                 // An environment-mode callee the unit can make the environment of itself: seedable by index, a few bindings.
-                if (!config().callee_envmode || !fn->fast_env_callable() || !c.env || !c.env->env_seed_ok || !c.env->env_keys_ready || c.env->env_seed_plan.size() > 24 || c.env_params_tdz) return no(8);
+                if (!config().callee_envmode || g_.native_thunk || !fn->fast_env_callable() || !c.env || !c.env->env_seed_ok || !c.env->env_keys_ready || c.env->env_seed_plan.size() > 24 || c.env_params_tdz) return no(8);
             }
             const bool strict = (v & kInlineLeaf) ? (fn->is_strict() || exe->fast_strict) : (v & kInlineStrict) != 0;
             if (!(v & kInlineLeaf) && g_.frame->ctx->is_strict_mode() != strict) return no(9);
@@ -2228,6 +2291,7 @@ inline bool Builder::generic_op(const Insn& in) {
 // there is none the tier compiles (not seen, mixed, a clamped or BigInt array, or a target without the code for it).
 // Whether the interpreter has taken an indexed access at this site through its plain-element road (an ordinary object's elements, or an array with holes).
 inline bool Builder::plain_keyed(uint32_t fb_pc) const {
+    if (g_.root_handlers) return false;       // (its helper can throw, and leaves with no registers written back)
     const auto* ic = F().chunk->ic_feedback.get();
     if (!ic) return false;
     const uint32_t fbi = read_u16(F().chunk->code.data(), fb_pc);
@@ -2623,7 +2687,7 @@ inline int32_t Builder::make_instance(int32_t fi, const Insn& call, Function* ta
     const uint32_t nregs = std::max<uint32_t>(c.register_count, c.parameter_count);
     const bool env_callee = !is_ctor && (c.inline_state & kInlineEnv) != 0;
     // A body that opens block scopes but has no call environment of its own (its bindings are all in blocks): it runs in the scope its function captured, and its blocks are made inside it.
-    const bool block_callee = !env_callee && !is_ctor && c.env_mode && c.env && !c.env->loop_envs.empty() && config().callee_envmode;
+    const bool block_callee = !g_.native_thunk && !env_callee && !is_ctor && c.env_mode && c.env && !c.env->loop_envs.empty() && config().callee_envmode;
     const uint32_t nextra = (env_callee || block_callee) ? 5 : 3;      // (registers, the accumulator, `this`, the function, and for an environment-mode callee its environment)
     if (inline_insns_ + n > config().inline_total || inline_vars_ + nregs + nextra > config().inline_vars) return -1;
     inline_insns_ += n;
@@ -2921,7 +2985,13 @@ inline bool Builder::setup_func(int32_t fi, size_t max_insns) {
     const BytecodeChunk& c = *F().chunk;
     const uint8_t* code = c.code.data();
     const uint32_t size = static_cast<uint32_t>(c.code.size());
-    if (c.handlers && !c.handlers->empty()) return fail("has try regions");
+    if (c.handlers && !c.handlers->empty()) {
+        // The root may have them (a for-of loop has one, to close its iterator): whatever throws leaves the unit with every register written back, and the
+        // interpreter finds the handler. An inlined callee may not: its frame would have to be rebuilt around the exception.
+        if (fi != 0 || g_.native_thunk || g_.fn_entry) return fail("has try regions");       // (a thunk or a function-entry unit would have to hand the exception to its caller instead)
+        F().handlers = true;
+        g_.root_handlers = true;
+    }
 
     // ---- decode ----
     F().insn_at.assign(size + 1, -1);
@@ -2969,6 +3039,7 @@ inline bool Builder::setup_func(int32_t fi, size_t max_insns) {
             if (next < size) leader[next] = 1;
         }
     }
+    if (c.handlers) for (const auto& h : *c.handlers) if (h.handler_pc < size && F().insn_at[h.handler_pc] >= 0) leader[h.handler_pc] = 1;
     for (auto& cd : F().cand) leader[F().insns[F().insn_at[cd.first]].pc + F().insns[F().insn_at[cd.first]].len] = 1;
     F().block_at.assign(size + 1, -1);
     const size_t first_block = g_.b.size();
@@ -4567,6 +4638,17 @@ inline bool via_call_pristine_in(const BytecodeChunk& chunk, uint32_t pc, const 
     return false;
 }
 
+// A call from a unit of a chunk with try regions left an exception pending: the handler of the region the call is in (its pc, with the exception in the
+// accumulator and cleared on the context), or -1 when there is none and the activation finishes with the exception pending, as before.
+inline QUANTA_JIT_ABI int32_t helper_throw_resume(VM::Frame* f, uint32_t pc) noexcept {
+    f->instr_pc = pc;
+    const int32_t handler_pc = find_handler(*f->chunk, pc);
+    if (handler_pc < 0) { f->acc = Value(); return kStepFinished; }
+    f->acc = f->ctx->get_exception();
+    f->ctx->clear_exception();
+    return handler_pc;
+}
+
 static const uint32_t g_stale_calls_limit = std::getenv("QUANTA_STALE_CALLS") ? static_cast<uint32_t>(std::atoi(std::getenv("QUANTA_STALE_CALLS"))) : 200000;
 inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, uint64_t this_bits, const uint64_t* argv) noexcept {
     constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1, kNotFn = ~0ull - 2;
@@ -4958,6 +5040,22 @@ inline QUANTA_JIT_ABI uint64_t helper_advance_env(uint64_t cur_bits, const Bytec
     if (!seed_scope_bindings(e, vars, keys, carried)) return 0;
     return reinterpret_cast<uint64_t>(e);
 }
+// One step of a for-of over an array in the index form (ForOfStatement::iterator_step): the element, kIterDone at the end, kIterFail (the unit leaves) for anything that is not a plain dense array
+// or an index.
+constexpr uint64_t kIterFail = ~0ull, kIterDone = ~0ull - 1;
+inline QUANTA_JIT_ABI uint64_t helper_iter_elem(uint64_t arr_bits, uint64_t idx_bits) noexcept {
+    Object* a = reinterpret_cast<Object*>(arr_bits);
+    double di;
+    std::memcpy(&di, &idx_bits, 8);
+    const uint32_t i = static_cast<uint32_t>(di);
+    if (!(di >= 0 && di < 4294967296.0 && static_cast<double>(i) == di) || !a->has_only_dense_elements()) return kIterFail;
+    if (i >= a->element_count()) return kIterDone;
+    return std::bit_cast<uint64_t>(a->get_element(i));
+}
+inline QUANTA_JIT_ABI uint64_t helper_iter_array_ok(uint64_t arr_bits) noexcept {
+    Object* a = reinterpret_cast<Object*>(arr_bits);
+    return (Object::array_iterator_protector_intact() && a->get_type() == Object::ObjectType::Array && a->has_only_dense_elements()) ? 1 : 0;
+}
 inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode::OptUnit::NewDesc* d) noexcept {
     if (__builtin_expect(d && d->tmpl_bytes != 0, 1)) {
         Function* fn = std::bit_cast<Value>(fn_bits).as_function();
@@ -5271,6 +5369,7 @@ private:
     // The same for a store into the environment whose address is in RAX.
     void emit_env_barrier_check(int32_t val_node, Reg v);
     void emit_deopt_stub(int32_t state);
+    void emit_state_flush(const State& st);
     // The registers a call into C++ has to keep: all the caller-saved ones the unit uses (a cold path, or anything that does not say), or the ones whose values live across the
     // node being emitted (cur_ls_: not the operands the node ends, not its result, but what a deoptimization after it still reads).
     struct LiveSet { uint32_t gm = 0, xm = 0; bool valid = false; bool callee_saved = false; };
@@ -5668,8 +5767,7 @@ inline void Emitter::emit_env_barrier_check(int32_t val_node, Reg v) {
     });
 }
 
-inline void Emitter::emit_deopt_stub(int32_t state) {
-    const State& st = g_.states[state];
+inline void Emitter::emit_state_flush(const State& st) {
     for (auto& [v, d] : st.defs) {
         const Node& nd = g_.n[d];
         Reg val = RAX;
@@ -5704,6 +5802,11 @@ inline void Emitter::emit_deopt_stub(int32_t state) {
             a_.mov_store(mem(rb, static_cast<int32_t>(v * sizeof(Value))), val);
         }
     }
+}
+
+inline void Emitter::emit_deopt_stub(int32_t state) {
+    const State& st = g_.states[state];
+    emit_state_flush(st);
     a_.mov_store32_imm(mem(R14, static_cast<int32_t>(offsetof(JitRt, last_deopt))), static_cast<uint32_t>(state));
     a_.mov_store32_imm(mem(RBX, static_cast<int32_t>(kOffPc)), st.pc);
     a_.mov_imm32(RAX, kStatusDeopt);
@@ -6453,7 +6556,7 @@ inline void Emitter::emit_node(int32_t id) {
             Label& special = new_label();
             a_.cmp_imm(RAX, -3);
             a_.jcc(CC_AE, special);
-            cold_.push_back([this, &special, dl = &dl]() {
+            cold_.push_back([this, &special, dl = &dl, state = n.state, root_pc = n.aux >> 8]() {
                 Label& threw = new_label();
                 Label& rethrow = new_label();
                 a_.bind(special);
@@ -6463,9 +6566,19 @@ inline void Emitter::emit_node(int32_t id) {
                 a_.jcc(CC_E, rethrow);
                 a_.jmp(*dl);
                 a_.bind(threw);
-                a_.mov_imm32(RAX, static_cast<uint32_t>(kStepFinished));
-                a_.jmp(step_exit_);
+                if (g_.root_handlers && state >= 0) {
+                    // The root has try regions: the registers go back to the frame as they were at the call, and the handler (if the call is in a region) is found here.
+                    emit_state_flush(g_.states[state]);
+                    a_.mov(abi::A0, RBX);
+                    a_.mov_imm32(abi::A1, root_pc);
+                    call_c(reinterpret_cast<const void*>(&helper_throw_resume));
+                    a_.jmp(step_exit_);
+                } else {
+                    a_.mov_imm32(RAX, static_cast<uint32_t>(kStepFinished));
+                    a_.jmp(step_exit_);
+                }
                 a_.bind(rethrow);
+                if (g_.root_handlers && state >= 0) emit_state_flush(g_.states[state]);
                 a_.mov_imm32(RAX, static_cast<uint32_t>(kStepRethrow));
                 a_.jmp(step_exit_);
             });
@@ -6610,6 +6723,55 @@ inline void Emitter::emit_node(int32_t id) {
         a_.jcc(CC_E, dl);
         const Reg d = def_g(id, RAX);
         if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::IterElem: {
+        Label& dl = deopt_label(n.state);
+        const Reg ar = use_g(n.a, RAX);
+        const Xmm ix = use_x(n.b, XMM0);
+        a_.movq_from_xmm(RCX, ix);
+        a_.push(ar);
+        a_.push(RCX);
+        int32_t bytes;
+        save_live(bytes, &cur_ls_);
+        a_.mov_load(abi::A0, mem(RSP, bytes + kPushBytes));
+        a_.mov_load(abi::A1, mem(RSP, bytes));
+        call_c(reinterpret_cast<const void*>(&helper_iter_elem));
+        restore_live(bytes, &cur_ls_);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        a_.cmp_imm(RAX, -1);
+        a_.jcc(CC_E, dl);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::CheckIterArray: {
+        Label& dl = deopt_label(n.state);
+        const Reg ar = use_g(n.a, RAX);
+        a_.push(ar);
+        a_.push(RCX);
+        int32_t bytes;
+        save_live(bytes, &cur_ls_);
+        a_.mov_load(abi::A0, mem(RSP, bytes + kPushBytes));
+        call_c(reinterpret_cast<const void*>(&helper_iter_array_ok));
+        restore_live(bytes, &cur_ls_);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, dl);
+        return;
+    }
+    case K::IsIterDone: {
+        const Reg a = use_g(n.a, RAX);
+        const Reg d = def_g(id, RDX);
+        a_.mov_imm64(RCX, kIterDone);
+        a_.cmp(a, RCX);
+        a_.mov_imm32(RAX, 0);
+        a_.setcc(CC_E, RAX);
+        if (d != RAX) a_.mov32(d, RAX);
         commit_g(id, d);
         return;
     }
@@ -7851,7 +8013,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
             if (g_.n[id].dead) continue;
             if (id == fused_cmp_[blk]) continue;
             switch (g_.n[id].op) {
-            case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject: case K::NewEnv: case K::NewClosure: case K::NewBlockEnv: case K::AdvanceEnv:
+            case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject: case K::NewEnv: case K::NewClosure: case K::NewBlockEnv: case K::AdvanceEnv: case K::IterElem: case K::CheckIterArray:
                 cur_ls_ = live_across(id);
                 // (A native entry does not keep the allocator's registers: the call site keeps the ones that live across it.)
                 cur_ls_.callee_saved = g_.n[id].op == K::CallFn;
@@ -7993,6 +8155,15 @@ inline JitCode* ensure_jitcode(const BytecodeChunk& chunk) {
     for (uint32_t pc = 0; pc < size;) {
         jc->native_off[pc] = 1;
         pc += 1 + static_cast<uint32_t>(op_operand_bytes(static_cast<Op>(chunk.code[pc])));
+    }
+    // A step in a try region may end at the handler: the places it stops at include the handlers, as the baseline JIT's own table says.
+    jc->has_handlers = chunk.handlers && !chunk.handlers->empty();
+    if (chunk.handlers) {
+        for (const HandlerEntry& h : *chunk.handlers) {
+            bool seen = false;
+            for (uint32_t p : jc->handler_pcs) seen |= (p == h.handler_pc);
+            if (!seen && jc->handler_pcs.size() < 8) jc->handler_pcs.push_back(h.handler_pc);
+        }
     }
     jc->owner_thread = &g_thread_marker;
     chunk.jit = std::move(jc);

@@ -614,7 +614,7 @@ QUANTA_JIT_ABI int32_t step_k(Frame* f, uint32_t pc, uint32_t target, uint32_t i
     JitCode* jc = f->chunk->jit.get();
     const uint32_t len = 1 + static_cast<uint32_t>(op_operand_bytes(static_cast<Op>(op)));
     const uint32_t size = jc->code_size;
-    if (__builtin_expect(g_cfg.debug, 0) || target != kNoOperand || jc->has_handlers || len > 15 || pc + 16 > size)
+    if (__builtin_expect(g_cfg.debug, 0) || target != kNoOperand || jc->has_handlers || (f->chunk->handlers && !f->chunk->handlers->empty()) || len > 15 || pc + 16 > size)
         return step(f, pc, target, ic_index);
     jc->slow++;
     const uint8_t* saved_code = f->code;
@@ -3384,7 +3384,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
 
 [[gnu::always_inline]] inline int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset) {
     JitCode::OptUnit& u = jc->opt_units[ui];
-    if (target == 0 && ui < 0xFFFF) {
+    if (target == 0 && ui < 0xFFFF && !(chunk.handlers && !chunk.handlers->empty())) {       // (a unit whose chunk has try regions is entered by the interpreter only: it hands its exceptions to the frame's handlers)
         if (!u.direct) {
             u.direct = std::make_unique<BytecodeChunk::DirectCall>();
             u.direct->entry = reinterpret_cast<void*>(u.entry);
