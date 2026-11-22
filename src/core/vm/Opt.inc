@@ -271,6 +271,10 @@ inline bool is_pure_removable(K k) {
     }
 }
 
+// The frame slots a call through the runtime (K::CallFn) lays out: the arguments, the receiver, the argument count with the pc and flags, the site's cache.
+constexpr uint32_t kCallFnMaxArgs = 8;      // (a construction stays at 4: a five-argument one through the runtime miscompiled RayTrace's scene set-up, not yet understood)
+constexpr uint32_t kCallFnRecvSlot = kCallFnMaxArgs, kCallFnMetaSlot = kCallFnMaxArgs + 1, kCallFnIcSlot = kCallFnMaxArgs + 2, kCallFnAreaSlots = kCallFnMaxArgs + 4;
+
 constexpr uint64_t kTdzBits = 0x7FFC000000000000ull;      // QUIET_NAN | TAG_VM_TDZ
 constexpr uint32_t kNoPc = 0xFFFFFFFFu;
 
@@ -2227,7 +2231,7 @@ inline bool Builder::call_fn_ok(int32_t fi, const Insn& in) const {
     const uint32_t this_r = resolved ? F_.var_base + code[in.pc + 2] : 0;
     const uint32_t start = F_.var_base + code[in.pc + (resolved ? 3 : 2)];
     const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
-    return !(argc > 4 || callee_r >= F_.acc_var || (resolved && this_r >= F_.acc_var) || start + argc > F_.acc_var);
+    return !(argc > kCallFnMaxArgs || (op == Op::Construct && argc > 4) || callee_r >= F_.acc_var || (resolved && this_r >= F_.acc_var) || start + argc > F_.acc_var);
 }
 
 inline bool Builder::call_fn(const Insn& in) {
@@ -2250,7 +2254,7 @@ inline bool Builder::call_fn(const Insn& in) {
     const uint32_t this_r = resolved ? F().var_base + code[in.pc + 2] : 0;
     const uint32_t start = F().var_base + code[in.pc + (resolved ? 3 : 2)];
     const uint32_t argc = code[in.pc + (resolved ? 4 : 3)];
-    if (argc > 4 || callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
+    if (argc > kCallFnMaxArgs || (construct && argc > 4) || callee_r >= F().acc_var || (resolved && this_r >= F().acc_var) || start + argc > F().acc_var) return false;
     // The pc recorded for stack traces is the root's: a callee's own instructions have no frame to name.
     uint32_t root_pc = in.pc;
     for (int32_t k = cf_; k > 0; k = g_.funcs[k].parent) root_pc = g_.funcs[k].call_pc;
@@ -2262,7 +2266,7 @@ inline bool Builder::call_fn(const Insn& in) {
     std::vector<int32_t> rest;
     for (uint32_t i = 1; i < argc; i++) rest.push_back(tagged(value(start + i)));
     if (config().log) {
-        std::fprintf(stderr, "[opt] call_fn at pc %u of a %zu-byte chunk (depth %d) ->", in.pc, F().chunk->code.size(), cf_);
+        std::fprintf(stderr, "[opt] call_fn at pc %u of a %zu-byte chunk (depth %d, argc %u) ->", in.pc, F().chunk->code.size(), cf_, argc);
         if (const auto* fbk = F().chunk->ic_feedback.get())
             for (const auto& cs : fbk->call_sites)
                 if (cs.pc == in.pc)
@@ -4445,7 +4449,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
     const Value fv = std::bit_cast<Value>(fn_bits);
     if (!fv.is_function()) return kNotFn;
     const Value th = std::bit_cast<Value>(this_bits);
-    const uint64_t meta = argv[5];
+    const uint64_t meta = argv[kCallFnMetaSlot];
     const uint32_t argc = static_cast<uint32_t>(meta & 0x0F);
     const Value* args = reinterpret_cast<const Value*>(argv);
     Function* fn = fv.as_function();
@@ -4493,7 +4497,7 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                 // The unit was found wrong and learned from: build it again (a few times at most), for this call's callee.
                 if (!native_thunk_rebuild(*f, *it->second, fn, th, args, argc)) { it->second->closed = true; { nstate = 2; const_cast<BytecodeChunk*>(nc0)->native_off |= is_new ? 2 : 1; } }
             } else if (it->second && it->second->ok) {
-                if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[6])) {
+                if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[kCallFnIcSlot])) {
                     bool have = false;
                     for (int w = 0; w < JitCallIC::kWays; w++) if (ic->fn_bits[w] == fn_bits) have = true;
                     if (!have) {
@@ -5286,7 +5290,7 @@ inline bool Emitter::allocate() {
     }
     for (int32_t blk : order_)
         for (int32_t id : g_.b[blk].nodes)
-            if (!g_.n[id].dead && (g_.n[id].op == K::CallNative || g_.n[id].op == K::CallFn || g_.n[id].op == K::Rt) && native_args_ < 0) { native_args_ = nslots_; nslots_ += 8; }
+            if (!g_.n[id].dead && (g_.n[id].op == K::CallNative || g_.n[id].op == K::CallFn || g_.n[id].op == K::Rt) && native_args_ < 0) { native_args_ = nslots_; nslots_ += kCallFnAreaSlots; }
     if (native_) {
         // [Frame][CallInfo][env_saves 64][resolved_envs 8][bank]: the frame of a call made through the native entry.
         if (nslots_ & 1) nslots_++;
@@ -6172,11 +6176,11 @@ inline void Emitter::emit_node(int32_t id) {
     }
     case K::CallFn: {
         Label& dl = deopt_label(n.state);
-        // The frame slots at native_args_: [0..3] the arguments, [4] the receiver, [5] the argument count and the pc.
+        // The frame slots at native_args_: [0..7] the arguments, [8] the receiver, [9] the argument count and the pc, [10] the site's cache.
         const int32_t area = native_args_ * 8;
         const uint64_t undefined_bits = std::bit_cast<uint64_t>(Value());
         const uint32_t argc = n.aux & 0x0F;
-        for (uint32_t k = 0; k < 4; k++) {
+        for (uint32_t k = 0; k < kCallFnMaxArgs; k++) {
             const int32_t operand = k == 0 ? n.c : (k - 1 < n.ins.size() ? n.ins[k - 1] : -1);
             if (k < argc && operand >= 0) {
                 const Reg r = use_g(operand, RAX);
@@ -6185,7 +6189,7 @@ inline void Emitter::emit_node(int32_t id) {
         }
         {
             const Reg r = use_g(n.b, RAX);
-            a_.mov_store(mem(RSP, area + 32), r);
+            a_.mov_store(mem(RSP, area + 8 * kCallFnRecvSlot), r);
         }
         (void)undefined_bits;
         const Reg callee = use_g(n.a, RAX);
@@ -6194,7 +6198,7 @@ inline void Emitter::emit_node(int32_t id) {
         save_live(bytes, &cur_ls_);
         a_.mov(abi::A0, RBX);
         a_.mov(abi::A1, RAX);
-        a_.mov_load(abi::A2, mem(RSP, bytes + area + 32));
+        a_.mov_load(abi::A2, mem(RSP, bytes + area + 8 * kCallFnRecvSlot));
         a_.lea(abi::A3, mem(RSP, bytes + area));
         if (config().native_calls) {
             // The site's cache: a callee that has a native entry is called through it, directly; anything else through the helper (which fills the cache when it finds one).
@@ -6225,14 +6229,14 @@ inline void Emitter::emit_node(int32_t id) {
             }
             a_.bind(generic);
             a_.mov_imm64(RAX, reinterpret_cast<uint64_t>(ic));
-            a_.mov_store(mem(RSP, bytes + area + 48), RAX);        // (the helper learns which cache it is for)
+            a_.mov_store(mem(RSP, bytes + area + 8 * kCallFnIcSlot), RAX);        // (the helper learns which cache it is for)
             a_.mov_imm64(RAX, static_cast<uint64_t>(n.aux));       // (and the call's count of arguments, flags and pc: a native entry needs none of it)
-            a_.mov_store(mem(RSP, bytes + area + 40), RAX);
+            a_.mov_store(mem(RSP, bytes + area + 8 * kCallFnMetaSlot), RAX);
             call_c(reinterpret_cast<const void*>(&helper_call_fn));
             a_.bind(after);
         } else {
             a_.mov_imm64(RAX, static_cast<uint64_t>(n.aux));
-            a_.mov_store(mem(RSP, bytes + area + 40), RAX);
+            a_.mov_store(mem(RSP, bytes + area + 8 * kCallFnMetaSlot), RAX);
             call_c(reinterpret_cast<const void*>(&helper_call_fn));
         }
         restore_live(bytes, &cur_ls_);

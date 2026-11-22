@@ -4085,7 +4085,7 @@ QUANTA_JIT_ABI int32_t bl_call_fast(Frame* f, uint32_t pc, uint32_t kind, BlSite
 
 inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, bool construct) {
     const FunctionExecutable* exe = fn->get_executable().get();
-    if (!exe || !exe->bytecode_chunk || argc > 4) return nullptr;
+    if (!exe || !exe->bytecode_chunk || argc > opt::kCallFnMaxArgs) return nullptr;
     auto t = std::make_unique<NativeThunk>();
     t->argc = argc;
     auto ch = std::make_unique<BytecodeChunk>();
@@ -4105,7 +4105,7 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
     cs.ids[0] = exe;
     fb.call_sites.push_back(cs);
     // What the unit is built against: the registers the thunk would have at its call.
-    Value bank[8];
+    Value bank[2 + opt::kCallFnMaxArgs];
     bank[0] = Value(fn);
     bank[1] = this_value;
     for (uint32_t i = 0; i < argc; i++) bank[2 + i] = argv[i];
@@ -4163,10 +4163,10 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
 // The unit of a thunk again, built from the same chunk (what the failed guards taught is in the chunk's Avoid entry, and the compile reads it).
 inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, const Value& this_value, const Value* argv, uint32_t argc) {
     BytecodeChunk& ch = *t.chunk;
-    Value bank[8];
+    Value bank[2 + opt::kCallFnMaxArgs];
     bank[0] = Value(fn);
     bank[1] = this_value;
-    for (uint32_t i = 0; i < argc && i < 4; i++) bank[2 + i] = argv[i];
+    for (uint32_t i = 0; i < argc && i < opt::kCallFnMaxArgs; i++) bank[2 + i] = argv[i];
     Frame peek{nullptr, nullptr, std::span<const Value>(), nullptr, true, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, Value(), Value(), 0, 0, 0, true};
     peek.chunk = &ch;
     peek.ctx = caller.ctx;
