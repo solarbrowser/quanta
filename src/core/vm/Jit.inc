@@ -654,7 +654,14 @@ int32_t find_handler(const BytecodeChunk& chunk, uint32_t pc) noexcept {
 
 [[gnu::always_inline]] inline int32_t after_call(Frame* f, JitCode* jc, uint32_t pc, uint32_t next) noexcept {
     const int32_t r = after_op(f, jc, pc, next);
-    if (r == static_cast<int32_t>(next)) Collector::safepoint();
+    if (r == static_cast<int32_t>(next)) {
+        // The result of the call is in Frame::acc and nowhere else, and a frame of a stackless call (an arena slot, which is malloc'd memory)
+        // is not something the collector scans: the poll would free what the call returned. A copy on this stack is what it does see.
+        const Value result = f->acc;
+        __asm__ volatile("" : : "m"(result) : "memory");
+        Collector::safepoint();
+        __asm__ volatile("" : : "m"(result) : "memory");
+    }
     return r;
 }
 
