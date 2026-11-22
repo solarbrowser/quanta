@@ -226,6 +226,12 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
                             bool strict, bool is_generator, bool is_async,
                             bool concise = false);
 
+// Read once: asking the environment (a scan of every variable) on each executable made was two percent of a run that makes tens of thousands of them.
+static bool exe_count_enabled() {
+    static const bool on = std::getenv("QUANTA_EXE_COUNT") != nullptr;
+    return on;
+}
+
 // Builds (once per decl site) the executable every instance of this literal
 // shares: a durable clone of the body and parameters, plus the source text
 // toString() reports. Callers pass the node's own cached_executable_ slot.
@@ -235,7 +241,7 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
 // leaves the copy's own nested literals unowned, so every site that skips this
 // spreads copying to everything underneath it.
 static void install_literal_body(FunctionExecutable* exe, ASTNode* value_node) {
-    if (std::getenv("QUANTA_EXE_COUNT")) {
+    if (exe_count_enabled()) {
         static size_t n = 0;
         if ((++n % 500) == 0) std::fprintf(stderr, "[ilb] install_literal_body=%zu\n", n);
     }
@@ -267,7 +273,7 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
         uint32_t src_end,
         ScriptUnit* owning_unit = nullptr) {
     if (cached) return cached;
-    if (std::getenv("QUANTA_EXE_COUNT")) {
+    if (exe_count_enabled()) {
         static size_t n = 0;
         if ((++n % 500) == 0) std::fprintf(stderr, "[ese] ensure_shared_executable=%zu\n", n);
     }
