@@ -973,14 +973,12 @@ struct BytecodeChunk {
     // still mutate at runtime (IC warming) even though its LENGTH is frozen;
     // FixedArray::operator[] hands out a non-const T& even through a const
     // BytecodeChunk&, so (unlike the old std::vector) no `mutable` is needed.
-    FixedArray<uint8_t> code;
     // Where in the source each stretch of `code` came from: a statement or a call starts one. Entries
     // ascend by pc and are stored as varints (pc and column as steps, line as a signed step), so a
     // chunk pays a few bytes a statement; position_at() reads it back by walking it, which only an error's
     // stack trace does.
     FixedArray<uint8_t> positions;
     bool position_at(uint32_t pc, uint32_t& line, uint32_t& column) const;
-    FixedArray<Value> constants;   // GC-visible via Function::trace()
     // Identifier names carried by name-bearing opcodes. Interned once at
     // compile end (Shape::intern, the same pool Shape's slot tables and
     // Environment::SlotMap::InlineEntry::key use), so an entry is one 8-byte
@@ -1051,7 +1049,6 @@ struct BytecodeChunk {
             return slot.get();
         }
     };
-    std::unique_ptr<IcFeedback> ic_feedback;
     IcFeedback& ensure_ic_feedback() { if (!ic_feedback) ic_feedback = std::make_unique<IcFeedback>(); return *ic_feedback; }
     // Per-name outer-variable cache for LdaLookup/StaLookup: a resolved
     // stable binding pointer is only valid for the one captured-environment
@@ -1153,10 +1150,20 @@ struct BytecodeChunk {
         const void* realm = nullptr;    // the realm the function belongs to
     };
     static_assert(sizeof(LookupCacheEntry) == 32, "a lookup cache entry is 32 bytes (a chunk has one per name)");
+    // What a call reads of a chunk, kept together so that a call touches one or two of its cache lines instead of one per field (jit_state, inline_state, register_count and
+    // the like used to lie hundreds of bytes apart, and each call missed on several of them). The comments of each are where they used to be declared, above and below.
+    FixedArray<uint8_t> code;
+    FixedArray<Value> constants;   // GC-visible via Function::trace()
     FixedArray<LookupCacheEntry> lookup_cache; // indexed by name id
-    mutable const DirectCall* direct = nullptr;
+    std::unique_ptr<IcFeedback> ic_feedback;
     uint16_t register_count = 0;
     uint8_t parameter_count = 0;    // params occupy regs[0..parameter_count)
+    mutable uint8_t jit_state = 0;
+    mutable uint8_t inline_state = 0;
+    mutable uint8_t opt_entry = 0;
+    mutable bool bl_compiled : 1 = false;
+    bool uses_lookup_cache : 1 = false;
+    mutable const DirectCall* direct = nullptr;
 
     // Baseline JIT (Jit.inc). `jit` is the native translation of `code`, if
     // there is one; jit_state: 0 not decided yet, 1 compiled, 2 refused (an
@@ -1164,14 +1171,11 @@ struct BytecodeChunk {
     // for good). jit_hotness counts calls until the decision is made.
     mutable std::unique_ptr<JitCode, JitCodeDeleter> jit;
     mutable uint16_t jit_hotness = 0;
-    mutable uint8_t jit_state = 0;
     // Whether a call of this chunk may run stackless (Interpreter.cpp): 0 not decided, 1 never,
     // otherwise flag bits that say yes and what the per-call test still has to look at. Decided
     // once jit_state is, from properties of the declaration site that do not change.
-    mutable uint8_t inline_state = 0;
     // The optimizing tier's function-entry unit (Interpreter.cpp, Jit.inc): 0 counting calls, 1 armed (frames
     // start at a stop that offers them to the tier), 2 the tier has declined for good.
-    mutable uint8_t opt_entry = 0;
     // A unit calls this chunk: a body too short to be worth entering from the interpreter is worth it from a unit, where the
     // alternative is a nested interpreter loop. entry_too_small: the tier declined for that reason alone.
     mutable bool unit_callee : 1 = false;
@@ -1181,7 +1185,6 @@ struct BytecodeChunk {
     // A constructor whose body is only `this.name = <parameter or small constant>` stores (Interpreter.cpp, ctor_leaf_construct): 0 not looked at, 1 yes, 2 no, 3 yes but a call just failed.
     mutable uint8_t ctor_leaf : 2 = 0;
     // The baseline JIT has code for this chunk: a stackless frame of it is run in that code (Jit.inc, h_RunCompiledFrame).
-    mutable bool bl_compiled : 1 = false;
     mutable uint8_t opt_loops = 0;     // 1: the tier has declined this chunk's loops, so a call no longer offers them at its first back edge
     mutable uint16_t opt_calls = 0;
 
@@ -1221,7 +1224,6 @@ struct BytecodeChunk {
     // neither the chunk-level array nor the per-instance copy is allocated --
     // and .data() is then null, so a missed emission site faults on the spot
     // instead of silently sharing one instance's resolved slots with another.
-    bool uses_lookup_cache : 1 = false;
     // Set by emit() when an Op::CreateClosure goes into the code -- the only
     // opcode that instantiates a new Function (plain, arrow, async,
     // generator or class method/constructor all go through it, distinguished
