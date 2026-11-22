@@ -263,6 +263,22 @@ struct Slot { Function* fn; uint32_t jit, interp, bytes; int entry; char name[40
 inline Slot g_slots[16384];
 inline uintptr_t g_lo = ~uintptr_t(0), g_hi = 0;
 inline uint32_t g_total = 0, g_total_jit = 0, g_idle = 0;
+// Where in the function: the interpreter's last recorded instruction (instr_pc, written by every handler that can throw or call) of the innermost stackless frame.
+struct PcSlot { Function* fn; uint32_t pc; uint32_t n; uint8_t op; };
+inline PcSlot g_pcs[65536];
+inline void (*g_pc_probe)(Function*) = nullptr;
+inline void pc_probe(Function* fn) {
+    if (!g_arena.slots || g_arena.depth == 0) return;
+    const Frame& f = g_arena.slots[g_arena.depth - 1].frame();
+    if (f.owner != fn || !f.code) return;
+    const uint32_t pc = f.instr_pc;
+    uint32_t h = ((static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fn) >> 4) * 2654435761u) ^ (pc * 40503u)) >> 16;
+    for (uint32_t i = 0; i < 64; i++) {
+        PcSlot& ps = g_pcs[(h + i) & 65535];
+        if (!ps.fn) { ps.fn = fn; ps.pc = pc; ps.n = 0; ps.op = f.code[pc]; }
+        if (ps.fn == fn && ps.pc == pc) { ps.n++; return; }
+    }
+}
 inline bool g_on = false;
 inline void handler(int, siginfo_t*, void* uc_) {
     auto* uc = static_cast<ucontext_t*>(uc_);
@@ -292,12 +308,17 @@ inline void handler(int, siginfo_t*, void* uc_) {
                 std::memcpy(sl.file, filename->data() + (filename->size() - n), n);  // (the end of the address: the file)
             }
         }
-        if (sl.fn == fn) { (in_jit ? sl.jit : sl.interp)++; return; }
+        if (sl.fn == fn) {
+            (in_jit ? sl.jit : sl.interp)++;
+            if (!in_jit && g_pc_probe) g_pc_probe(fn);
+            return;
+        }
     }
 }
 inline void start() {
     if (g_on) return;
     g_on = true;
+    g_pc_probe = &pc_probe;
     struct sigaction sa{};
     sa.sa_sigaction = handler;
     sa.sa_flags = SA_SIGINFO | SA_RESTART;
@@ -324,6 +345,17 @@ inline void print() {
         std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  chunk=%p  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
                      sl.jit, sl.interp, sl.bytes, sl.entry, pe ? static_cast<const void*>(pe->bytecode_chunk.get()) : nullptr, sl.name);
         std::fprintf(stderr, "[prof]          in %s\n", sl.file);
+    }
+    if (std::getenv("QUANTA_PROF_PC")) {
+        std::vector<const PcSlot*> pv;
+        for (const PcSlot& ps : g_pcs) if (ps.fn) pv.push_back(&ps);
+        std::sort(pv.begin(), pv.end(), [](const PcSlot* x, const PcSlot* y) { return x->n > y->n; });
+        for (size_t i = 0; i < pv.size() && i < 400; i++) {
+            const PcSlot& ps = *pv[i];
+            const FunctionExecutable* pe = ps.fn->get_executable().get();
+            const char* opn = ps.op < static_cast<int>(Op::kCount) ? op_name(static_cast<Op>(ps.op)) : "?";
+            std::fprintf(stderr, "[profpc] %5.1f%% %-10s pc=%-5u %s\n", g_total ? 100.0 * ps.n / g_total : 0.0, pe && pe->bytecode_chunk ? ps.fn->get_name().c_str() : "?", ps.pc, opn);
+        }
     }
 }
 }  // namespace prof
