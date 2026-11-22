@@ -228,11 +228,13 @@ public:
             else if (o->get_type() == Object::ObjectType::Custom && static_cast<CustomObjectBase*>(o)->get_custom_kind() == CustomObjectBase::CustomKind::Host) static_cast<DOMObject*>(o)->trace(*this);
             else { deferred.push_back(p); deferred_by_type[o->get_type() == Object::ObjectType::Custom ? 32 + (static_cast<size_t>(static_cast<CustomObjectBase*>(o)->get_custom_kind()) & 15) : (static_cast<size_t>(o->get_type()) & 31)]++; }
         } else if (p.kind == CellKind::Environment) {
-            static_cast<Environment*>(p.cell)->trace_fast(*this);
+            trace_environment(static_cast<Environment*>(p.cell));
         } else {
             static_cast<String*>(p.cell)->gc_trace(*this);
         }
     }
+    // Out of line, so that the common arm of process() (an object) stays small enough to be inlined into the marking loop.
+    [[gnu::noinline]] void trace_environment(Environment* e) { e->trace_fast(*this); }
     size_t deferred_by_type[48] = {};
 
 private:
@@ -910,11 +912,13 @@ private:
             if (__builtin_expect(o->traces_by_default(), 1)) o->trace_fast(*this);
             else o->trace(*this);
         } else if (p.kind == CellKind::Environment) {
-            static_cast<Environment*>(p.cell)->trace_fast(*this);
+            trace_environment(static_cast<Environment*>(p.cell));
         } else {
             static_cast<String*>(p.cell)->gc_trace(*this);
         }
     }
+    // Out of line, so that the common arm (an object) stays small enough to be inlined into the marking loop.
+    [[gnu::noinline]] void trace_environment(Environment* e) { e->trace_fast(*this); }
 
     std::vector<Heap::ProbeResult> gray_;
     // Power of two: the ring index is a mask, not a modulo.
