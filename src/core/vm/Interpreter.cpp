@@ -11254,7 +11254,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     // and the conservative stack scan already tolerates stale words elsewhere in
     // the frame (env_saves below is left uninitialized for the same reason), so
     // the only cost of leaving it is a possible false retention.
-    alignas(Value) unsigned char bank[kInlineRegs * sizeof(Value)];
+    alignas(16) unsigned char bank[kInlineRegs * sizeof(Value)];      // (init_register_bank stores it with aligned 16-byte writes)
     Value* inline_regs = reinterpret_cast<Value*>(bank);
     // Parameters are copied into the first slots whether or not the chunk's own count
     // says it needs them.
@@ -11272,7 +11272,7 @@ Value run_register_call(const BytecodeChunk& chunk, Context& ctx, std::span<cons
     if (__builtin_expect(chunk.env_mode || chunk.register_count > kInlineRegs, 0)) {
         return run(chunk, ctx, args, this_val, owner, nullptr, call_info, nullptr);
     }
-    alignas(Value) unsigned char bank[kInlineRegs * sizeof(Value)];
+    alignas(16) unsigned char bank[kInlineRegs * sizeof(Value)];      // (init_register_bank stores it with aligned 16-byte writes)
     Value* inline_regs = reinterpret_cast<Value*>(bank);
     init_register_bank(bank, std::max<unsigned>(chunk.register_count, chunk.parameter_count));
     return run_with_regs<true>(chunk, ctx, args, this_val, owner, nullptr, call_info, inline_regs, nullptr);
