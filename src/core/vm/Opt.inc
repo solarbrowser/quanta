@@ -7654,9 +7654,18 @@ inline bool has_calls(const BytecodeChunk& chunk) {
 }
 
 inline std::vector<JitRt*>& all_rts() { static std::vector<JitRt*> v; return v; }
+inline std::map<std::tuple<const BytecodeChunk*, uint32_t, uint32_t>, uint64_t>& exit_tally() { static std::map<std::tuple<const BytecodeChunk*, uint32_t, uint32_t>, uint64_t> m; return m; }
 
 inline void print_unit_stats() {
     if (!config().log) return;
+    {
+        std::vector<std::pair<uint64_t, std::tuple<const BytecodeChunk*, uint32_t, uint32_t>>> v;
+        for (auto& [k, n] : exit_tally()) v.push_back({n, k});
+        std::sort(v.rbegin(), v.rend());
+        for (size_t i = 0; i < v.size() && i < 25; i++)
+            std::fprintf(stderr, "[opt-exit] %8llu chunk=%p status=%u resume_pc=%u op=%s\n", static_cast<unsigned long long>(v[i].first), static_cast<const void*>(std::get<0>(v[i].second)), std::get<1>(v[i].second), std::get<2>(v[i].second),
+                         std::get<2>(v[i].second) < std::get<0>(v[i].second)->code.size() ? op_name(static_cast<Op>(std::get<0>(v[i].second)->code[std::get<2>(v[i].second)])) : "?");
+    }
     for (JitRt* rt : all_rts())
         std::fprintf(stderr, "[opt] unit pc %u: %llu runs, %llu exits, %llu cycles inside\n", rt->opt_pc, (unsigned long long)rt->opt_runs, (unsigned long long)rt->opt_exits, (unsigned long long)rt->opt_cycles);
 }
@@ -7737,7 +7746,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
             no_inline.insert(gp->failed_site);
             continue;
         }
-        if (config().log) std::fprintf(stderr, "[opt] refused (%s): %u bytes of bytecode\n", gp->why ? gp->why : "?", static_cast<unsigned>(chunk.code.size()));
+        if (config().log) std::fprintf(stderr, "[opt] refused (%s): %u bytes of bytecode at pc %u chunk=%p\n", gp->why ? gp->why : "?", static_cast<unsigned>(chunk.code.size()), pc, static_cast<const void*>(&chunk));
         return false;
     }
     Graph& g = *gp;
@@ -7747,7 +7756,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     std::vector<uint8_t> bytes;
     std::vector<std::pair<uint32_t, uint32_t>> entries;
     if (!em.emit(bytes, entries)) {
-        if (config().log) std::fprintf(stderr, "[opt] refused in codegen (%s): %u bytes of bytecode\n", em.why() ? em.why() : "?", static_cast<unsigned>(chunk.code.size()));
+        if (config().log) std::fprintf(stderr, "[opt] refused in codegen (%s): %u bytes of bytecode at pc %u chunk=%p\n", em.why() ? em.why() : "?", static_cast<unsigned>(chunk.code.size()), pc, static_cast<const void*>(&chunk));
         return false;
     }
     void* mem = nullptr;

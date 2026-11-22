@@ -342,8 +342,10 @@ inline void print() {
     for (size_t i = 0; i < order.size() && i < 30; i++) {
         const Slot& sl = *order[i];
         const FunctionExecutable* pe = sl.fn->get_executable().get();
-        std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d  chunk=%p  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
-                     sl.jit, sl.interp, sl.bytes, sl.entry, pe ? static_cast<const void*>(pe->bytecode_chunk.get()) : nullptr, sl.name);
+        const BytecodeChunk* lc = pe ? pe->bytecode_chunk.get() : nullptr;
+        std::fprintf(stderr, "[prof] %5.1f%%  jit=%-6u interp=%-6u  %4u bytes  entry=%d(now %d calls %u verdict %u jit_state %u units %zu)  chunk=%p  %s\n", g_total ? 100.0 * (sl.jit + sl.interp) / g_total : 0.0,
+                     sl.jit, sl.interp, sl.bytes, sl.entry, lc ? int(lc->opt_entry) : -1, lc ? unsigned(lc->opt_calls) : 0u, lc ? unsigned(lc->inline_state) : 0u, lc ? unsigned(lc->jit_state) : 0u,
+                     lc && lc->jit ? lc->jit->opt_units.size() : size_t(0), static_cast<const void*>(lc), sl.name);
         std::fprintf(stderr, "[prof]          in %s\n", sl.file);
     }
     if (std::getenv("QUANTA_PROF_PC")) {
@@ -3421,6 +3423,7 @@ int opt_unit_exit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, ui
         return 1;
     }
     rt->opt_exits++;
+    if (opt::config().log) { auto& m = opt::exit_tally(); m[{&chunk, static_cast<uint32_t>(status), static_cast<uint32_t>(f.pc)}]++; }
     if (status == opt::kStatusDeopt) {
         ++jc->opt_deopts;
         auto& gs = jc->opt_units[ui].guards;
