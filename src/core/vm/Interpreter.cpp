@@ -2357,6 +2357,8 @@ struct Frame {
     // A stackless frame whose strictness is not the caller's (a class method called from sloppy code, or the reverse): the context's flag was switched
     // for it, and popping the frame puts the caller's back (rare_pop is set with it).
     bool strict_swap = false;
+    // A stackless frame of an accessor read by GetNamedStar: its return stores the value in the caller's register named by InlineSlot::store_reg.
+    bool store_acc_reg = false;
 };
 
 // The permanent form of the diagnostic's frame_lex_env_diag(f): falls back
@@ -2594,6 +2596,7 @@ struct InlineSlot {
     Environment* resolved_envs[8];
     InlineEnvState env;
     InlineConstructState construct;
+    uint8_t store_reg;
     Frame& frame() { return *reinterpret_cast<Frame*>(frame_storage); }
 };
 
@@ -2742,6 +2745,7 @@ void inline_construct_restore(Frame& f) {
         f.ctx->set_strict_mode(reinterpret_cast<InlineSlot*>(&f)->env.saved_strict);
         f.strict_swap = false;
     }
+    f.store_acc_reg = false;
     f.rare_pop = false;
 }
 
@@ -3218,6 +3222,10 @@ QUANTA_HANDLER Value h_ReturnInline(HANDLER_PARAMS);
     if (f.strict_swap) {
         f.ctx->set_strict_mode(reinterpret_cast<InlineSlot*>(&f)->env.saved_strict);
         f.strict_swap = false;
+    }
+    if (f.store_acc_reg) {
+        f.caller->regs[reinterpret_cast<InlineSlot*>(&f)->store_reg] = acc;
+        f.store_acc_reg = false;
     }
     f.rare_pop = false;
     [[clang::musttail]] return h_ReturnInline(f, pc, acc, regs, code);
@@ -8334,11 +8342,40 @@ inline bool inherited_data_entry(const FeedbackBody& fb, Object* obj, Value& out
 // hand: 0 -- the value is in acc; 1 -- a catch handler took the exception, pc
 // and acc are set for the dispatch that resumes there; 2 -- nothing catches it
 // in this frame and the handler returns.
+// A getter read from an inline cache: the entry to a function whose gate is open (a leaf body answered in place, no context of its own) and not the
+// general one, which a class getter called on every token of a parse was paying for.
+inline Value call_getter_fast(Function* getter_fn, Context& ctx, const Value& receiver) {
+    if (getter_fn->fast_callable()) return getter_fn->call_fast_gate(ctx, {}, receiver);
+    return getter_fn->call_register_args(ctx, {}, receiver);
+}
+
+// A getter read as a stackless call: the accessor's frame is built the way a call's is, and its return finishes the read (stores the value in the register a
+// GetNamedStar names, then goes on after the instruction). False, with nothing done, for a getter the stackless path does not take.
+template <bool Fused>
+[[gnu::always_inline]] inline bool enter_getter_frame(Frame& f, uint32_t pc, const uint8_t* code, Function* getter_fn, const Value& receiver, Frame*& cf) {
+    if (UNLIKELY(!f.inline_ok)) return false;
+    if (!getter_fn->fast_callable() && !getter_fn->maybe_env_callable()) return false;
+    f.instr_pc = pc;
+    if (!inline_call_enter(f, getter_fn, nullptr, 0, receiver, pc + (Fused ? 7u : 6u), cf)) return false;
+    if constexpr (Fused) {
+        reinterpret_cast<InlineSlot*>(cf)->store_reg = code[pc + 6];
+        cf->store_acc_reg = true;
+        cf->rare_pop = true;
+    }
+    return true;
+}
+
+#define DISPATCH_ENTERED_FRAME(cf)                                                                                                                  \
+    do {                                                                                                                                             \
+        if (UNLIKELY((cf)->chunk->bl_compiled)) [[clang::musttail]] return h_RunCompiledFrame(*(cf), 0, Value(), (cf)->regs, (cf)->code);            \
+        [[clang::musttail]] return kHandlers[(cf)->code[0]](*(cf), 0, Value(), (cf)->regs, (cf)->code);                                              \
+    } while (0)
+
 inline int call_cached_getter(Frame& f, uint32_t& pc, Value& acc, Function* getter_fn,
                               const Value& receiver) {
     if (typed_length_getter(getter_fn, receiver, acc)) return 0;
     f.instr_pc = pc;
-    Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
+    Value result = call_getter_fast(getter_fn, *f.ctx, receiver);
     if (!f.ctx->has_exception()) { acc = result; return 0; }
     const BytecodeChunk& chunk = *f.chunk;
     int32_t handler_pc = -1;
@@ -8518,6 +8555,7 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
                     // setter-only property holds nothing callable, and reads as
                     // undefined on the general path.
                     if (Function* getter_fn = as_function(as_object_like(*slot))) {
+                        if (Frame* gcf; enter_getter_frame<Fused>(f, pc, code, getter_fn, receiver, gcf)) DISPATCH_ENTERED_FRAME(gcf);
                         switch (call_cached_getter(f, pc, acc, getter_fn, receiver)) {
                             case 0: FUSED_TAIL(6);
                             case 1: DISPATCH();
@@ -8562,8 +8600,9 @@ QUANTA_HANDLER Value h_GetNamedRest(HANDLER_PARAMS) {
                             if (pe.desc_epoch == Object::descriptor_epoch()) {
                                 if (Function* getter_fn = pe.cached_value.as_function()) {
                                     if (typed_length_getter(getter_fn, receiver, acc)) FUSED_TAIL(6);
+                                    if (Frame* gcf; enter_getter_frame<Fused>(f, pc, code, getter_fn, receiver, gcf)) DISPATCH_ENTERED_FRAME(gcf);
                                     f.instr_pc = pc;
-                                    Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
+                                    Value result = call_getter_fast(getter_fn, *f.ctx, receiver);
                                     if (f.ctx->has_exception()) {
                                         const BytecodeChunk& chunk = *f.chunk;
                                         int32_t handler_pc = -1;
