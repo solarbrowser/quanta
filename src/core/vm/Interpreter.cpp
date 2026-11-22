@@ -2558,6 +2558,8 @@ extern const std::array<Handler, 256> kHandlers;
 namespace {
 
 constexpr uint32_t kInlineMaxRegs = 32;
+// QUANTA_BL_ENVFRAMES=0: a stackless call of an environment-mode function whose chunk is compiled stays in the interpreter.
+const bool g_bl_env_frames = [] { const char* e = std::getenv("QUANTA_BL_ENVFRAMES"); return !(e && e[0] == '0'); }();
 
 // What an environment-mode frame owes when it ends: the environment it made, the context state
 // it replaced (the tree-walker pieces a body may delegate to read strictness and `this` from the
@@ -7159,7 +7161,7 @@ QUANTA_HANDLER Value h_CallInlineGo(HANDLER_PARAMS) {
     f.instr_pc = pc;
     Frame* callee_frame;
     if (inline_call_enter(f, fn, regs + code[pc + 2], code[pc + 3], Value(), pc + 6, callee_frame)) {
-        if (UNLIKELY(callee_frame->chunk->bl_compiled) && !callee_frame->env_call) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
+        if (UNLIKELY(callee_frame->chunk->bl_compiled) && (!callee_frame->env_call || g_bl_env_frames)) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
         [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
     }
     [[clang::musttail]] return h_CallPlain(f, pc, acc, regs, code);
@@ -7210,7 +7212,7 @@ QUANTA_HANDLER Value h_CallResolvedInlineGo(HANDLER_PARAMS) {
     f.instr_pc = pc;
     Frame* callee_frame;
     if (inline_call_enter(f, fn, regs + code[pc + 3], code[pc + 4], regs[code[pc + 2]], pc + 7, callee_frame)) {
-        if (UNLIKELY(callee_frame->chunk->bl_compiled) && !callee_frame->env_call) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
+        if (UNLIKELY(callee_frame->chunk->bl_compiled) && (!callee_frame->env_call || g_bl_env_frames)) [[clang::musttail]] return h_RunCompiledFrame(*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
         [[clang::musttail]] return kHandlers[callee_frame->code[0]](*callee_frame, 0, Value(), callee_frame->regs, callee_frame->code);
     }
     [[clang::musttail]] return h_CallResolvedPlain(f, pc, acc, regs, code);
