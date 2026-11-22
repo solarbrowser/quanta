@@ -1959,7 +1959,12 @@ Object* Function::ensure_prototype() const {
     // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
     PropertyDescriptor ctor_desc(Value(self), static_cast<PropertyAttributes>(
         PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    self->prototype_->set_property_descriptor("constructor", ctor_desc);
+    // The object is new and nothing has read it: no cache can hold anything about it, so its first descriptor has nothing to retire. (Every function
+    // whose .prototype was touched moved the epoch, which retired every cache and compiled unit that checks it.)
+    {
+        Object::DescriptorEpochHold fresh_object;
+        self->prototype_->set_property_descriptor("constructor", ctor_desc);
+    }
     return prototype_;
 }
 
