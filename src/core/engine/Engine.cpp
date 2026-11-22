@@ -212,10 +212,7 @@ void Engine::retire_into(Engine& heir) {
 
     heir.survivor_contexts_.insert(heir.survivor_contexts_.end(),
                                    survivor_contexts_.begin(), survivor_contexts_.end());
-    heir.survivor_environments_.insert(heir.survivor_environments_.end(),
-                                       survivor_environments_.begin(), survivor_environments_.end());
     survivor_contexts_.clear();
-    survivor_environments_.clear();
     survivor_traced_ = 0;
     heir.survivor_traced_ = 0;  // (what it was given has not been traced by it)
 
@@ -546,12 +543,6 @@ void Engine::add_survivor_context(Context* ctx) {
     Heap::note_extra_bytes(sizeof(Context));
 }
 
-void Engine::add_survivor_environment(Environment* env) {
-    if (!env || env->is_cell()) return;
-    env->mark_referenced();
-    survivor_environments_.push_back(env);
-    Heap::note_extra_bytes(env->footprint_bytes());
-}
 
 void Engine::run_event_loop_to_completion(Context& ctx) {
     Collector::safepoint();

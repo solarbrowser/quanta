@@ -105,7 +105,6 @@ private:
     // already exited (see Collector::finish_major_cycle's environment-survivor
     // prune loop) -- without this, an escaped Environment (any closure that
     // captures an outer variable) would never be freed at all.
-    std::vector<Environment*> survivor_environments_;
 
     // Head of the chain of ExecContextScopes currently open on this engine.
     // Kept here rather than in a thread-local because every site that opens
@@ -302,9 +301,8 @@ public:
     void retire_into(Engine& heir);
 
     // Same pattern for escaped Environments (see survivor_environments_).
-    const std::vector<Environment*>& get_survivor_environments() const { return survivor_environments_; }
-    std::vector<Environment*>& mutable_survivor_environments() { return survivor_environments_; }
-    void add_survivor_environment(Environment* env);
+    // An environment is a heap cell: the collector keeps it as long as anything names it.
+    void add_survivor_environment(Environment*) {}
 
     // Drains microtasks, then drives any pending timers to exhaustion (real wall-clock wait), repeating until both queues are empty.
     void run_event_loop_to_completion(Context& ctx);

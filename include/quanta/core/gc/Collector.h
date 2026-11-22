@@ -177,7 +177,6 @@ public:
     // closure_environment_/closure_context_ can reference an Environment
     // without ever incrementing its inner_count_, which is the one signal
     // that fast path trusts.
-    static void release_env_deferred(Environment* env);
 
     struct CycleStats {
         size_t marked_cells = 0;
@@ -221,8 +220,6 @@ public:
     // already un-GC-managed, leaked with the Context" assumed a Context was
     // always the thing doing the rooting. A slot whose Context never points
     // at it needs this instead, for exactly as long as it's live.
-    static void push_environment_root(Environment* const* env_ptr);
-    static void pop_environment_root(Environment* const* env_ptr);
 
     // Same idea, for a frozen BytecodeChunk::constants -- used where the
     // chunk itself isn't reachable via any owning GC object graph node at
@@ -262,27 +259,10 @@ private:
 // fibers can interleave, which unlink_slow handles.
 class EnvironmentRoot {
 public:
-    explicit EnvironmentRoot(Environment* const* env_ptr) : env_ptr_(env_ptr), prev_(head_) { head_ = this; }
-    ~EnvironmentRoot() {
-        if (__builtin_expect(head_ == this, 1)) head_ = prev_;
-        else unlink_slow();
-    }
+    explicit EnvironmentRoot(Environment* const*) {}
     EnvironmentRoot(const EnvironmentRoot&) = delete;
     EnvironmentRoot& operator=(const EnvironmentRoot&) = delete;
-
-    // Drops every root that lives in [lo, hi): a fiber's stack is freed without unwinding it, so
-    // whatever it still had registered would otherwise stay in the chain, dangling.
-    static void purge(const void* lo, const void* hi);
-    // The innermost live root of this thread, and the next one out.
-    static EnvironmentRoot* head() { return head_; }
-    EnvironmentRoot* outer() const { return prev_; }
-    Environment* environment() const { return *env_ptr_; }
-
-private:
-    void unlink_slow();
-    static inline constinit thread_local EnvironmentRoot* head_ = nullptr;
-    Environment* const* env_ptr_;
-    EnvironmentRoot* prev_;
+    static void purge(const void*, const void*) {}
 };
 
 // A chunk whose inline caches hold real cells -- a prototype, a holder, a

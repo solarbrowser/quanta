@@ -930,41 +930,6 @@ private:
     void remove_inner() { if (inner_count_ != kInnerCountMax) inner_count_--; }
 
 public:
-    // Write-barrier dedup flag, owned by the Collector (set on first binding
-    // write per GC cycle, cleared after the cycle).
-    bool gc_remembered_ : 1 = false;
-    // Whether the collector's remembered-envs vector currently holds a raw
-    // pointer to this environment, and at which index. That vector is not a GC
-    // root, so it does not keep the environment alive, yet the next collection
-    // walks it -- an environment freed before then drops its own entry
-    // (Collector::release_env) rather than leaving the walk a pointer into a
-    // destroyed binding map. The marker's environment work list is fed from the
-    // same call and cannot be edited that way, so it marks instead (see
-    // MarkVisitor::repush_environment).
-    //
-    // Deliberately NOT gc_remembered_, which answers a different question:
-    // that one is cleared at trace time to re-arm the barrier mid-major, while
-    // the vector entry it was set for stays put until the cycle ends -- so a
-    // gc_remembered_-driven cleanup would skip exactly the entries it has to
-    // remove. The barrier keeps at most one live entry per environment (it
-    // blanks the previous one before pushing again), which is what makes a
-    // single index enough to find and drop it.
-    bool gc_in_remembered_ : 1 = false;
-    // The environment is a heap cell (CellKind::Environment): the collector owns its lifetime, so nothing frees, releases or queues it.
-    bool is_cell_ : 1 = false;
-    // The major epoch (Collector::current_major_epoch) in which a collection last traced this environment; zero before the first. Every mark bit in the heap was cleared when
-    // that epoch began, so what the environment named then is still marked now unless its bindings were written since, which the barrier gc_remembered_ tells.
-    uint8_t gc_traced_epoch_ = 0;
-    uint32_t gc_remembered_index_ = 0;
-    // Which collection last queued this environment, owned by the Collector.
-    // Environments are not cells and have no mark bit, so the marker used to
-    // keep a hash set of the ones it had seen -- one insert per environment
-    // per collection, which showed up as one of the larger single costs in
-    // the whole run. A stamp answers the same question by comparison. Zero on
-    // construction, so a fresh environment at a recycled address is never
-    // mistaken for one already queued.
-    uint32_t gc_seen_cycle_ = 0;
-
     void gc_trace(Visitor& v) const;
     // The same edges for a visitor that takes them without a virtual call between them (the collector's marking visitors).
     template <class V>
@@ -980,10 +945,6 @@ public:
     Environment(Object* binding_object, Environment* outer = nullptr);
     ~Environment();
 
-    // Pooled: reuses freed blocks instead of round-tripping the allocator
-    // on every call (see Context's identical pattern in Context.cpp).
-    static void* operator new(size_t size);
-    static void operator delete(void* ptr);
     static void* operator new(size_t, void* where) { return where; }
     static void operator delete(void*, void*) {}
 
@@ -992,10 +953,7 @@ public:
     // the inline ones after itself.
     static Environment* create(Type type, Environment* outer = nullptr, size_t total_slots = 0, int site = 0);
     static Environment* create(Object* binding_object, Environment* outer = nullptr, int site = 0);
-    static uint32_t cell_off_mask_;
-    static bool cells_enabled() { return cells_enabled_; }
-    bool is_cell() const { return is_cell_; }
-    static bool cells_enabled_;
+    bool is_cell() const { return true; }
 
     Type get_type() const { return type_; }
     Environment* get_outer() const { return outer_environment_; }

@@ -478,8 +478,7 @@ void Program::hoist_lexical_declarations(Context& ctx) {
         ctx.set_lexical_environment(script_env_ptr);
     } else {
         Environment* old_lex = ctx.get_lexical_environment();
-        auto script_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lex);
-        script_env_ptr = script_env.release();
+        script_env_ptr = Environment::create(Environment::Type::Declarative, old_lex, 0, 14);
         script_env_ptr->mark_closure_boundary();
         ctx.set_lexical_environment(script_env_ptr);
         if (ctx.get_type() == Context::Type::Global) {

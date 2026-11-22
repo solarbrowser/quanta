@@ -52,7 +52,7 @@ namespace Quanta {
 
 #if defined(__GLIBCXX__)
 static_assert(sizeof(Context) == 168);
-static_assert(sizeof(Environment) == 216);
+static_assert(sizeof(Environment) == 208);
 #else
 static_assert(sizeof(Context) <= 896);
 static_assert(sizeof(Environment) <= 512);
@@ -85,6 +85,7 @@ void Context::gc_trace(Visitor& v) const {
     // between top-level script runs, when nothing else necessarily points
     // to it.
     v.visit_environment(script_global_lexical_env_);
+    v.visit_environment(owned_env_);
     v.visit(this_value_);
     v.visit_object(global_object_);
     if (builtins_) {
@@ -106,19 +107,6 @@ namespace {
 constexpr size_t kContextPoolCap = 16384;
 struct ContextPool { void* head; size_t count; };
 constinit thread_local ContextPool g_context_pool = {nullptr, 0};  // chained like the environment pool below
-
-// Same pattern, separate pool -- Environment is likewise never subclassed
-// (see its class declaration, Context.h) and its actual reclamation
-// (Collector::release_env's pending_env_frees batch, flushed only outside
-// an open incremental major cycle) already defers past any point where a
-// recycled address could be mistaken for a stale MarkVisitor::seen_ entry,
-// so pooling adds no new hazard beyond what Context's own pool already has.
-constexpr size_t kEnvironmentPoolCap = 16384;
-// Freed environments, chained through their own first word. A vector of pointers here cost a
-// bounds test, a store and a size update on each side, and a thread-local with a destructor
-// checks its guard on every touch; the chain is a load and a store, and has nothing to destroy.
-struct EnvironmentPool { void* head; size_t count; };
-constinit thread_local EnvironmentPool g_environment_pool = {nullptr, 0};
 
 // QUANTA_GC_POISON covers heap CELLS (Collector.cpp's sweep), and neither a
 // Context nor an Environment is one -- both are pooled plain C++ objects, so a
@@ -161,17 +149,6 @@ void Context::operator delete(void* ptr) {
     ::operator delete(ptr);
 }
 
-void* Environment::operator new(size_t size) {
-    if (void* p = g_environment_pool.head) {
-        g_environment_pool.head = *static_cast<void**>(p);
-        g_environment_pool.count--;
-        return p;
-    }
-    return ::operator new(size);
-}
-
-bool Environment::cells_enabled_ = std::getenv("QUANTA_ENV_CELLS") != nullptr;
-
 void Environment::SlotMap::note_owner_impure(const void* map) { Heap::note_impure(map); }
 
 void Environment::SlotMap::ensure_overflow() {
@@ -181,45 +158,20 @@ void Environment::SlotMap::ensure_overflow() {
     }
 }
 
-uint32_t Environment::cell_off_mask_ = std::getenv("QUANTA_ENV_CELLS_OFF") ? static_cast<uint32_t>(std::strtoul(std::getenv("QUANTA_ENV_CELLS_OFF"), nullptr, 0)) : 0;
-
 Environment* Environment::create(Type type, Environment* outer, size_t total_slots, int site) {
-    if (!cells_enabled_ || ((cell_off_mask_ >> site) & 1)) {
-        Environment* e = new Environment(type, outer);
-        if (total_slots) e->reserve_slots(total_slots);
-        return e;
-    }
     const size_t extra = (total_slots > SlotMap::kInlineCapacity && total_slots <= SlotMap::kMaxReservedSlots) ? total_slots - SlotMap::kInlineCapacity : 0;
     void* mem = Heap::active().allocate_pure(sizeof(Environment) + extra * sizeof(SlotMap::InlineEntry), CellKind::Environment);
     Environment* e = new (mem) Environment(type, outer);
-    e->is_cell_ = true;
     if (extra) e->slots_.adopt_trailing(reinterpret_cast<SlotMap::InlineEntry*>(e + 1), extra);
     return e;
 }
 
 Environment* Environment::create(Object* binding_object, Environment* outer, int site) {
-    if (!cells_enabled_ || ((cell_off_mask_ >> site) & 1)) return new Environment(binding_object, outer);
     void* mem = Heap::active().allocate_pure(sizeof(Environment), CellKind::Environment);
     Environment* e = new (mem) Environment(binding_object, outer);
-    e->is_cell_ = true;
     return e;
 }
 
-void Environment::operator delete(void* ptr) {
-    if (!ptr) return;
-    if (environment_poison()) {
-        std::memset(ptr, 0xE5, sizeof(Environment));
-        ::operator delete(ptr);
-        return;
-    }
-    if (g_environment_pool.count < kEnvironmentPoolCap) {
-        *static_cast<void**>(ptr) = g_environment_pool.head;
-        g_environment_pool.head = ptr;
-        g_environment_pool.count++;
-        return;
-    }
-    ::operator delete(ptr);
-}
 
 Context::Context(Engine* engine, Type type)
     : type_(type), state_(State::Running),
@@ -931,8 +883,7 @@ void Context::initialize_global_context() {
     global_object_ = ObjectFactory::create_object().release();
     this_value_ = global_object_ ? Value(global_object_) : Value();
 
-    auto global_env = std::make_unique<Environment>(global_object_);
-    lexical_environment_ = global_env.release();
+    lexical_environment_ = Environment::create(global_object_, nullptr, 8);
     variable_environment_ = lexical_environment_;
 
     initialize_built_ins();
@@ -1601,8 +1552,7 @@ std::unique_ptr<Context> create_function_context(Engine* engine, Context* parent
     // The new context's env chain hangs off outer_env and can outlive the
     // current block (fibers, survivor contexts) -- pin the chain.
     if (outer_env) outer_env->mark_escaped();
-    auto func_env = std::make_unique<Environment>(Environment::Type::Function, outer_env);
-    context->set_lexical_environment(func_env.release());
+    context->set_lexical_environment(Environment::create(Environment::Type::Function, outer_env, 0, 9));
     context->set_variable_environment(context->get_lexical_environment());
     context->set_owned_env(context->get_lexical_environment());
 
@@ -1622,8 +1572,7 @@ std::unique_ptr<Context> create_eval_context(Engine* engine, Context* parent) {
 std::unique_ptr<Context> create_module_context(Engine* engine) {
     auto context = std::make_unique<Context>(engine, Context::Type::Module);
     
-    auto module_env = std::make_unique<Environment>(Environment::Type::Module);
-    context->set_lexical_environment(module_env.release());
+    context->set_lexical_environment(Environment::create(Environment::Type::Module, nullptr, 0, 10));
     context->set_variable_environment(context->get_lexical_environment());
     
     return context;
@@ -1633,8 +1582,7 @@ std::unique_ptr<Context> create_module_context(Engine* engine) {
 
 
 void Context::push_block_scope() {
-    auto new_env = std::make_unique<Environment>(Environment::Type::Declarative, lexical_environment_);
-    lexical_environment_ = new_env.release();
+    lexical_environment_ = Environment::create(Environment::Type::Declarative, lexical_environment_, 0, 11);
 }
 
 void Context::pop_block_scope() {
@@ -1894,9 +1842,9 @@ void Context::run_dispose_resources() {
 
 void Context::push_with_scope(Object* obj) {
     // Create object environment for with statement
-    auto new_env = std::make_unique<Environment>(obj, lexical_environment_);
+    Environment* new_env = Environment::create(obj, lexical_environment_, 12);
     new_env->set_with_environment(true);
-    lexical_environment_ = new_env.release();
+    lexical_environment_ = new_env;
 }
 
 void Context::pop_with_scope() {

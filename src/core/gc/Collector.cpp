@@ -87,10 +87,6 @@ namespace {
 // object graphs cannot overflow the stack.
 // Defined below, next to env_flag; declared here for MarkVisitor and
 // release_env, both of which sit above it.
-bool env_hunt();
-void hunt_note_free(const Environment* env);
-void hunt_check(const Environment* env, const char* who);
-
 // Bumped by every major cycle that opens, i.e. by every clear_all_marks. A
 // Context survivor not stamped with the current value has not been reached
 // through a real edge by any collection since every mark bit in the heap was
@@ -572,13 +568,7 @@ public:
             context_work_.push_back(ctx);
         }
     }
-    void visit_environment(Environment* env) override {
-        if (env && env->is_cell()) { mark_edge(env, CellKind::Environment); return; }
-        if (env && env->gc_seen_cycle_ != cycle_) {
-            env->gc_seen_cycle_ = cycle_;
-            environment_work_.push_back(env);
-        }
-    }
+    void visit_environment(Environment* env) override { if (env) mark_edge(env, CellKind::Environment); }
 
     // Queues a survivor-pool entry without recording it as reached by a real
     // edge. The pool roots every entry it holds, so stamping here would answer
@@ -596,10 +586,6 @@ public:
     // survivor-pruning step.
     bool context_seen(Context* ctx) const { return ctx && ctx->gc_seen_cycle() == cycle_; }
 
-    // Same as context_seen, but for Environment survivors (see
-    // finish_major_cycle's environment-survivor prune loop).
-    bool environment_seen(Environment* env) const { return env && env->gc_seen_cycle_ == cycle_; }
-
     // Contexts are not cells: no mark bit, and most of their mutable state
     // (pending exception, return value, microtask keep-alives) has no write
     // barrier. Root contexts are therefore re-visited on every root scan --
@@ -609,24 +595,6 @@ public:
         if (!ctx) return;
         ctx->gc_set_seen_cycle(0);
         visit_context(ctx);
-    }
-
-    // Same for an environment whose bindings changed mid-cycle (reported by
-    // Collector::write_barrier_env): once traced it would never be looked at
-    // again this cycle, so a re-assigned binding's new target could stay
-    // unmarked and be swept while reachable.
-    // Called from the mutator (Collector::write_barrier_env) while an
-    // incremental major is open, so unlike every other visit_environment the
-    // entry it queues has to survive until a LATER slice drains it -- with the
-    // mutator free to pop and release the environment in between. The work list
-    // is not a GC root and cannot be edited from the free path, so the
-    // environment is marked instead: release_env then queues it for the
-    // collector to adjudicate rather than freeing it underneath the marker.
-    void repush_environment(Environment* env) {
-        if (!env) return;
-        env->mark_referenced();
-        env->gc_seen_cycle_ = 0;
-        visit_environment(env);
     }
 
     void visit_weak_map(WeakMap* w) override { if (w) pending_weak_maps_.push_back(w); }
@@ -650,39 +618,8 @@ public:
         // A few at a time, their lines asked for before the first is read: an environment (216 bytes) and a context (168) span several cache lines of memory that was last
         // touched a collection ago, and tracing them one by one waited on each in turn.
         constexpr size_t kBatch = 8;
-        while (!context_work_.empty() || !environment_work_.empty()) {
-            if (!environment_work_.empty()) {
-                Environment* batch[kBatch];
-                size_t n = 0;
-                while (n < kBatch && !environment_work_.empty()) {
-                    Environment* e = environment_work_.back();
-                    environment_work_.pop_back();
-                    __builtin_prefetch(e, 0, 3);
-                    __builtin_prefetch(reinterpret_cast<const char*>(e) + 64, 0, 3);
-                    __builtin_prefetch(reinterpret_cast<const char*>(e) + 128, 0, 3);
-                    __builtin_prefetch(reinterpret_cast<const char*>(e) + 192, 0, 3);
-                    batch[n++] = e;
-                }
-                for (size_t i = 0; i < n; i++) {
-                    Environment* e = batch[i];
-                    // Re-arm Collector::write_barrier_env's mid-major re-trace
-                    // path, same trace-time-clear discipline as trace_cell.
-                    if (Collector::major_in_progress_) {
-                        e->gc_remembered_ = false;
-                    } else if (e->gc_traced_epoch_ == g_major_epoch && !e->gc_remembered_ && !g_trace_all_envs) {
-                        // A minor does not trace an old cell again unless it was written (its mark is sticky); an environment that was traced since the last major and not written
-                        // since is the same: whatever it names was marked then and is marked still.
-                        continue;
-                    }
-                    e->gc_traced_epoch_ = g_major_epoch;
-                    // Checked where the environment is actually read rather than
-                    // at every edge that names it: same catch, once per cycle
-                    // instead of once per reference.
-                    if (env_hunt()) hunt_check(e, "mark");
-                    if (g_prof_cost) { const auto t = std::chrono::steady_clock::now(); e->gc_trace(*this); g_env_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count(); g_env_n++; }
-                    else e->gc_trace(*this);
-                }
-            } else {
+        while (!context_work_.empty()) {
+            {
                 Context* batch[kBatch];
                 size_t n = 0;
                 while (n < kBatch && !context_work_.empty()) {
@@ -708,7 +645,7 @@ public:
     // repopulate it next.
     bool quiescent() const {
         return gray_.empty() && pf_count_ == 0 &&
-               context_work_.empty() && environment_work_.empty();
+               context_work_.empty();
     }
 
     // One bounded unit of work: quiesce contexts/environments (may push new
@@ -716,7 +653,7 @@ public:
     // context/environment work, hence the next caller's re-quiesce). Returns
     // false once truly nothing is left.
     bool step() {
-        if (__builtin_expect(!context_work_.empty() || !environment_work_.empty(), 0)) drain_contexts_and_environments();
+        if (__builtin_expect(!context_work_.empty(), 0)) drain_contexts_and_environments();
         // Marking is memory-bound, not instruction-bound: a live set of a
         // million cells spread over hundreds of megabytes misses to DRAM on
         // nearly every cell, and popping an entry straight off the worklist
@@ -829,7 +766,6 @@ public:
         };
         shed(gray_, kKeepEntries);
         shed(context_work_, kKeepEntries);
-        shed(environment_work_, kKeepEntries);
         shed(pending_weak_maps_, kKeepEntries);
         shed(pending_weak_sets_, kKeepEntries);
         shed(pending_weak_refs_, kKeepEntries);
@@ -846,7 +782,6 @@ public:
         gray_.clear();
         pf_head_ = pf_tail_ = pf_count_ = 0;
         context_work_.clear();
-        environment_work_.clear();
         pending_weak_maps_.clear();
         pending_weak_sets_.clear();
         pending_weak_refs_.clear();
@@ -987,7 +922,6 @@ private:
     Heap::ProbeResult pf_[kPrefetchRing];
     uint32_t pf_head_ = 0, pf_tail_ = 0, pf_count_ = 0;
     std::vector<Context*> context_work_;
-    std::vector<Environment*> environment_work_;
     // Which collection this is. An environment queued during it carries the
     // same number, which is what tells a repeat visit from a first one -- the
     // set that used to answer it cost an insert per environment per cycle,
@@ -1247,10 +1181,6 @@ std::vector<const std::vector<Value>*>& value_vector_roots() {
     return roots;
 }
 
-std::vector<Environment* const*>& environment_roots() {
-    static thread_local std::vector<Environment* const*> roots;
-    return roots;
-}
 
 // The interpreter's side stack of registers for stackless calls (Collector::set_value_stack).
 struct ValueStackRange { Value* base = nullptr; Value* const* top = nullptr; };
@@ -1279,120 +1209,9 @@ std::vector<Value>& remembered_values() {
     return values;
 }
 
-std::vector<Environment*>& remembered_envs() {
-    static thread_local std::vector<Environment*> envs;
-    return envs;
-}
-
-// Popped block envs awaiting free -- see Collector::release_env.
-std::vector<Environment*>& pending_env_frees() {
-    static thread_local std::vector<Environment*> envs;
-    return envs;
-}
-
-// What the queue above holds, in bytes, and how much of it a major may be asked
-// to clear. An environment may only be freed once a completed major mark has
-// looked at it, and majors are paced by what the cell heap has grown: a phase
-// that makes short-lived closures in bulk piles environments up in a queue no
-// cell-based pacing sees (measured: ~75MB of them behind a 56MB live heap, all
-// freed by the next major). So the queue is its own pressure: past a share of
-// the live heap a major is requested.
-//
-// A major asked for this way may find most of the queue still reachable -- a
-// program whose closures live long -- and would then be asked for again on the
-// next safepoint. Each unproductive one doubles the threshold, up to a cap,
-// and a productive one puts it back.
-constexpr size_t kPendingEnvFloor = 16 * 1024 * 1024;
-constexpr size_t kPendingEnvLiveDivisor = 4;
-constexpr uint32_t kPendingEnvBackoffCap = 8;
-thread_local size_t g_pending_env_bytes = 0;
-thread_local uint32_t g_pending_env_backoff = 1;
-thread_local bool g_pending_env_requested = false;
-
-size_t pending_env_trigger(size_t live_bytes) {
-    size_t base = live_bytes / kPendingEnvLiveDivisor;
-    if (base < kPendingEnvFloor) base = kPendingEnvFloor;
-    return base * g_pending_env_backoff;
-}
-
-// A pending environment may only be destroyed on the authority of a COMPLETED
-// MAJOR MARK. Entry into this list is decided by is_escaped() at scope-exit
-// time, which is a static guess about whether anything captured the
-// environment -- and a closure can hold one the guess missed (Function's
-// constructors take closure_environment_ without pinning it). Deleting on that
-// guess alone left live functions pointing at freed memory. Anything the mark
-// reached stays pending; it will be offered again next cycle, and destroyed
-// only once a mark agrees nobody can see it.
-//
-// The remembered set needs no pruning here even though it holds environment
-// pointers: the sole caller empties it on the line above this call, so no
-// entry can outlive the deletes below. Screening the dead against it used to
-// build a hash set of every environment about to be freed, on every cycle,
-// to filter a list that is empty by construction.
-void resolve_pending_env_frees(const MarkVisitor& v) {
-    auto& pending = pending_env_frees();
-    if (pending.empty()) {
-        g_pending_env_requested = false;
-        return;
-    }
-    std::vector<Environment*> still_reachable;
-    const size_t bytes_before = g_pending_env_bytes;
-    size_t bytes_kept = 0;
-    for (Environment* e : pending) {
-        // inner_count_: an environment abandoned rather than popped (see
-        // Environment::inner_count_) is invisible to the mark yet still names
-        // this one as its outer. Freeing on reachability alone would leave it
-        // reading freed memory on the next scope-chain walk or trace.
-        if (v.environment_seen(e) || e->has_inner_environments()) {
-            bytes_kept += e->footprint_bytes();
-            still_reachable.push_back(e);
-        }
-        else if (env_hunt()) hunt_note_free(e);
-        else delete e;
-    }
-    pending = std::move(still_reachable);
-    g_pending_env_bytes = bytes_kept;
-    if (g_pending_env_requested) {
-        g_pending_env_requested = false;
-        const bool productive = (bytes_before - bytes_kept) * 2 >= bytes_before;
-        if (productive) g_pending_env_backoff = 1;
-        else if (g_pending_env_backoff < kPendingEnvBackoffCap) g_pending_env_backoff *= 2;
-    }
-}
-
-
 bool env_flag(const char* name) {
     const char* val = std::getenv(name);
     return val && *val && *val != '0';
-}
-
-// QUANTA_GC_ENV_HUNT=1: leak every environment the fast path judged dead
-// instead of freeing it, and say so if anything reads one afterwards.
-//
-// QUANTA_GC_POISON does this for heap cells, but environments are not cells
-// and never went through it, so the one class of use-after-free this engine
-// has actually shipped -- a live pointer to a freed environment -- was the
-// one it could not see. Freeing early is decided by a predicate over what
-// points at an environment (Environment::provably_unreachable), and a
-// predicate is exactly the kind of thing that is wrong in a case nobody
-// thought of; this turns that from silent corruption into a line of output.
-// A plain flag read at startup, not a function-local static: this is tested
-// on the release path of every scope that ends, where the guard variable a
-// local static needs was itself measurable.
-const bool g_env_hunt = env_flag("QUANTA_GC_ENV_HUNT");
-bool env_hunt() { return g_env_hunt; }
-
-std::unordered_set<const Environment*>& hunted_frees() {
-    static std::unordered_set<const Environment*> set;
-    return set;
-}
-
-void hunt_note_free(const Environment* env) { hunted_frees().insert(env); }
-
-void hunt_check(const Environment* env, const char* who) {
-    if (!hunted_frees().count(env)) return;
-    std::fprintf(stderr, "[env-hunt] %s read environment %p after it was freed\n",
-                 who, static_cast<const void*>(env));
 }
 
 size_t run_sweep(bool minor) {
@@ -1615,7 +1434,6 @@ void run_minor_collection() {
     // Collector::release_env. visit_environment already ignores them.
     for (const Value& val : remembered_values()) v.visit(val);
     remembered_values().clear();
-    for (Environment* e : remembered_envs()) v.visit_environment(e);
     // See FiberRegistry::Record::owner_cell for why these are minor roots.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
         if (rec.owner_cell && !Heap::is_retiring() && !(rec.state && rec.state->abandoned())) v.visit_object(rec.owner_cell);
@@ -1639,8 +1457,6 @@ void run_minor_collection() {
     for (Engine* engine : Engine::all_engines())
         for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
             v.visit_context(s->context());
-    for (Environment* const* env_ptr : environment_roots()) v.visit_environment(*env_ptr);
-    for (EnvironmentRoot* r = EnvironmentRoot::head(); r; r = r->outer()) v.visit_environment(r->environment());
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
@@ -1742,8 +1558,6 @@ void run_minor_collection() {
     // is marked and whatever was not is gone, and either way the edges it
     // recorded have been accounted for by the mark that just finished.
     remembered_values().clear();
-    for (Environment* e : remembered_envs()) if (e) { e->gc_remembered_ = false; e->gc_in_remembered_ = false; }
-    remembered_envs().clear();
     // Deliberately NOT freeing pending envs here: a minor traces from the roots
     // only, so its seen_ set cannot tell a dead environment from one this cycle
     // simply never looked at. The next completed major decides.
@@ -1810,8 +1624,6 @@ void scan_major_roots(MarkVisitor& v) {
     for (Engine* engine : Engine::all_engines())
         for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
             v.revisit_context(s->context());
-    for (Environment* const* env_ptr : environment_roots()) v.visit_environment(*env_ptr);
-    for (EnvironmentRoot* r = EnvironmentRoot::head(); r; r = r->outer()) v.visit_environment(r->environment());
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
@@ -1931,41 +1743,8 @@ void finish_major_cycle(MarkVisitor& v) {
     // is marked and whatever was not is gone, and either way the edges it
     // recorded have been accounted for by the mark that just finished.
     remembered_values().clear();
-    for (Environment* e : remembered_envs()) if (e) { e->gc_remembered_ = false; e->gc_in_remembered_ = false; }
-    remembered_envs().clear();
     auto fm2 = std::chrono::steady_clock::now();
-    resolve_pending_env_frees(v);
     auto fm3 = std::chrono::steady_clock::now();
-
-    // Escaped-Environment survivor prune, mirroring the Context-survivor
-    // loop above -- must run after the remembered-set cleanup and
-    // pending_env_frees() deletion just above (not right after the Context
-    // loop): an escaped survivor Environment can also be sitting in
-    // remembered_envs() this same cycle (its bindings were written to
-    // before it lost its last reference), and freeing it earlier would
-    // leave that loop dereferencing freed memory. No EventLoop-style
-    // force-keep branch is needed here (unlike Context survivors):
-    // generator/async continuations only ever hold a Context*
-    // (Generator.h/Async.h's generator_context_), never a raw Environment*,
-    // so a force-kept Context's own gc_trace() already transitively visits
-    // its lexical_environment_/variable_environment_ before this runs.
-    for (Engine* engine : Engine::all_engines()) {
-        std::vector<Environment*>& env_survivors = engine->mutable_survivor_environments();
-        // In-place erase-remove instead of building a fresh vector every
-        // cycle: the survivor list is dominated by long-lived, still-alive
-        // entries that get re-confirmed (not removed) on most cycles, so
-        // reallocating an N-sized vector every single major cycle (as a
-        // rebuild-into-a-new-vector approach would) is a real, avoidable
-        // cost under high collection frequency (e.g. QUANTA_GC_STRESS).
-        env_survivors.erase(
-            std::remove_if(env_survivors.begin(), env_survivors.end(),
-                [&v](Environment* env) {
-                    if (v.environment_seen(env) || env->has_inner_environments()) return false;
-                    delete env;
-                    return true;
-                }),
-            env_survivors.end());
-    }
 
     auto fm4 = std::chrono::steady_clock::now();
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
@@ -2248,27 +2027,7 @@ void Collector::write_barrier_env_for(Environment* env, const Value& value) {
     }
 }
 
-void Collector::write_barrier_env(Environment* env) {
-    if (env && env->is_cell()) { write_barrier(env); return; }
-    if (barriers_disabled() || !env || env->gc_remembered_) return;
-   // zero means 'never queued', so it is skipped on wrap
-    if (env->gc_seen_cycle_ == 0) return;
-    env->gc_remembered_ = true;
-    // gc_remembered_ can have been cleared at trace time (below) while this
-    // environment's earlier entry is still sitting in the vector. Drop that one
-    // first, so there is never more than one live entry per environment and
-    // gc_remembered_index_ identifies it exactly -- see gc_in_remembered_.
-    if (env->gc_in_remembered_) remembered_envs()[env->gc_remembered_index_] = nullptr;
-    env->gc_in_remembered_ = true;
-    env->gc_remembered_index_ = static_cast<uint32_t>(remembered_envs().size());
-    remembered_envs().push_back(env);
-    // Same insertion-barrier logic as write_barrier above: an environment
-    // already traced by the open major just gained/changed an edge, so it
-    // must be re-traced before the cycle closes. gc_remembered_ is cleared
-    // at trace time while a major is open (see drain_contexts_and_environments),
-    // re-arming this path for later mutations in the same cycle.
-    if (Collector::major_in_progress_) mark_visitor().repush_environment(env);
-}
+void Collector::write_barrier_env(Environment* env) { write_barrier(env); }
 
 void Collector::release_env(Environment* env) {
     if (!env) return;
@@ -2281,44 +2040,8 @@ void Collector::release_env(Environment* env) {
         }
         return;
     }
-    // No pointer to this environment was ever stored anywhere outliving the
-    // scope that made it, so it is unreachable and can go now -- no queue and
-    // no collection. This is the common case: a scope that makes no closures.
-    if (env->provably_unreachable()) {
-        // The remembered set is the one holder that can be edited from here
-        // rather than having to be waited out: its entry lives only until the
-        // next collection, and dropping it costs a single store.
-        if (env->gc_in_remembered_) remembered_envs()[env->gc_remembered_index_] = nullptr;
-        if (env_hunt()) { hunt_note_free(env); return; }
-        delete env;
-        return;
-    }
-    // Otherwise whether it is really dead is a question only a completed major
-    // mark can answer -- see resolve_pending_env_frees, the one place entries
-    // leave this list. Its outer chain needs no marking to survive the wait:
-    // this environment is an inner of the next one out, which is an inner of
-    // the one after that, and inner_count_ already stops any of them going.
-    g_pending_env_bytes += env->footprint_bytes();
-    pending_env_frees().push_back(env);
 }
 
-void Collector::release_env_deferred(Environment* env) {
-    if (!env || env->is_cell()) return;
-    // Always the pending_env_frees() path above, never provably_unreachable()'s
-    // immediate delete -- see Function.cpp's fast_no_closures release loop and
-    // frame_pop_block_scope's call_info branch, the only two callers. Both
-    // release an Environment that a sibling call may have taken as its OWN
-    // outer_env (Function::get_closure_environment() at a fresh call's entry,
-    // or Op::DeclareFunction's capture) without that reference ever
-    // constructing a real Environment(type, outer) edge to bump inner_count_
-    // by -- a Function's closure_environment_/closure_context_ is a direct
-    // pointer, not another Environment naming this one as its outer, so
-    // provably_unreachable()'s inner_count_ term cannot see it. A completed
-    // major mark can: it walks the real object graph (Function::gc_trace ->
-    // closure_environment_), not this one proxy for it.
-    g_pending_env_bytes += env->footprint_bytes();
-    pending_env_frees().push_back(env);
-}
 
 constinit thread_local uint32_t Collector::no_collect_depth_ = 0;
 constinit thread_local bool Collector::full_pending_ = false;
@@ -2418,16 +2141,14 @@ void Collector::safepoint_slow() {
         // set of a few hundred kilobytes does not repay. So the growth that asks for one has a floor.
         static const size_t min_growth = [] { const char* e = std::getenv("QUANTA_GC_MIN_GROWTH_KB"); return (e ? static_cast<size_t>(std::atoi(e)) : size_t(4096)) * 1024; }();
         const size_t growth_needed = std::max(live / 100 * growth_percent, min_growth) * (major_interval() / kMajorIntervalFloor);
-        const bool pending_pressure = g_pending_env_bytes >= pending_env_trigger(live);
-        if (pending_pressure) g_pending_env_requested = true;
-        const bool grown_enough = (live > 0 && Heap::bytes_since_major() >= growth_needed) || pending_pressure;
+        const bool grown_enough = (live > 0 && Heap::bytes_since_major() >= growth_needed);
         if (!barriers_disabled() && !grown_enough && ++cycle_count % major_interval() != 0) {
             run_minor_collection();
         } else {
             static const bool why = env_flag("QUANTA_GC_PROFILE");
             if (why) {
                 std::fprintf(stderr, "[gc-prof] major because %s: since_major=%zuKB live=%zuKB needed=%zuKB interval=%zu\n",
-                             grown_enough ? (pending_pressure ? "env-pressure" : "growth") : "interval",
+                             grown_enough ? "growth" : "interval",
                              Heap::bytes_since_major() / 1024, live / 1024, growth_needed / 1024, static_cast<size_t>(major_interval()));
             }
             run_major_slice(next_slice_budget());
@@ -2476,37 +2197,6 @@ void Collector::purge_stack_roots(const void* lo, const void* hi) {
     vectors.erase(std::remove_if(vectors.begin(), vectors.end(), inside), vectors.end());
     auto& arrays = value_array_roots();
     arrays.erase(std::remove_if(arrays.begin(), arrays.end(), inside), arrays.end());
-    auto& envs = environment_roots();
-    envs.erase(std::remove_if(envs.begin(), envs.end(), inside), envs.end());
-    EnvironmentRoot::purge(lo, hi);
-}
-
-void EnvironmentRoot::purge(const void* lo, const void* hi) {
-    EnvironmentRoot** link = &head_;
-    while (*link) {
-        EnvironmentRoot* n = *link;
-        if (static_cast<const void*>(n) >= lo && static_cast<const void*>(n) < hi) *link = n->prev_;
-        else link = &n->prev_;
-    }
-}
-
-void EnvironmentRoot::unlink_slow() {
-    for (EnvironmentRoot* n = head_; n; n = n->prev_) {
-        if (n->prev_ == this) { n->prev_ = prev_; return; }
-    }
-}
-
-void Collector::push_environment_root(Environment* const* env_ptr) {
-    environment_roots().push_back(env_ptr);
-}
-
-void Collector::pop_environment_root(Environment* const* env_ptr) {
-    auto& roots = environment_roots();
-    // Almost always LIFO (a call returns before its caller); fast-path the back.
-    if (!roots.empty() && roots.back() == env_ptr) { roots.pop_back(); return; }
-    for (size_t i = roots.size(); i-- > 0;) {
-        if (roots[i] == env_ptr) { roots.erase(roots.begin() + i); return; }
-    }
 }
 
 void Collector::push_value_array(const FixedArray<Value>* arr) {

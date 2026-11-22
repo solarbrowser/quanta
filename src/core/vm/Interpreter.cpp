@@ -2921,7 +2921,7 @@ static bool arrow_env_ok(Function* fn) {
     const auto& plan = chunk.env->env_seed_plan;
     Environment* call_env = Environment::create(Environment::Type::Function, outer_env, chunk.env->env_slot_total, 4);
     if (UNLIKELY(!call_env->fresh_with_room(plan.size()))) {
-        if (!call_env->is_cell()) delete call_env;
+        Collector::release_env(call_env);
         return false;
     }
     {

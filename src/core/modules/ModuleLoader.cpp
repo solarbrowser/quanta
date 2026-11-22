@@ -1243,9 +1243,9 @@ bool ModuleLoader::prepare_module_file(Module* module, const std::string& filena
         if (realm) {
             module_context = std::make_unique<Context>(engine_, realm, Context::Type::Module);
             Object* module_scope = ObjectFactory::create_object().release();
-            auto module_env = std::make_unique<Environment>(module_scope, realm->get_variable_environment());
-            module_context->set_lexical_environment(module_env.get());
-            module_context->set_variable_environment(module_env.release());
+            Environment* module_env = Environment::create(module_scope, realm->get_variable_environment(), 13);
+            module_context->set_lexical_environment(module_env);
+            module_context->set_variable_environment(module_env);
             module_context->set_global_object(realm->get_global_object());
             // A module's top-level `this` is undefined, not the global. The
             // global object is still the realm's, so a sloppy function called
