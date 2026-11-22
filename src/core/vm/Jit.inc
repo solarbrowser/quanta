@@ -3120,7 +3120,7 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
 #include "Opt.inc"
 
 // The interpreter's offer at a hot back edge (see osr_try in Interpreter.cpp).
-bool osr(Frame& f, uint32_t target, const Value& acc);
+int osr(Frame& f, uint32_t target, const Value& acc);
 
 // Every 1024 entries: has this function earned its keep? A baseline JIT saves
 // dispatch, and each stub miss or step costs more than the dispatch it saved, so
@@ -4358,27 +4358,36 @@ void opt_note_call(const BytecodeChunk& chunk, Frame&) { chunk.opt_entry = 2; }
 int opt_fn_enter(Frame&) { return 0; }
 #endif
 
-bool osr(Frame& f, uint32_t target, const Value& acc) {
+int osr(Frame& f, uint32_t target, const Value& acc) {
     // One offer per activation unless it is taken: if compiling is refused, asking again
     // at every back edge would cost more than the loop saves.
+    // Returns 0 declined, 1 the generated code finished the activation (its value in Frame::acc), 2 the generated code left the rest to the interpreter (Frame::pc and
+    // Frame::acc say where): the caller carries on in its own dispatch loop, so a loop that keeps leaving generated code does not nest one interpreter loop in another
+    // at every iteration.
     const BytecodeChunk& chunk = *f.chunk;
     if (__builtin_expect(opt::config().dump, 0) && f.base == nullptr) opt::dump_chunk(chunk, target);
-    if (chunk.jit_state == 2) return false;
+    if (chunk.jit_state == 2) return 0;
     if (chunk.jit_state != 1) {
         init_once();
-        if (!g_cfg.enabled) { chunk.jit_state = 2; return false; }
+        if (!g_cfg.enabled) { chunk.jit_state = 2; return 0; }
         compile_chunk(chunk);
-        if (chunk.jit_state != 1) return false;
+        if (chunk.jit_state != 1) return 0;
     }
     JitCode* jc = chunk.jit.get();
-    if (jc->owner_thread != &g_thread_marker || target >= jc->code_size || jc->native_off[target] == 0) return false;
+    if (jc->owner_thread != &g_thread_marker || target >= jc->code_size || jc->native_off[target] == 0) return 0;
+    if (jc->disabled || !jc->entry || (((++jc->entries) & 1023) == 0 && tally(jc))) return 0;
     f.pc = target;
     f.acc = acc;
     // From here the generated code drives this activation, and its steps must not start
     // stackless calls (see "Stackless calls" in Interpreter.cpp).
     f.inline_ok = false;
-    f.acc = run(f, jc);
-    return true;
+    const uint64_t status = jc->entry(&f, jc, jc->rt.base + jc->native_off[target]);
+    if (status == kExitFinished) return 1;
+    if (status == kExitRethrow) {
+        rethrow_pending_exception();
+        return 1;
+    }
+    return 2;
 }
 
 }  // namespace jit
@@ -4395,7 +4404,10 @@ int osr_try(Frame& f, uint32_t target_pc, const Value& acc) {
         if (r == 3) { f.osr_budget = g_osr_budget_init; return 3; }
     }
 #endif
-    if (jit::osr(f, target_pc, acc)) return 1;
+    if (const int r = jit::osr(f, target_pc, acc)) {
+        if (r == 2) f.osr_budget = g_osr_budget_init;       // (the interpreter goes on from here; the loop is offered again after a while)
+        return r;
+    }
     // Declined: the offer is made once per activation. Leaving the budget below
     // zero would make every later back edge of this loop pay for another call
     // that gets the same answer. A stackless frame outlives its activation (the slot is reused by
