@@ -1036,6 +1036,9 @@ public:
         return false;
     }
 
+    // The declarative counterpart for an assignment (StaEnv): false for anything the full handler has to decide (an object environment on the way, a hole, a constant, a name found nowhere).
+    bool try_write_declarative_chain(const std::string* key, const Value& value);
+
     int env_read_step_interned(const std::string* key, Value& out, Context* ctx) const {
         if (type_ != Type::Object) {
             const BindingSlot* s = slots_.find_interned(key);

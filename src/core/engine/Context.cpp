@@ -70,6 +70,19 @@ ContextSurvivorGuard::~ContextSurvivorGuard() {
     if (eng) eng->add_survivor_context(ptr.release());
 }
 
+bool Environment::try_write_declarative_chain(const std::string* key, const Value& value) {
+    for (Environment* e = this; e; e = e->outer_environment_) {
+        if (e->type_ == Type::Object) return false;
+        BindingSlot* s = e->slots_.find_interned(key);
+        if (!s) continue;
+        if (!s->initialized || !s->mutable_flag) return false;
+        Collector::write_barrier_env_for(e, value);
+        s->value = value;
+        return true;
+    }
+    return false;
+}
+
 void Environment::gc_trace(Visitor& v) const {
     slots_.for_each([&v](const std::string&, const BindingSlot& slot) { v.visit(slot.value); });
     v.visit_object(binding_object_);

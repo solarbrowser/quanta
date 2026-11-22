@@ -118,6 +118,9 @@ enum class K : uint8_t {
     EnvOuter,             // Tagged a (a block environment's bits) -> Tagged: the environment it was opened in (ExitLoopEnv)
     IterElem,             // Ptr a (the array a for-of runs over), F64 b (the index): the element, or the done mark when the index is at the end; deopt when the array is not dense or the index is no index
     IsIterDone,           // Tagged a (IterElem's result) -> Bool: the loop has run out
+    LoadEnvName,          // [Tagged a: an environment's bits, else the frame's current one] -> Tagged: the binding named imm (an interned key) found by walking out through declarative environments; deopt when it is not plainly there
+    InitEnvName,          // Tagged a (the value) [, Tagged b: an environment's bits, else the frame's]: initializes the binding named imm in that environment
+    StoreEnvName,         // Tagged a (the value) [, Tagged b: an environment's bits, else the frame's]: assigns the binding named imm found by walking out; deopt (before doing anything) unless it is plainly assignable
     CheckIterArray,       // Ptr a: deopt unless it is a dense array that for-of walks by index (the array iteration protector is intact)
     FnEnv,                // Tagged a (a function) -> Tagged: the bits of the environment it captured; deopt when it captured none
 };
@@ -265,7 +268,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "FnEnv", "IterElem", "IsIterDone", "CheckIterArray"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "FnEnv", "IterElem", "IsIterDone", "CheckIterArray", "LoadEnvName", "InitEnvName", "StoreEnvName"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -279,7 +282,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
     case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem: case K::CheckDenseSt:
-    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain: case K::StoreTrans: case K::IterElem: case K::CheckIterArray:
+    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain: case K::StoreTrans: case K::IterElem: case K::CheckIterArray: case K::LoadEnvName: case K::InitEnvName: case K::StoreEnvName:
         return false;
     default: return true;
     }
@@ -1341,8 +1344,35 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         guarded(K::StoreEnv, Rep::None, val, cf_ != 0 ? tagged(value(static_cast<uint32_t>(eo ? F().cur_env_var : F().fn_var))) : -1, slot | (hops << 8) | (eo ? 0x10000u : 0u), reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
         return true;
     }
+    case Op::LdaEnv: case Op::LdaEnvStar: {
+        // A binding looked up by name in the environment the code is in now (or, in an inlined callee, the one the unit holds).
+        const bool eo = cf_ != 0 && F().cur_env_var >= 0;
+        if (cf_ != 0 && !eo) return false;
+        const bool fused = op == Op::LdaEnvStar;
+        const uint32_t nidx = u16(pc + 1), dst = fused ? reg(pc + 3) : 0;
+        if ((fused && !ok_reg(dst)) || nidx >= F().chunk->names.size()) return false;
+        const int32_t v = guarded(K::LoadEnvName, Rep::Tagged, eo ? tagged(value(static_cast<uint32_t>(F().cur_env_var))) : -1, -1, 0, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        set(acc(), v);
+        if (fused) set(dst, v);
+        return true;
+    }
+    case Op::StaEnv: {
+        const bool eo = cf_ != 0 && F().cur_env_var >= 0;
+        if (cf_ != 0 && !eo) return false;
+        const uint32_t nidx = u16(pc + 1);
+        if (nidx >= F().chunk->names.size()) return false;
+        guarded(K::StoreEnvName, Rep::None, tagged(value(acc())), eo ? tagged(value(static_cast<uint32_t>(F().cur_env_var))) : -1, 0, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+        return true;
+    }
     case Op::StaEnvInit: case Op::StaEnvSlotInit: {
         // The first assignment of a binding of an inlined environment-mode callee's own environment: it is found in the chunk's seed plan, and stored initialized.
+        if (cf_ == 0 && op == Op::StaEnvInit) {
+            // (the root's own current environment, whichever it is: by name, since a block scope may be open)
+            const uint32_t nidx0 = u16(pc + 1);
+            if (nidx0 >= F().chunk->names.size()) return false;
+            guarded(K::InitEnvName, Rep::None, tagged(value(acc())), -1, 0, reinterpret_cast<uint64_t>(F().chunk->names[nidx0]));
+            return true;
+        }
         if (cf_ == 0 || F().cur_env_var < 0 || !F().chunk->env) { if (config().log) std::fprintf(stderr, "[opt] StaEnvInit: cf %d env_var %d\n", cf_, F().env_var); return false; }
         const uint32_t nidx = op == Op::StaEnvInit ? u16(pc + 1) : u16(pc + 2);
         if (nidx >= F().chunk->names.size()) return false;
@@ -5052,6 +5082,24 @@ inline QUANTA_JIT_ABI uint64_t helper_iter_elem(uint64_t arr_bits, uint64_t idx_
     if (i >= a->element_count()) return kIterDone;
     return std::bit_cast<uint64_t>(a->get_element(i));
 }
+// The by-name environment operations (LdaEnv, StaEnvInit, StaEnv) for a unit: `env_bits` is the environment to start from, or 0 for the frame's own current one.
+inline QUANTA_JIT_ABI uint64_t helper_env_load_by(VM::Frame* f, uint64_t env_bits, const std::string* key, uint64_t* out) noexcept {
+    const Environment* e = env_bits ? reinterpret_cast<Environment*>(env_bits) : frame_lexical_env(*f);
+    Value v;
+    if (!e->try_read_declarative_chain(key, v)) return 0;
+    std::memcpy(out, &v, 8);
+    return 1;
+}
+inline QUANTA_JIT_ABI uint64_t helper_env_init_by(VM::Frame* f, uint64_t env_bits, const std::string* key, uint64_t value_bits) noexcept {
+    Environment* e = env_bits ? reinterpret_cast<Environment*>(env_bits) : frame_lexical_env(*f);
+    e->initialize_binding_interned(key, std::bit_cast<Value>(value_bits));
+    return 1;
+}
+inline QUANTA_JIT_ABI uint64_t helper_env_store_by(VM::Frame* f, uint64_t env_bits, const std::string* key, uint64_t value_bits) noexcept {
+    Environment* e = env_bits ? reinterpret_cast<Environment*>(env_bits) : frame_lexical_env(*f);
+    if (*key == "this") return 0;
+    return e->try_write_declarative_chain(key, std::bit_cast<Value>(value_bits)) ? 1 : 0;
+}
 inline QUANTA_JIT_ABI uint64_t helper_iter_array_ok(uint64_t arr_bits) noexcept {
     Object* a = reinterpret_cast<Object*>(arr_bits);
     return (Object::array_iterator_protector_intact() && a->get_type() == Object::ObjectType::Array && a->has_only_dense_elements()) ? 1 : 0;
@@ -6764,6 +6812,43 @@ inline void Emitter::emit_node(int32_t id) {
         a_.jcc(CC_E, dl);
         return;
     }
+    case K::LoadEnvName: case K::InitEnvName: case K::StoreEnvName: {
+        // One helper call, the frame and (when the node names one) the environment as the helper's first arguments. A failure leaves through the deopt path before anything was done.
+        const bool load = n.op == K::LoadEnvName;
+        const int32_t env_node = load ? n.a : n.b;
+        Label& dl = deopt_label(n.state);
+        const Reg ev = env_node >= 0 ? use_g(env_node, RAX) : RAX;
+        const Reg vv = load ? RAX : use_g(n.a, RCX);
+        a_.push(ev);
+        a_.push(vv);
+        int32_t bytes;
+        save_live(bytes, &cur_ls_);
+        a_.sub_imm(RSP, 16);
+        a_.mov(abi::A0, RBX);
+        if (env_node >= 0) a_.mov_load(abi::A1, mem(RSP, 16 + bytes + kPushBytes)); else a_.mov_imm32(abi::A1, 0);
+        a_.mov_imm64(abi::A2, n.imm);
+        if (load) a_.mov(abi::A3, RSP); else a_.mov_load(abi::A3, mem(RSP, 16 + bytes));
+        call_c(reinterpret_cast<const void*>(load ? reinterpret_cast<const void*>(&helper_env_load_by) : n.op == K::InitEnvName ? reinterpret_cast<const void*>(&helper_env_init_by) : reinterpret_cast<const void*>(&helper_env_store_by)));
+        a_.mov_load(R11, mem(RSP, 0));
+        a_.add_imm(RSP, 16);
+        Label& ok = new_label();
+        a_.test32(RAX, RAX);
+        a_.jcc(CC_NE, ok);
+        restore_live(bytes, &cur_ls_);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        a_.jmp(dl);
+        a_.bind(ok);
+        restore_live(bytes, &cur_ls_);
+        a_.pop(RCX);
+        a_.pop(RCX);
+        if (load) {
+            const Reg d = def_g(id, RDX);
+            a_.mov(d, R11);
+            commit_g(id, d);
+        }
+        return;
+    }
     case K::IsIterDone: {
         const Reg a = use_g(n.a, RAX);
         const Reg d = def_g(id, RDX);
@@ -8013,7 +8098,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
             if (g_.n[id].dead) continue;
             if (id == fused_cmp_[blk]) continue;
             switch (g_.n[id].op) {
-            case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject: case K::NewEnv: case K::NewClosure: case K::NewBlockEnv: case K::AdvanceEnv: case K::IterElem: case K::CheckIterArray:
+            case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject: case K::NewEnv: case K::NewClosure: case K::NewBlockEnv: case K::AdvanceEnv: case K::IterElem: case K::CheckIterArray: case K::LoadEnvName: case K::InitEnvName: case K::StoreEnvName:
                 cur_ls_ = live_across(id);
                 // (A native entry does not keep the allocator's registers: the call site keeps the ones that live across it.)
                 cur_ls_.callee_saved = g_.n[id].op == K::CallFn;
