@@ -10284,7 +10284,19 @@ QUANTA_HANDLER Value h_gen_PushWithEnv(HANDLER_PARAMS) {
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
-    perform_with_push(ctx, acc);
+    if (f.call_info) {
+        // A call that shares its caller's context keeps its own environment on the frame: the with scope is made on top of that one and stays on the frame, and the
+        // context's field (the caller's) is put back untouched. (It was pushed on the caller's: a closure made in the `with` by the second call of a function did not see
+        // the with object, and the caller's scope chain had an extra scope in it.)
+        Environment* saved_lex = ctx.get_lexical_environment();
+        EnvironmentRoot saved_root(&saved_lex);
+        ctx.set_lexical_environment(frame_lexical_env(f));
+        perform_with_push(ctx, acc);
+        f.current_lexical_env = ctx.get_lexical_environment();
+        ctx.set_lexical_environment(saved_lex);
+    } else {
+        perform_with_push(ctx, acc);
+    }
     CHECK_EXC_TAIL();
     DISPATCH();
 }
