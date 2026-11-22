@@ -2354,6 +2354,9 @@ struct Frame {
     bool rare_pop = false;
     // The unit of this frame was entered through its native entry (Opt.inc: emit_native_entry): its exits hand the value to a native caller.
     bool native_entered = false;
+    // A stackless frame whose strictness is not the caller's (a class method called from sloppy code, or the reverse): the context's flag was switched
+    // for it, and popping the frame puts the caller's back (rare_pop is set with it).
+    bool strict_swap = false;
 };
 
 // The permanent form of the diagnostic's frame_lex_env_diag(f): falls back
@@ -2735,6 +2738,10 @@ void inline_construct_restore(Frame& f) {
 [[gnu::noinline]] void inline_release_rare(Frame& f) {
     if (f.construct_call) inline_construct_restore(f);
     if (f.env_call) inline_env_release(f);
+    if (f.strict_swap) {
+        f.ctx->set_strict_mode(reinterpret_cast<InlineSlot*>(&f)->env.saved_strict);
+        f.strict_swap = false;
+    }
     f.rare_pop = false;
 }
 
@@ -3003,12 +3010,15 @@ template <bool NoteCall = true>
     }
     // A call that changes the strictness, needs a boxed `this`, or runs in another realm is the
     // general path's. (this_needs_super: an arrow's super lookup, which the callee would not see.)
-    if (UNLIKELY(ctx.this_needs_super() || ctx.is_strict_mode() != ((verdict & kInlineStrict) != 0) ||
+    if (UNLIKELY(ctx.this_needs_super() ||
                  (!arrow && (verdict & (kInlineWantsThis | kInlineStrict)) == kInlineWantsThis && !this_value.is_object() &&
                   !this_value.is_function()) ||
                  exe.owner_realm() != g_current_realm)) {
         return false;
     }
+    // A callee of the other strictness runs with the context's flag switched, and puts it back when it is popped.
+    const bool callee_strict = (verdict & kInlineStrict) != 0;
+    const bool strict_swap = UNLIKELY(ctx.is_strict_mode() != callee_strict);
     InlineArena& arena = g_arena;
     if (UNLIKELY(!arena.values)) {
         if (!inline_arena_init()) return false;
@@ -3073,6 +3083,12 @@ template <bool NoteCall = true>
     if (UNLIKELY(offer_loops)) {
         if (!chunk.opt_loops) callee->osr_budget = 1;
         if (NoteCall && chunk.opt_entry != 2) opt_note_call(chunk, *callee);
+    }
+    if (UNLIKELY(strict_swap)) {
+        reinterpret_cast<InlineSlot*>(callee)->env.saved_strict = ctx.is_strict_mode();
+        ctx.set_strict_mode(callee_strict);
+        callee->strict_swap = true;
+        callee->rare_pop = true;
     }
     base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
@@ -3199,6 +3215,10 @@ QUANTA_HANDLER Value h_ReturnInline(HANDLER_PARAMS);
         inline_construct_restore(f);
     }
     if (f.env_call) inline_env_release(f);
+    if (f.strict_swap) {
+        f.ctx->set_strict_mode(reinterpret_cast<InlineSlot*>(&f)->env.saved_strict);
+        f.strict_swap = false;
+    }
     f.rare_pop = false;
     [[clang::musttail]] return h_ReturnInline(f, pc, acc, regs, code);
 }

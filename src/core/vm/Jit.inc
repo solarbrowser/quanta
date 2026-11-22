@@ -3982,6 +3982,7 @@ QUANTA_JIT_ABI int32_t bl_call_fast(Frame* f, uint32_t pc, uint32_t kind, BlSite
     cf->construct_call = false;
     cf->rare_pop = false;
     cf->native_entered = false;
+    cf->strict_swap = false;
     base->active = cf;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);
 

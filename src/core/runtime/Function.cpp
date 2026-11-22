@@ -667,7 +667,9 @@ Value Function::call_gated_general(Context& ctx, std::span<const Value> args, Va
     // overwhelming majority of fast-gate traffic) must not pay a
     // write it doesn't need; only an actual arrow does.
     if (is_arrow_) ctx.set_arrow_function_context(true);
-    if (is_strict_ || executable_->fast_strict) ctx.set_strict_mode(true);
+    // The callee's own strictness, either way: a sloppy function called from strict code ran with the caller's flag and so got an undefined `this`
+    // where OrdinaryCallBindThis gives it the global object. (The caller's is put back when the call returns.)
+    if (const bool callee_strict = is_strict_ || executable_->fast_strict; callee_strict != ctx.is_strict_mode()) ctx.set_strict_mode(callee_strict);
     // is_in_constructor_call_/new_target_ need no copy here any more:
     // ctx IS the object Function::construct() already set them on
     // before this call was ever reached (or left alone for a plain
