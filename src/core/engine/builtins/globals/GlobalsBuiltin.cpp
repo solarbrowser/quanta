@@ -842,8 +842,8 @@ void register_global_builtins(Context& ctx) {
                     eval_ctx.set_strict_mode(true);
                     // The eval env outlives this block via the survivor context -- pin its outer chain.
                     if (ctx.get_lexical_environment()) ctx.get_lexical_environment()->mark_escaped();
-                    auto eval_env = new Environment(
-                        Environment::Type::Declarative, ctx.get_lexical_environment());
+                    auto eval_env = Environment::create(
+                        Environment::Type::Declarative, ctx.get_lexical_environment(), 0, 6);
                     eval_ctx.set_lexical_environment(eval_env);
                     eval_ctx.set_variable_environment(eval_env);
                     eval_ctx.set_owned_env(eval_env);
@@ -1021,8 +1021,8 @@ void register_global_builtins(Context& ctx) {
                     // Spec 18.2.1 step 9a: eval's lexEnv is a NEW declarative env.
                     // It outlives this block via the survivor context -- pin its outer chain.
                     if (outer_env) outer_env->mark_escaped();
-                    auto* eval_lex_env = new Environment(
-                        Environment::Type::Declarative, outer_env);
+                    auto* eval_lex_env = Environment::create(
+                        Environment::Type::Declarative, outer_env, 0, 7);
 
                     for (const auto& lname : collect_lex_names(program.get())) {
                         eval_lex_env->create_uninitialized_binding(lname);

@@ -54,7 +54,7 @@ std::vector<Heap*>& all_heaps_for_stats() {
 
 void dump_all_heap_stats() {
 
-    static const char* kind_names[kNumCellKinds] = {"Object", "String", "Symbol", "BigInt", "Flat"};
+    static const char* kind_names[kNumCellKinds] = {"Object", "String", "Symbol", "BigInt", "Flat", "Env"};
     std::lock_guard<std::mutex> lock(all_heaps_mutex());
     int i = 0;
     for (Heap* heap : all_heaps_for_stats()) {
@@ -245,7 +245,9 @@ bool Heap::survives_sweep(const void* cell) {
 
 void* Heap::allocate_in_lane(size_t size, CellKind kind, HeapSegment segment, bool pure) {
     if (size == 0) size = 1;
-    account_bytes(size);
+    // An environment is a scope's worth of bindings that nearly always dies young, and a minor frees it for the price of a bit in a bitmap: charged in full it would make collections come
+    // several times as often as for the same program with the scopes left to their owners.
+    account_bytes(kind == CellKind::Environment ? (size + 3) / 4 : size);
     size_t cls = size_class_index(size);
     if (cls == kNumSizeClasses) return allocate_large(size, kind);
 
@@ -760,7 +762,7 @@ void Heap::reset_dirty_blocks() {
 }
 
 void Heap::print_block_profile() const {
-    static const char* const kKindNames[] = {"Object", "String", "Symbol", "BigInt", "FlatString"};
+    static const char* const kKindNames[] = {"Object", "String", "Symbol", "BigInt", "FlatString", "Environment"};
     size_t total_blocks = 0, total_slots = 0, total_live = 0, slack_bytes = 0, live_bytes = 0, free_bytes = 0, empty_blocks = 0, pure_blocks = 0;
     struct Row { size_t blocks = 0, slots = 0, live = 0; };
     Row by_class[kNumSizeClasses];

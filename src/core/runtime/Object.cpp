@@ -768,6 +768,8 @@ void Function::trace_default(Visitor& v) {
     // individually re-affirm reachability).
     if (executable_) executable_->trace_chunks_unconditional(v);
     if (NonNativeInstanceData* d = instance_data()) {
+        // A cached name resolution points into the environment it was found in, and keeps it as long as the cache lives.
+        for (const auto& e : d->feedback.lookup_cache) v.visit_environment(e.env);
         if (d->class_slots) {
             v.visit_object(d->class_slots->home_object);
             v.visit_object(d->class_slots->super_ctor);

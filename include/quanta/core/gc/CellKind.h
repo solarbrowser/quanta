@@ -25,6 +25,8 @@ enum class CellKind : uint8_t {
     // blocks) so that marking can settle it from the block header alone: no worklist entry,
     // no read of the cell, no trace. Links (ropes, slices) stay String.
     FlatString,
+    // An Environment: a scope's bindings. Traced by the marker like an object (a cell has an outer link and values), but not an Object.
+    Environment,
     kCount
 };
 

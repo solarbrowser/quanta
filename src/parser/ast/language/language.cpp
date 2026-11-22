@@ -595,8 +595,8 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
     // The Environment must be fresh per instantiation -- sharing it would let
     // two closures from one literal see each other's self-reference.
     if (tpl.needs_self_binding) {
-        Environment* func_env = new Environment(Environment::Type::Declarative,
-                                                ctx.get_lexical_environment());
+        Environment* func_env = Environment::create(Environment::Type::Declarative,
+                                                ctx.get_lexical_environment(), 0, 5);
         func_env->create_binding(tpl.name, Value(function.get()), false, false, false);
         function->set_closure_environment(func_env);
     }

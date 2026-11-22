@@ -547,7 +547,7 @@ void Engine::add_survivor_context(Context* ctx) {
 }
 
 void Engine::add_survivor_environment(Environment* env) {
-    if (!env) return;
+    if (!env || env->is_cell()) return;
     env->mark_referenced();
     survivor_environments_.push_back(env);
     Heap::note_extra_bytes(env->footprint_bytes());

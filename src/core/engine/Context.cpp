@@ -170,6 +170,41 @@ void* Environment::operator new(size_t size) {
     return ::operator new(size);
 }
 
+bool Environment::cells_enabled_ = std::getenv("QUANTA_ENV_CELLS") != nullptr;
+
+void Environment::SlotMap::note_owner_impure(const void* map) { Heap::note_impure(map); }
+
+void Environment::SlotMap::ensure_overflow() {
+    if (!overflow) {
+        overflow = std::make_unique<OverflowMap>();
+        note_owner_impure(this);
+    }
+}
+
+uint32_t Environment::cell_off_mask_ = std::getenv("QUANTA_ENV_CELLS_OFF") ? static_cast<uint32_t>(std::strtoul(std::getenv("QUANTA_ENV_CELLS_OFF"), nullptr, 0)) : 0;
+
+Environment* Environment::create(Type type, Environment* outer, size_t total_slots, int site) {
+    if (!cells_enabled_ || ((cell_off_mask_ >> site) & 1)) {
+        Environment* e = new Environment(type, outer);
+        if (total_slots) e->reserve_slots(total_slots);
+        return e;
+    }
+    const size_t extra = (total_slots > SlotMap::kInlineCapacity && total_slots <= SlotMap::kMaxReservedSlots) ? total_slots - SlotMap::kInlineCapacity : 0;
+    void* mem = Heap::active().allocate_pure(sizeof(Environment) + extra * sizeof(SlotMap::InlineEntry), CellKind::Environment);
+    Environment* e = new (mem) Environment(type, outer);
+    e->is_cell_ = true;
+    if (extra) e->slots_.adopt_trailing(reinterpret_cast<SlotMap::InlineEntry*>(e + 1), extra);
+    return e;
+}
+
+Environment* Environment::create(Object* binding_object, Environment* outer, int site) {
+    if (!cells_enabled_ || ((cell_off_mask_ >> site) & 1)) return new Environment(binding_object, outer);
+    void* mem = Heap::active().allocate_pure(sizeof(Environment), CellKind::Environment);
+    Environment* e = new (mem) Environment(binding_object, outer);
+    e->is_cell_ = true;
+    return e;
+}
+
 void Environment::operator delete(void* ptr) {
     if (!ptr) return;
     if (environment_poison()) {

@@ -175,6 +175,7 @@ public:
     void visit_bigint(BigInt* b) override { leaf(b, CellKind::BigInt); }
     void visit_context(Context* ctx) override { if (ctx) contexts.push_back(ctx); }
     void visit_environment(Environment* env) override { if (env) environments.push_back(env); }
+    [[gnu::always_inline]] void edge_environment(Environment* env) { if (env) environments.push_back(env); }
     void visit_weak_map(WeakMap* w) override { if (w) weak_maps.push_back(w); }
     void visit_weak_set(WeakSet* w) override { if (w) weak_sets.push_back(w); }
     void visit_weak_ref(WeakRef* w) override { if (w) weak_refs.push_back(w); }
@@ -230,6 +231,8 @@ public:
             // A host object's own Visit() only reads its members and marks what they name (that is its contract), so a helper runs it like any other trace.
             else if (o->get_type() == Object::ObjectType::Custom && static_cast<CustomObjectBase*>(o)->get_custom_kind() == CustomObjectBase::CustomKind::Host) static_cast<DOMObject*>(o)->trace(*this);
             else { deferred.push_back(p); deferred_by_type[o->get_type() == Object::ObjectType::Custom ? 32 + (static_cast<size_t>(static_cast<CustomObjectBase*>(o)->get_custom_kind()) & 15) : (static_cast<size_t>(o->get_type()) & 31)]++; }
+        } else if (p.kind == CellKind::Environment) {
+            static_cast<Environment*>(p.cell)->trace_fast(*this);
         } else {
             static_cast<String*>(p.cell)->gc_trace(*this);
         }
@@ -521,7 +524,7 @@ public:
     // Remembered-set entry: already marked in a previous cycle, but its
     // fields changed since -- re-trace without re-marking.
     void push_remembered(const Heap::ProbeResult& p) {
-        if (p.kind == CellKind::Object || p.kind == CellKind::String) {
+        if (p.kind == CellKind::Object || p.kind == CellKind::String || p.kind == CellKind::Environment) {
             gray_.push_back(p);
         }
     }
@@ -539,6 +542,7 @@ public:
         marked_cells++;
         gray_.push_back(r);
     }
+    [[gnu::always_inline]] void edge_environment(Environment* env) { visit_environment(env); }
     [[gnu::always_inline]] void edge_string(String* s) {
         Heap::ProbeResult r = Heap::mark_string_edge_fast(s);
         if (!r.cell) return;
@@ -569,6 +573,7 @@ public:
         }
     }
     void visit_environment(Environment* env) override {
+        if (env && env->is_cell()) { mark_edge(env, CellKind::Environment); return; }
         if (env && env->gc_seen_cycle_ != cycle_) {
             env->gc_seen_cycle_ = cycle_;
             environment_work_.push_back(env);
@@ -946,7 +951,7 @@ private:
         Heap::ProbeResult r = Heap::mark_exact_fast(p, kind);
         if (!r.cell) return;
         marked_cells++;
-        if (r.kind == CellKind::Object || r.kind == CellKind::String) {
+        if (r.kind == CellKind::Object || r.kind == CellKind::String || r.kind == CellKind::Environment) {
             gray_.push_back(r);
         }
     }
@@ -956,7 +961,7 @@ private:
         Heap::set_mark(p);
         marked_cells++;
         // Symbols and BigInts are leaves; their marking is complete here.
-        if (p.kind == CellKind::Object || p.kind == CellKind::String) {
+        if (p.kind == CellKind::Object || p.kind == CellKind::String || p.kind == CellKind::Environment) {
             gray_.push_back(p);
         }
     }
@@ -969,6 +974,8 @@ private:
             Object* o = static_cast<Object*>(p.cell);
             if (__builtin_expect(o->traces_by_default(), 1)) o->trace_fast(*this);
             else o->trace(*this);
+        } else if (p.kind == CellKind::Environment) {
+            static_cast<Environment*>(p.cell)->trace_fast(*this);
         } else {
             static_cast<String*>(p.cell)->gc_trace(*this);
         }
@@ -1017,7 +1024,7 @@ public:
     // Contexts/environments are not cells; their contents were walked during
     // marking, so the invariant check stops at cell edges.
     void visit_context(Context*) override {}
-    void visit_environment(Environment*) override {}
+    void visit_environment(Environment* env) override { if (env && env->is_cell()) check_target(env); }
 };
 
 // Conservative stack scanning intentionally reads past individual local
@@ -1248,6 +1255,8 @@ std::vector<Environment* const*>& environment_roots() {
 // The interpreter's side stack of registers for stackless calls (Collector::set_value_stack).
 struct ValueStackRange { Value* base = nullptr; Value* const* top = nullptr; };
 constinit thread_local ValueStackRange g_value_stack;
+constinit thread_local Collector::FrameEnvScanner g_frame_env_scanner = nullptr;
+static Collector::FrameEnvScanner g_frame_env_scanner_ptr() { return g_frame_env_scanner; }
 
 std::vector<const FixedArray<Value>*>& value_array_roots() {
     static thread_local std::vector<const FixedArray<Value>*> roots;
@@ -1504,6 +1513,7 @@ size_t run_sweep(bool minor) {
             case CellKind::FlatString: static_cast<String*>(d.cell)->~String(); break;
             case CellKind::Symbol: static_cast<Symbol*>(d.cell)->~Symbol(); break;
             case CellKind::BigInt: static_cast<BigInt*>(d.cell)->~BigInt(); break;
+            case CellKind::Environment: static_cast<Environment*>(d.cell)->~Environment(); break;
             default: break;
         }
         if (poison && BlockAllocator::owns_address(d.cell)) {
@@ -1559,6 +1569,7 @@ void run_verify(Collector::CycleStats& stats) {
         if (!marked) return;
         if (kind == CellKind::Object) static_cast<Object*>(cell)->trace(check);
         else if (kind == CellKind::String) static_cast<String*>(cell)->gc_trace(check);
+        else if (kind == CellKind::Environment) static_cast<Environment*>(cell)->gc_trace(check);
         else if (kind == CellKind::FlatString && static_cast<String*>(cell)->is_link()) {
             std::fprintf(stderr, "[gc-verify] link string allocated as a leaf cell %p\n", cell);
             check.violations++;
@@ -1636,6 +1647,7 @@ void run_minor_collection() {
         for (const Value& val : *arr) v.visit(val);
     if (g_value_stack.base)
         for (const Value* p = g_value_stack.base; p < *g_value_stack.top; ++p) v.visit(*p);
+    if (g_frame_env_scanner_ptr()) g_frame_env_scanner_ptr()(v);
     for (const BytecodeChunk* chunk : chunk_roots()) chunk->trace(v);
     Symbol::gc_trace_roots(v);
     String::gc_trace_roots(v);
@@ -1806,6 +1818,7 @@ void scan_major_roots(MarkVisitor& v) {
         for (const Value& val : *arr) v.visit(val);
     if (g_value_stack.base)
         for (const Value* p = g_value_stack.base; p < *g_value_stack.top; ++p) v.visit(*p);
+    if (g_frame_env_scanner_ptr()) g_frame_env_scanner_ptr()(v);
     auto pr2 = std::chrono::steady_clock::now();
     for (const BytecodeChunk* chunk : chunk_roots()) chunk->trace(v);
     Symbol::gc_trace_roots(v);
@@ -2236,6 +2249,7 @@ void Collector::write_barrier_env_for(Environment* env, const Value& value) {
 }
 
 void Collector::write_barrier_env(Environment* env) {
+    if (env && env->is_cell()) { write_barrier(env); return; }
     if (barriers_disabled() || !env || env->gc_remembered_) return;
    // zero means 'never queued', so it is skipped on wrap
     if (env->gc_seen_cycle_ == 0) return;
@@ -2258,6 +2272,15 @@ void Collector::write_barrier_env(Environment* env) {
 
 void Collector::release_env(Environment* env) {
     if (!env) return;
+    if (env->is_cell()) {
+        // A scope nothing outlives gives its cell back at once, hot in the cache for the next one. Never while a major is marking: the conservative scan may have queued it.
+        static const bool fast_free = !env_flag("QUANTA_ENV_NO_FAST_FREE");
+        if (fast_free && !major_in_progress_ && env->provably_unreachable()) {
+            env->~Environment();
+            Heap::cell_free(env);
+        }
+        return;
+    }
     // No pointer to this environment was ever stored anywhere outliving the
     // scope that made it, so it is unreachable and can go now -- no queue and
     // no collection. This is the common case: a scope that makes no closures.
@@ -2280,7 +2303,7 @@ void Collector::release_env(Environment* env) {
 }
 
 void Collector::release_env_deferred(Environment* env) {
-    if (!env) return;
+    if (!env || env->is_cell()) return;
     // Always the pending_env_frees() path above, never provably_unreachable()'s
     // immediate delete -- see Function.cpp's fast_no_closures release loop and
     // frame_pop_block_scope's call_info branch, the only two callers. Both
@@ -2426,6 +2449,8 @@ void Collector::pop_chunk(const BytecodeChunk* chunk) {
         if (roots[i] == chunk) { roots.erase(roots.begin() + static_cast<long>(i)); return; }
     }
 }
+
+void Collector::set_frame_env_scanner(FrameEnvScanner fn) { g_frame_env_scanner = fn; }
 
 void Collector::set_value_stack(Value* base, Value* const* top) {
     g_value_stack.base = base;

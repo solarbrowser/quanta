@@ -2421,7 +2421,7 @@ inline bool frame_is_in_tdz(Frame& f, const std::string& name) {
 // has one.
 inline void push_block_scope_into(Context& ctx, const CallInfo* call_info, Environment*& cur_lex) {
     if (call_info) {
-        cur_lex = new Environment(Environment::Type::Declarative, cur_lex);
+        cur_lex = Environment::create(Environment::Type::Declarative, cur_lex, 0, 3);
     } else {
         ctx.push_block_scope();
         cur_lex = ctx.get_lexical_environment();
@@ -2613,6 +2613,7 @@ struct InlineArena {
 // Plain data and constant-initialised, so the hot path reads it with no thread-local guard;
 // the memory it points at is given back by ArenaOwner when the thread ends.
 constinit thread_local InlineArena g_arena;
+void scan_frame_envs(Visitor& v);
 // The value stack is cache-line aligned. The two spellings of that request are not
 // interchangeable (the Microsoft C runtime has no aligned_alloc, and a block from its
 // _aligned_malloc may only go to _aligned_free).
@@ -2632,7 +2633,7 @@ void free_value_stack(void* p) {
 }
 struct ArenaOwner {
     ~ArenaOwner() {
-        if (g_arena.values) Collector::set_value_stack(nullptr, nullptr);
+        if (g_arena.values) { Collector::set_value_stack(nullptr, nullptr); Collector::set_frame_env_scanner(nullptr); }
         std::free(g_arena.slots);
         free_value_stack(g_arena.values);
         g_arena = InlineArena{};
@@ -2668,6 +2669,7 @@ constexpr uint32_t inline_frame_words(uint32_t regs) { return 2 + ((regs + 3) & 
     // Every stackless call pushes onto it without asking whether it exists yet.
     (void)CallStack::instance();
     Collector::set_value_stack(g_arena.values, &g_arena.top);
+    Collector::set_frame_env_scanner(&scan_frame_envs);
     static thread_local ArenaOwner owner;
     (void)owner;
     return true;
@@ -2699,6 +2701,19 @@ inline void inline_slot_frame_init(InlineSlot& slot) {
     return std::launder(reinterpret_cast<Frame*>(slot.frame_storage));
 }
 
+// The environments the live environment-mode frames name (Collector::set_frame_env_scanner): with environments as cells these are the roots the EnvironmentRoot pair used to be.
+void scan_frame_envs(Visitor& v) {
+    for (uint32_t i = 0; i < g_arena.depth; i++) {
+        InlineSlot& s = g_arena.slots[i];
+        Frame& fr = s.frame();
+        for (uint32_t k = 0; k < fr.env_save_top; k++) v.visit_environment(s.env_saves[k]);
+        v.visit_environment(fr.current_lexical_env);
+        v.visit_environment(fr.current_variable_env);
+        v.visit_environment(fr.entry_env);
+        if (fr.env_call) v.visit_environment(s.env.call_env);
+    }
+}
+
 // Takes a stackless frame off the arena and the call stack, and tells its activation's base.
 // Ends an environment-mode frame's own state: what call_default_impl does after VM::run for the
 // same kind of call -- the roots, the environments (those that escaped go to the survivors), the
@@ -2706,17 +2721,26 @@ inline void inline_slot_frame_init(InlineSlot& slot) {
 [[gnu::noinline]] void inline_env_release(Frame& f) {
     InlineSlot& slot = *reinterpret_cast<InlineSlot*>(&f);
     InlineEnvState& st = slot.env;
-    reinterpret_cast<EnvironmentRoot*>(st.roots[1])->~EnvironmentRoot();
-    reinterpret_cast<EnvironmentRoot*>(st.roots[0])->~EnvironmentRoot();
     Context& ctx = *f.ctx;
-    for (Environment* e = f.current_lexical_env; e && e != st.call_env;) {
-        Environment* outer = e->get_outer();
-        if (!e->is_escaped()) Collector::release_env(e);
-        else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(e);
-        e = outer;
+    if (st.call_env->is_cell()) {
+        for (Environment* e = f.current_lexical_env; e && e != st.call_env;) {
+            Environment* outer = e->get_outer();
+            if (!e->is_escaped()) Collector::release_env(e);
+            e = outer;
+        }
+        if (!st.call_env->is_escaped()) Collector::release_env(st.call_env);
+    } else {
+        reinterpret_cast<EnvironmentRoot*>(st.roots[1])->~EnvironmentRoot();
+        reinterpret_cast<EnvironmentRoot*>(st.roots[0])->~EnvironmentRoot();
+        for (Environment* e = f.current_lexical_env; e && e != st.call_env;) {
+            Environment* outer = e->get_outer();
+            if (!e->is_escaped()) Collector::release_env(e);
+            else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(e);
+            e = outer;
+        }
+        if (!st.call_env->is_escaped()) Collector::release_env(st.call_env);
+        else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(st.call_env);
     }
-    if (!st.call_env->is_escaped()) Collector::release_env(st.call_env);
-    else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(st.call_env);
     Object::current_context_ = st.prev_context;
     ctx.set_strict_mode(st.saved_strict);
     ctx.set_this_value(st.saved_this);
@@ -2895,10 +2919,9 @@ static bool arrow_env_ok(Function* fn) {
     // The environment, seeded before anything is committed: if it cannot be laid down by index
     // it is simply dropped again.
     const auto& plan = chunk.env->env_seed_plan;
-    Environment* call_env = new Environment(Environment::Type::Function, outer_env);
-    call_env->reserve_slots(chunk.env->env_slot_total);
+    Environment* call_env = Environment::create(Environment::Type::Function, outer_env, chunk.env->env_slot_total, 4);
     if (UNLIKELY(!call_env->fresh_with_room(plan.size()))) {
-        delete call_env;
+        if (!call_env->is_cell()) delete call_env;
         return false;
     }
     {
@@ -2970,8 +2993,10 @@ static bool arrow_env_ok(Function* fn) {
     ctx.set_strict_mode(strict);
     ctx.set_this_value(actual_this);
     Object::current_context_ = &ctx;
-    new (st.roots[0]) EnvironmentRoot(&callee->current_lexical_env);
-    new (st.roots[1]) EnvironmentRoot(&callee->current_variable_env);
+    if (!call_env->is_cell()) {
+        new (st.roots[0]) EnvironmentRoot(&callee->current_lexical_env);
+        new (st.roots[1]) EnvironmentRoot(&callee->current_variable_env);
+    }
 
     base->active = callee;
     stack.push_frame_unchecked(&ctx.get_current_filename(), fn);

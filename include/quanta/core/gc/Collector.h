@@ -17,6 +17,7 @@ namespace Quanta {
 
 class Context;
 class Environment;
+class Visitor;
 class Value;
 
 // Per-thread mark(-sweep) collector. Runs only at interpreter safepoints,
@@ -200,6 +201,10 @@ public:
     // Values in [base, *top) are exact roots for as long as the range is registered. One range
     // per thread; pass nulls to unregister.
     static void set_value_stack(Value* base, Value* const* top);
+    // The environments the stackless frames hold (their slots are malloc'd, so the stack scan cannot see them): called with the visitor at every root scan, so an environment that is a cell stays
+    // alive exactly as long as a frame names it. One per thread; null unregisters.
+    using FrameEnvScanner = void (*)(Visitor&);
+    static void set_frame_env_scanner(FrameEnvScanner fn);
     static void push_value_vector(const std::vector<Value>* vec);
     static void pop_value_vector(const std::vector<Value>* vec);
 

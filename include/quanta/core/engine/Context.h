@@ -677,8 +677,22 @@ public:
         // that would otherwise only ever be reachable by name be reached by
         // index instead.
         static constexpr size_t kMaxReservedSlots = 32;
-        std::unique_ptr<InlineEntry[]> ext;
+        // Owned (delete[]d) when it came from reserve(); borrowed when the environment is a heap cell that carries its extra entries after itself (adopt_trailing).
+        InlineEntry* ext = nullptr;
         uint16_t ext_capacity = 0;
+        bool ext_owned = false;
+        SlotMap() = default;
+        SlotMap(const SlotMap&) = delete;
+        SlotMap& operator=(const SlotMap&) = delete;
+        ~SlotMap() { if (ext_owned) delete[] ext; }
+        // The environment owning this map is a cell the sweep may free without running destructors; anything this map allocates for itself tells the sweep not to.
+        static void note_owner_impure(const void* map);
+        void adopt_trailing(InlineEntry* memory, size_t count) {
+            for (size_t i = 0; i < count; i++) new (memory + i) InlineEntry();
+            ext = memory;
+            ext_capacity = static_cast<uint16_t>(count);
+        }
+        void ensure_overflow();
 
         // Must run before the first binding exists: an entry's address
         // outlives every cached pointer into it, so the inline entries stay
@@ -686,7 +700,9 @@ public:
         void reserve(size_t total) {
             if (ext || total <= kInlineCapacity || total > kMaxReservedSlots) return;
             ext_capacity = static_cast<uint16_t>(total - kInlineCapacity);
-            ext = std::make_unique<InlineEntry[]>(ext_capacity);
+            ext = new InlineEntry[ext_capacity];
+            ext_owned = true;
+            note_owner_impure(this);
         }
 
         InlineEntry* entry_at(size_t index) {
@@ -742,7 +758,7 @@ public:
                 e->slot = BindingSlot{};
                 return &e->slot;
             }
-            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            ensure_overflow();
             return &(*overflow)[Shape::intern(name)];
         }
 
@@ -791,7 +807,7 @@ public:
                 free_entry_found->slot = BindingSlot{};
                 return &free_entry_found->slot;
             }
-            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            ensure_overflow();
             return &(*overflow)[key];
         }
 
@@ -802,7 +818,7 @@ public:
                 e->slot = BindingSlot{};
                 return e->slot;
             }
-            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            ensure_overflow();
             return (*overflow)[key];
         }
 
@@ -813,7 +829,7 @@ public:
                 e->slot = BindingSlot{};
                 return e->slot;
             }
-            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            ensure_overflow();
             return (*overflow)[Shape::intern(name)];
         }
 
@@ -934,6 +950,8 @@ public:
     // blanks the previous one before pushing again), which is what makes a
     // single index enough to find and drop it.
     bool gc_in_remembered_ : 1 = false;
+    // The environment is a heap cell (CellKind::Environment): the collector owns its lifetime, so nothing frees, releases or queues it.
+    bool is_cell_ : 1 = false;
     // The major epoch (Collector::current_major_epoch) in which a collection last traced this environment; zero before the first. Every mark bit in the heap was cleared when
     // that epoch began, so what the environment named then is still marked now unless its bindings were written since, which the barrier gc_remembered_ tells.
     uint8_t gc_traced_epoch_ = 0;
@@ -948,6 +966,15 @@ public:
     uint32_t gc_seen_cycle_ = 0;
 
     void gc_trace(Visitor& v) const;
+    // The same edges for a visitor that takes them without a virtual call between them (the collector's marking visitors).
+    template <class V>
+    void trace_fast(V& v) const {
+        for (const auto& e : slots_.inline_entries) if (e.key) v.edge_value(e.slot.value);
+        for (uint16_t i = 0; i < slots_.ext_capacity; i++) if (slots_.ext[i].key) v.edge_value(slots_.ext[i].slot.value);
+        if (slots_.overflow) for (const auto& kv : *slots_.overflow) v.edge_value(kv.second.value);
+        if (binding_object_) v.edge_object(binding_object_);
+        if (outer_environment_) v.edge_environment(outer_environment_);
+    }
 
     Environment(Type type, Environment* outer = nullptr);
     Environment(Object* binding_object, Environment* outer = nullptr);
@@ -957,6 +984,18 @@ public:
     // on every call (see Context's identical pattern in Context.cpp).
     static void* operator new(size_t size);
     static void operator delete(void* ptr);
+    static void* operator new(size_t, void* where) { return where; }
+    static void operator delete(void*, void*) {}
+
+    // A new environment: a cell of the active heap when cells are on (QUANTA_ENV_CELLS), else the pooled C++ object it has always been.
+    // `total_slots`: how many bindings the scope will hold, when known before the first one exists (a call environment learns it from its chunk); a cell carries the entries past
+    // the inline ones after itself.
+    static Environment* create(Type type, Environment* outer = nullptr, size_t total_slots = 0, int site = 0);
+    static Environment* create(Object* binding_object, Environment* outer = nullptr, int site = 0);
+    static uint32_t cell_off_mask_;
+    static bool cells_enabled() { return cells_enabled_; }
+    bool is_cell() const { return is_cell_; }
+    static bool cells_enabled_;
 
     Type get_type() const { return type_; }
     Environment* get_outer() const { return outer_environment_; }
@@ -1203,7 +1242,7 @@ public:
     }
     void mark_lexical_declaration(const std::string& name) {
         if (BindingSlot* s = slots_.find(name)) { s->lexical = true; return; }
-        if (!lexical_names_) lexical_names_ = std::make_unique<LexicalNames>();
+        if (!lexical_names_) { lexical_names_ = std::make_unique<LexicalNames>(); SlotMap::note_owner_impure(this); }
         lexical_names_->lexical.insert(name);
     }
     bool is_const_binding(const std::string& name) const {
@@ -1212,7 +1251,7 @@ public:
     }
     void mark_const_binding(const std::string& name) {
         if (BindingSlot* s = slots_.find(name)) { s->const_binding = true; return; }
-        if (!lexical_names_) lexical_names_ = std::make_unique<LexicalNames>();
+        if (!lexical_names_) { lexical_names_ = std::make_unique<LexicalNames>(); SlotMap::note_owner_impure(this); }
         lexical_names_->const_binding.insert(name);
     }
     void create_global_function_binding(const std::string& name, const Value& value, bool configurable = false);

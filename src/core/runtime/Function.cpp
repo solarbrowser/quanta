@@ -983,7 +983,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             // Same condition as the env_ctx-acquiring path below: only a chunk
             // that can hand out a closure can make this chain outlive the call.
             if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
-            Environment* call_env = new Environment(Environment::Type::Function, outer_env);
+            Environment* call_env = Environment::create(Environment::Type::Function, outer_env, 0, 1);
 
             VM::CallInfo call_info;
             call_info.lexical_environment_ = call_env;
@@ -1122,7 +1122,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             // way; its own escape is decided separately, at whichever
             // Op::CreateClosure execution (if any) captures it.
             if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
-            Environment* call_env = new Environment(Environment::Type::Function, outer_env);
+            Environment* call_env = Environment::create(Environment::Type::Function, outer_env, 0, 2);
             env_ctx.set_lexical_environment(call_env);
             env_ctx.set_variable_environment(call_env);
             env_ctx.set_owned_env(call_env);

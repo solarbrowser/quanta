@@ -123,6 +123,7 @@ void BytecodeChunk::trace(Visitor& v) const {
     for (const auto& c : constants) {
         v.visit(c);
     }
+    for (const auto& e : lookup_cache) v.visit_environment(e.env);
     // feedback's Shape* fields need no tracing (immortal, not a GC cell), but
     // every Object* in a cache entry is a real cell.
     for (const auto& slot : feedback) {
