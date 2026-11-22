@@ -3301,6 +3301,7 @@ Frame* opt_materialize(Frame& root, const JitCode::OptUnit& u, const JitRt* rt, 
             cf->construct_call = true;
             cf->rare_pop = true;
         }
+        if (fr.cur_env) cf->current_lexical_env = reinterpret_cast<Environment*>(std::bit_cast<uint64_t>(at(fr.var_base + fr.nregs + 4)));
         for (uint32_t v : s.vars)
             if (v >= fr.var_base && v < fr.var_base + fr.nregs) cf->regs[v - fr.var_base] = at(v);
         if (i == 0) {
