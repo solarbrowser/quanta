@@ -1487,6 +1487,29 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
             if (fused) set(dst, av);
             return true;
         }
+        // A getter found on the prototype (a class's `get x()`): the entry holds under the receiver's shape and prototype and the two epochs, which are the unit's
+        // guards, and the read is a call of that function with the receiver as `this` -- made like any other call the unit leaves to the runtime, so a getter with a unit
+        // of its own is entered natively and one that throws leaves the way a call that threw does.
+        if (!own && !array_len && !inh && fb.count == 0 && !fb.mega && !fb.proto_mega && fb.proto_count == 1 && config().callfn == 1 && !F().no_light) {
+            const FeedbackBody::ProtoEntry& ge = fb.proto_entries[0];
+            if (ge.is_getter && !ge.absent && !ge.is_setter && ge.receiver_word && ge.prototype && ge.proto_epoch == Object::proto_epoch() &&
+                ge.desc_epoch == Object::descriptor_epoch() && ge.cached_value.is_function() && !ge.cached_value.as_function()->is_native() &&
+                object_value(value(rcv))) {
+                const int32_t gobj = guarded(K::CheckObj, Rep::Ptr, tagged(value(rcv)), -1, (ge.receiver_word & FeedbackBody::Entry::kTypeBits) == static_cast<uint64_t>(Object::ObjectType::Function) ? 3 : 0);
+                guarded(K::CheckShape, Rep::None, gobj, -1, 0, ge.receiver_word);
+                guarded(K::CheckProto, Rep::None, gobj, -1, 0, reinterpret_cast<uint64_t>(ge.prototype));
+                epoch_guard(0, ge.proto_epoch);
+                epoch_guard(1, ge.desc_epoch);
+                uint32_t root_pc = pc;
+                for (int32_t k = cf_; k > 0; k = g_.funcs[k].parent) root_pc = g_.funcs[k].call_pc;
+                const int32_t calleev = const_of(ge.cached_value);
+                const int32_t thisv = tagged(value(rcv));
+                const int32_t id = guarded(K::CallFn, Rep::Tagged, calleev, thisv, 0u | (root_pc << 8), 0, const_of(Value()));
+                set(acc(), id);
+                if (fused) set(dst, id);
+                return true;
+            }
+        }
         if (!own && !array_len && !inh) return false;
         if (!object_value(value(rcv))) return false;
         // A function's own property (a static, `F.superConstructor`): the receiver is a function value, whose word carries that type.
