@@ -73,6 +73,20 @@ ifneq ($(PGO_PROFILE),)
 CXXFLAGS += -fprofile-use=$(PGO_PROFILE) -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
 endif
 
+# Experiments with the compiler's own options (e.g. EXTRA_CXXFLAGS='-mllvm -icp-max-prom=1' EXTRA_LDFLAGS='-Wl,-mllvm,-icp-max-prom=1').
+# Linux: the profile-driven promotion of an indirect call to a compare-and-inline is limited to the most frequent target. The interpreter's
+# dispatch is an indirect tail call per bytecode, and with the default of three targets every handler grew the next ones' bodies into itself
+# (h_Add 8800 instructions, frames of a kilobyte) for a gain that the branch predictor gives back: instructions -2.6%, cycles -1.2% on the
+# real-world script, Splay +7%, RegExp +4% (promoting nothing: -5.5% instructions, same cycles).
+ifeq ($(shell uname -s),Linux)
+EXTRA_CXXFLAGS ?= -mllvm -icp-max-prom=1
+EXTRA_LDFLAGS ?= -Wl,-mllvm,-icp-max-prom=1
+endif
+EXTRA_CXXFLAGS ?=
+EXTRA_LDFLAGS ?=
+CXXFLAGS += $(EXTRA_CXXFLAGS)
+LTO_FLAGS += $(EXTRA_LDFLAGS)
+
 DEBUG_FLAGS = -g -DDEBUG -O0 -DQUANTA_VALIDATE_BYTECODE
 
 # On top of the default -O3 set, not -O0/DEBUG_FLAGS: some GC-rooting bugs
