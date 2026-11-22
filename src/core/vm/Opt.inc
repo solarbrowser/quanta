@@ -332,7 +332,7 @@ struct Config {
     uint32_t max_deopts = 40;         // guard failures before a loop is given up on
     bool entry = true;                // QUANTA_OPT_ENTRY=0 turns the function-entry units off
     bool cold = false;                // QUANTA_OPT_COLD=1 prunes never-executed blocks (they deopt when reached: measured worse on RayTrace -18% and Splay -9%)
-    bool light = false;               // QUANTA_OPT_LIGHT=1: steps write back only what they read (measured: no gain so far)
+    bool light = false;               // QUANTA_OPT_LIGHT=1: steps write back only what they read (a case in test262 harness/deepEqual-primitives with several steps was wrong with it on)
     bool allow_calls = false;         // QUANTA_OPT_CALLS=1: function-entry units may keep calls as steps
     uint32_t poly_max = 4;            // QUANTA_OPT_POLY=n: most callees one call site may have and still be inlined (1: monomorphic only)
     bool natives = true;              // QUANTA_OPT_NATIVES=0 keeps native calls as steps
@@ -368,9 +368,9 @@ struct Config {
     uint32_t inline_depth = 4;
     uint32_t inline_recursion = 99;   // QUANTA_OPT_RECUR: how many times a function may stand inside itself in the chain of inlined calls (the root counts)
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
-    uint32_t entry_arm_at = 64, entry_compile_at = 64;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
-    uint32_t max_helper_calls = 32;   // QUANTA_OPT_MAXHELPERCALLS: refuse a region that leaves more calls than this to the call helper
-    uint32_t max_step_percent = 12;   // refuse a region in which more than this share of the instructions are plain steps
+    uint32_t entry_arm_at = 256, entry_compile_at = 256;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
+    uint32_t max_helper_calls = 256;  // QUANTA_OPT_MAXHELPERCALLS: refuse a region that leaves more calls than this to the call helper
+    uint32_t max_step_percent = 40;   // refuse a region in which more than this share of the instructions are plain steps
 };
 inline Config g_config_storage;
 inline void config_init();
