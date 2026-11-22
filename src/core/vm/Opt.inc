@@ -369,6 +369,7 @@ struct Config {
     uint32_t inline_recursion = 99;   // QUANTA_OPT_RECUR: how many times a function may stand inside itself in the chain of inlined calls (the root counts)
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 256, entry_compile_at = 256;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
+    size_t code_budget = 16u << 20;   // QUANTA_OPT_BUDGET_MB: no unit is built once the code of the units already made adds up to this much (a page of script keeps a few thousand of them)
     uint32_t max_helper_calls = 256;  // QUANTA_OPT_MAXHELPERCALLS: refuse a region that leaves more calls than this to the call helper
     uint32_t max_step_percent = 40;   // refuse a region in which more than this share of the instructions are plain steps
 };
@@ -401,6 +402,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_CALLS")) c.allow_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLY")) c.poly_max = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_MB")) c.code_budget = static_cast<size_t>(std::atoi(e)) << 20;
         if (const char* e = std::getenv("QUANTA_OPT_MAXHELPERCALLS")) c.max_helper_calls = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_AVOID")) c.avoid_after = static_cast<uint32_t>(std::atoi(e));
@@ -8292,8 +8294,10 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         const uint32_t ordinal = config().seen++;
         if (ordinal < config().skip || ordinal - config().skip >= config().limit) return false;
     }
+    static thread_local size_t g_code_total = 0;
+    if (g_code_total >= config().code_budget) { if (config().log) std::fprintf(stderr, "[opt] refused (code budget): %zu bytes made\n", g_code_total); return false; }
     const auto t0 = std::chrono::steady_clock::now();
-    struct Timer { std::chrono::steady_clock::time_point t0; ~Timer() { if (config().log) std::fprintf(stderr, "[opt] compile took %.3f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); } } timer{t0};
+    struct Timer { std::chrono::steady_clock::time_point t0; ~Timer() { if (config().log) { long rss = 0; if (FILE* sf = std::fopen("/proc/self/statm", "r")) { long a; if (std::fscanf(sf, "%ld %ld", &a, &rss) != 2) rss = 0; std::fclose(sf); } std::fprintf(stderr, "[opt] compile took %.3f ms (rss %ld KB)\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), rss * 4); } } } timer{t0};
     // A callee that turns out to need a step makes its call site not worth inlining, and the build starts over.
     std::set<Builder::Site> no_inline;
     auto gp = std::make_unique<Graph>();
@@ -8324,10 +8328,16 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         if (config().log) std::fprintf(stderr, "[opt] refused in codegen (%s): %u bytes of bytecode at pc %u chunk=%p\n", em.why() ? em.why() : "?", static_cast<unsigned>(chunk.code.size()), pc, static_cast<const void*>(&chunk));
         return false;
     }
+    if (config().log && bytes.size() > 100000) {
+        const auto& cm = em.code_map();
+        for (size_t k = 0; k < cm.size(); k++) std::fprintf(stderr, "[opt]   section %-32s %8u bytes\n", cm[k].second, (k + 1 < cm.size() ? cm[k + 1].first : static_cast<uint32_t>(bytes.size())) - cm[k].first);
+        std::fprintf(stderr, "[opt]   states %zu nodes %zu blocks %zu\n", g.states.size(), g.n.size(), g.b.size());
+    }
     void* mem = nullptr;
     size_t size = 0;
     uint8_t* start = nullptr;
     if (!alloc_exec(bytes, mem, size, start)) return false;
+    g_code_total += size;
     unit.mem = mem;
     unit.mem_size = size;
     unit.code_bytes = bytes.size();
