@@ -370,6 +370,7 @@ struct Config {
     uint32_t inline_recursion = 99;   // QUANTA_OPT_RECUR: how many times a function may stand inside itself in the chain of inlined calls (the root counts)
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 256, entry_compile_at = 256;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
+    bool env_direct = true;           // QUANTA_OPT_ENVDIRECT=0: a unit calls an environment-mode function through the general call
     bool reclaim = true;              // QUANTA_OPT_RECLAIM=0: units that do not run are not given back
     uint32_t budget_offers = 8192;    // QUANTA_OPT_BUDGET_OFFERS: offers of one chunk, past the budget, before the budget grows for it
     size_t code_rate = 4u << 20;      // QUANTA_OPT_BUDGET_RATE_MB: bytes of code the tier may make per second past the grace period, above the budget
@@ -409,6 +410,7 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_CALLS")) c.allow_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLY")) c.poly_max = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_ENVDIRECT")) c.env_direct = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_BUDGET_RATE_MB")) c.code_rate = static_cast<size_t>(std::atoi(e)) << 20;
         if (const char* e = std::getenv("QUANTA_OPT_RECLAIM")) c.reclaim = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_BUDGET_GRACE_S")) c.code_grace = std::atof(e);
@@ -684,6 +686,7 @@ private:
     bool frozen_ = false;      // SSA construction is over: nothing may create a phi any more
     void materialize_mem_operands();
     void remove_trivial_phis();
+    void remove_dead_phis();
     void select_representations();
     // What a register read at the entry of the unit holds now: a loop's entry frame, or -- for a whole function -- the call's arguments, read before anything
     // in the first block wrote them. Null where nothing is known (the speculation that follows it is checked by the unit).
@@ -765,7 +768,7 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
     case Op::StaEnvSlotAt: case Op::StaEnvSlot: case Op::StaEnvSlotInit: case Op::StaEnv: case Op::StaEnvInit: case Op::StaLookup:
     case Op::CheckObjectCoercible:
         e.rd(acc); break;
-    case Op::LdaEnv: case Op::CreateClosure: case Op::CreateObject: case Op::CreateArray: case Op::CreateArrayConst: case Op::LdaTdz:
+    case Op::LdaEnv: case Op::CreateClosure: case Op::CreateObject: case Op::CreateObjectT: case Op::CreateArray: case Op::CreateArrayConst: case Op::LdaTdz:
         e.wr(acc); break;
     case Op::LdaEnvStar: e.wr(acc); W(pc + 3); break;
     case Op::LdaTdzStar: e.wr(acc); W(pc + 1); break;
@@ -3376,6 +3379,7 @@ inline void Builder::complete_defs() {
 inline void Builder::finalize() {
     complete_defs();
     remove_trivial_phis();
+    remove_dead_phis();
     materialize_mem_operands();
     select_representations();
     lower();
@@ -3440,6 +3444,51 @@ inline void Builder::remove_trivial_phis() {
                 if (g_.n.size() != before) break;   // a load was inserted into this block's list: restart the block
             }
         }
+    }
+}
+
+// A phi that nothing reads (the variable is dead where the paths meet, or only other dead phis read it) is dropped before the passes that type it: typing a phi as an integer puts a
+// check on every input that is not known to be one, and a check is a guard the unit keeps even when the phi goes. Such a check on a register nobody reads (the argument window of a
+// call, on the path that never made the call) failed for the stale value in the frame, and the unit deoptimized for nothing, again and again.
+inline void Builder::remove_dead_phis() {
+    static const bool off = std::getenv("QUANTA_OPT_DEADPHI") && std::getenv("QUANTA_OPT_DEADPHI")[0] == '0';
+    if (off) return;
+    std::vector<uint8_t> live(g_.n.size(), 0);
+    std::vector<int32_t> work;
+    auto use = [&](int32_t x) {
+        if (x < 0) return;
+        x = resolve(x);
+        if (x >= 0 && !live[x]) { live[x] = 1; work.push_back(x); }
+    };
+    std::vector<uint8_t> state_used(g_.states.size(), 0);
+    for (int32_t blk : g_.rpo) {
+        Block& B = g_.b[blk];
+        use(B.term.cond);
+        for (int32_t id : B.nodes)
+            if (!g_.n[id].dead && g_.n[id].op != K::Phi && !is_pure_removable(g_.n[id].op)) use(id);
+    }
+    while (!work.empty()) {
+        const int32_t x = work.back();
+        work.pop_back();
+        const Node& nd = g_.n[x];
+        use(nd.a);
+        use(nd.b);
+        use(nd.c);
+        for (int32_t o : nd.ins) use(o);
+        if (nd.state >= 0 && !state_used[nd.state]) {
+            state_used[nd.state] = 1;
+            for (auto& [v, d] : g_.states[nd.state].defs) use(d);
+        }
+    }
+    for (int32_t blk : g_.rpo) {
+        auto& nodes = g_.b[blk].nodes;
+        std::vector<int32_t> out;
+        out.reserve(nodes.size());
+        for (int32_t id : nodes) {
+            if (g_.n[id].op == K::Phi && !g_.n[id].dead && !live[id]) { g_.n[id].dead = true; continue; }
+            out.push_back(id);
+        }
+        if (out.size() != nodes.size()) nodes = std::move(out);
     }
 }
 
@@ -4706,6 +4755,18 @@ inline QUANTA_JIT_ABI int32_t helper_throw_resume(VM::Frame* f, uint32_t pc) noe
 }
 
 static const uint32_t g_stale_calls_limit = std::getenv("QUANTA_STALE_CALLS") ? static_cast<uint32_t>(std::atoi(std::getenv("QUANTA_STALE_CALLS"))) : 200000;
+// QUANTA_OPT_ENVDIRECT_LIMIT=n: only the first n environment-mode direct calls are made directly (bisecting a wrong result); QUANTA_OPT_ENVDIRECT_LOG prints the one that was n-th.
+inline bool env_direct_allowed(Function* fn) {
+    static const long limit = [] { const char* e = std::getenv("QUANTA_OPT_ENVDIRECT_LIMIT"); return e ? std::atol(e) : -1l; }();
+    static long n = 0;
+    static const long only = [] { const char* e = std::getenv("QUANTA_OPT_ENVDIRECT_ONLY"); return e ? std::atol(e) : -1l; }();
+    if (only >= 0) { n++; if (n == only && std::getenv("QUANTA_OPT_ENVDIRECT_LOG")) std::fprintf(stderr, "[envdirect] only call #%ld of \"%s\"\n", n, fn->get_name().c_str()); return n == only; }
+    if (limit < 0) return true;
+    if (n >= limit) return false;
+    n++;
+    if (n == limit && std::getenv("QUANTA_OPT_ENVDIRECT_LOG")) std::fprintf(stderr, "[envdirect] call #%ld is of \"%s\"\n", n, fn->get_name().c_str());
+    return true;
+}
 inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, uint64_t this_bits, const uint64_t* argv) noexcept {
     constexpr uint64_t kThrew = ~0ull, kRethrow = ~0ull - 1, kNotFn = ~0ull - 2;
     // The unit wrote the receiver and the arguments as Values into its frame; they are read where they lie.
@@ -4818,7 +4879,8 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
         return cbits >= kNotFn ? kNotFn - 1 : cbits;
     }
     try {
-        if (!(g_config_storage.direct && fn->fast_callable() && unit_call_direct(*f, fn, th, args, argc, r))) {
+        const bool direct_ok = g_config_storage.direct && (fn->fast_callable() || (g_config_storage.env_direct && fn->fast_env_callable() && env_direct_allowed(fn))) && unit_call_direct(*f, fn, th, args, argc, r);
+        if (!direct_ok) {
             if (const FunctionExecutable* e = fn->get_executable().get(); e && e->bytecode_chunk && !e->bytecode_chunk->unit_callee) note_unit_callee(*e->bytecode_chunk);
             static const bool stackless = std::getenv("QUANTA_NATIVE_STACKLESS") != nullptr;
             if (!(stackless && VM::native_call_stackless(ctx, fn, th, args, argc, r))) {
@@ -5560,10 +5622,10 @@ inline bool Emitter::allocate() {
         if ((t.kind == T::Branch || t.kind == T::Return || t.kind == T::StepBranch) && t.cond >= 0 && needs_loc(t.cond))
             end[t.cond] = std::max(end[t.cond], bend_[blk]);
     }
-    // Nothing may be live across a step: the callee clobbers every register and the tier does not
-    // save them (a step is a full barrier, so the builder never lets a value cross one). Checked on
-    // real liveness, not on the intervals, which have no holes and so overlap steps they are dead at.
-    // (A stack slot for such a value was tried: Fe, Je and Re of code.js then compile, and deoptimize on their loop-carried values again and again: +13% instructions.)
+    // A step clobbers every register and the tier does not save them: a value that is live across one gets a stack slot for its whole life (QUANTA_OPT_SPILLSTEP=0: such a unit
+    // is refused). Found on real liveness, not on the intervals, which have no holes and so overlap steps they are dead at.
+    static const bool spill_step = !std::getenv("QUANTA_OPT_SPILLSTEP") || std::getenv("QUANTA_OPT_SPILLSTEP")[0] != '0';
+    std::vector<uint8_t> crosses_step(nn, 0);
     for (int32_t blk : order_) {
         std::vector<uint64_t> live = live_out[blk];
         const Term& t = g_.b[blk].term;
@@ -5574,8 +5636,10 @@ inline bool Emitter::allocate() {
             if (g_.n[id].op == K::Step && !g_.n[id].light) {
                 std::vector<uint64_t> after = live;
                 clrb(after, id);
-                for (size_t w = 0; w < words; w++)
-                    if (after[w]) return fail("value live across a step");
+                for (size_t w = 0; w < words; w++) {
+                    if (after[w] && !spill_step) return fail("value live across a step");
+                    for (uint64_t bits = after[w]; bits; bits &= bits - 1) crosses_step[w * 64 + static_cast<size_t>(__builtin_ctzll(bits))] = 1;
+                }
             }
             if (needs_loc(id)) clrb(live, id);
             for_uses(id, [&](int32_t u) { setb(live, u); });
@@ -5627,6 +5691,7 @@ inline bool Emitter::allocate() {
     for (int r = kXmmFirst; r <= kXmmLast; r++) free_x |= 1u << r;
     auto gpr_index = [&](uint8_t reg) { for (size_t i = 0; i < sizeof(kGprPool) / sizeof(kGprPool[0]); i++) if (kGprPool[i] == reg) return static_cast<int>(i); return -1; };
     for (int32_t id : ids) {
+        if (crosses_step[id]) { loc_[id] = {kStack, 0, nslots_++}; continue; }
         const bool fp = g_.n[id].rep == Rep::F64;
         auto& active = fp ? active_x : active_g;
         uint32_t& freem = fp ? free_x : free_g;
@@ -8353,6 +8418,7 @@ inline thread_local bool g_budget_pending = false;     // the last compile was t
 inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, JitCode::OptUnit& unit, const Emitter::NativeInfo* native = nullptr) {
     {
         const uint32_t ordinal = config().seen++;
+        if (config().log) std::fprintf(stderr, "[opt] compile ordinal %u: chunk %p pc %u (%zu bytes of bytecode)%s\n", ordinal, static_cast<const void*>(&chunk), pc, chunk.code.size(), native ? " [native thunk]" : "");
         if (ordinal < config().skip || ordinal - config().skip >= config().limit) return false;
     }
     // The code the units alive now add up to is held to the budget (what dies with its chunk is given back). A function that keeps being offered to the tier past it is hot, and

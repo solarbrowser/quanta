@@ -3910,7 +3910,7 @@ template <bool Virt, bool Stack = true>
     cf->caller = nullptr;
     Value v;
     try {
-        v = kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code);
+        v = run_entered_frame(*cf, t);
     } catch (...) {
         cf->caller = saved_caller;
         POP(*cf);
@@ -4154,15 +4154,19 @@ QUANTA_JIT_ABI int32_t bl_call_fast(Frame* f, uint32_t pc, uint32_t kind, BlSite
         }
         if (!unit_enter_fast(caller, fn, chunk, *d, argv, argc, this_value, cf)) return false;
     } else {
-        if (!fn->fast_callable() || chunk.opt_entry != 3) return false;
+        if (chunk.opt_entry != 3) return false;
         const uint8_t verdict = chunk.inline_state;
-        if (!(verdict & kInlineOk) || (verdict & kInlineEnv)) return false;
+        if (!(verdict & kInlineOk)) return false;
+        // A function that runs in an environment of its own (and nothing of it can be captured, or what captures it is released with the frame) is entered the way the interpreter's
+        // stackless call enters it: the frame has the call environment, and the unit runs in it.
+        if (verdict & kInlineEnv) { if (!opt::config().env_direct || !fn->fast_env_callable()) return false; }
+        else if (!fn->fast_callable()) return false;
         if (d && d->leaf && unit_leaf_call(caller, fn, *exe, verdict, *d, this_value, argv, argc, out)) return true;
         if (CallStack::established().depth() > kEntryMaxDepth) return false;
         if (!inline_call_enter<false>(caller, fn, argv, argc, this_value, 0, cf)) return false;
         // What a later call of this chunk need not ask again: a unit of a function that is not an arrow (an arrow reads the `this` it was created with), on this
         // thread, in an ordinary frame. The same for every closure of the declaration site.
-        if (d && d->owner == &g_thread_marker && !fn->is_arrow() && chunk.jit && chunk.jit->owner_thread == &g_thread_marker &&
+        if (d && d->owner == &g_thread_marker && !fn->is_arrow() && !(verdict & kInlineEnv) && chunk.jit && chunk.jit->owner_thread == &g_thread_marker &&
             d->ix < chunk.jit->opt_units.size() && opt::config().fast_enter) {
             auto& m = const_cast<BytecodeChunk::DirectCall&>(*d);
             const JitCode::OptUnit& u = chunk.jit->opt_units[d->ix];
@@ -4317,7 +4321,7 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
     opt::config().inl = saved_inl;
     opt::config().sta_lookup = saved_sta;
     opt::config().max_helper_calls = saved_calls;
-    if (opt::config().log) std::fprintf(stderr, "[native] thunk rebuilt (%u): %s\n", static_cast<unsigned>(t.rebuilds) + 1, compiled ? "compiled" : "refused");
+    if (opt::config().log) std::fprintf(stderr, "[native] thunk for \"%s\" rebuilt (%u): %s\n", fn->get_name().c_str(), static_cast<unsigned>(t.rebuilds) + 1, compiled ? "compiled" : "refused");
     if (!compiled || !made.native_off) return false;
     t.held.push_back(Value(fn));
     for (const auto& d : made.rtdescs) if (d->owner) t.held.push_back(Value(d->owner));
@@ -4416,7 +4420,7 @@ inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status, JitRt* exi
             Frame* const saved_caller = cf->caller;
             cf->caller = nullptr;
             try {
-                result = kHandlers[t->code[t->pc]](*t, t->pc, t->acc, t->regs, t->code);
+                result = run_entered_frame(*cf, t);
             } catch (...) {
                 cf->caller = saved_caller;
                 throw;

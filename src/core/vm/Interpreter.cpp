@@ -10941,6 +10941,65 @@ Value run_dispatch(Frame& f) {
 // as the root of its own run, so the call costs what a stackless call does and not what a nested interpreter activation does (defined after run_with_regs, which has the loop it shares).
 bool native_call_stackless(Context& ctx, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, Value& out);
 
+// Runs the frames that generated code's direct call made around `cf` (the callee's frame, which has no caller while this runs) until `cf` is the only one left. An exception that
+// the frame running does not handle returns from the dispatch with that frame still listed as active: the search for a handler goes on in the frames between it and `cf`, each
+// given back as it is passed, as run()'s loop does for the activation it owns (which this stands in for, there being no run() around the callee).
+Value run_entered_frame(Frame& cf, Frame* start) {
+    Context& ctx = *cf.ctx;
+    Frame* const base = cf.base ? cf.base : &cf;
+    auto give_back_above = [&] { while (base->active && base->active != &cf) inline_frame_pop(*base->active); };
+    Frame* run_target = start;
+    for (;;) {
+        Value result;
+        bool dispatched = false;
+        try {
+            result = run_dispatch(*run_target);
+            dispatched = true;
+        } catch (const YieldException&) {
+            give_back_above();
+            throw;
+        } catch (const GeneratorReturnException&) {
+            give_back_above();
+            throw;
+        } catch (const std::exception& e) {
+            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string(e.what())));
+        } catch (...) {
+            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string("Error: Unknown error")));
+        }
+        Frame* const innermost = base->active;
+        if (dispatched && (!ctx.has_exception() || innermost == &cf || !innermost)) return result;
+        if (!ctx.has_exception()) {
+            // (Only reachable if a catch left no exception pending: resume at the instruction that was executing.)
+            Frame* cur = innermost ? innermost : &cf;
+            cur->pc = cur->instr_pc;
+            run_target = cur;
+            continue;
+        }
+        Frame* cur = innermost ? innermost : &cf;
+        for (;;) {
+            int32_t handler_pc = -1;
+            uint32_t best_width = UINT32_MAX;
+            if (cur->chunk->handlers) for (const auto& h : *cur->chunk->handlers) {
+                if (cur->instr_pc >= h.start_pc && cur->instr_pc < h.end_pc) {
+                    const uint32_t width = h.end_pc - h.start_pc;
+                    if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+                }
+            }
+            if (handler_pc >= 0) {
+                cur->acc = ctx.get_exception();
+                ctx.clear_exception();
+                cur->pc = static_cast<uint32_t>(handler_pc);
+                run_target = cur;
+                break;
+            }
+            if (cur == &cf) return Value();
+            Frame* const up = cur->caller;
+            inline_frame_pop(*cur);
+            cur = up;
+        }
+    }
+}
+
 #include "Jit.inc"
 
 #ifndef QUANTA_JIT_ENABLED
