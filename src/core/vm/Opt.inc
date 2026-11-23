@@ -369,9 +369,11 @@ struct Config {
     uint32_t inline_recursion = 99;   // QUANTA_OPT_RECUR: how many times a function may stand inside itself in the chain of inlined calls (the root counts)
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 256, entry_compile_at = 256;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
-    size_t code_budget = 16u << 20;   // QUANTA_OPT_BUDGET_MB: no unit is built once the code of the units already made adds up to this much, plus what the budget has grown by since the first one was built
-    size_t code_growth = 4u << 20;    // QUANTA_OPT_BUDGET_GROWTH_MB: bytes the budget grows by for every second the process has run past the grace period (a short run is held to the budget, a long one -- a page open for minutes, a benchmark of eight suites -- keeps getting its hot code compiled)
-    double code_grace = 5.0;          // QUANTA_OPT_BUDGET_GRACE_S: seconds after the first unit during which the budget does not grow
+    uint32_t budget_offers = 8192;    // QUANTA_OPT_BUDGET_OFFERS: offers of one chunk, past the budget, before the budget grows for it
+    double code_grace = 5.0;          // QUANTA_OPT_BUDGET_GRACE_S: seconds from the first compile in which the budget does not grow (a page that is still loading is held to it)
+    size_t code_step = 1u << 20;      // QUANTA_OPT_BUDGET_STEP_KB: what the budget grows by each time
+    size_t code_extra_max = 32u << 20; // QUANTA_OPT_BUDGET_EXTRA_MB: the most the budget grows by in all
+    size_t code_budget = 16u << 20;   // QUANTA_OPT_BUDGET_MB: no unit is built while the code of the units alive adds up to this much
     uint32_t max_helper_calls = 256;  // QUANTA_OPT_MAXHELPERCALLS: refuse a region that leaves more calls than this to the call helper
     uint32_t max_step_percent = 40;   // refuse a region in which more than this share of the instructions are plain steps
 };
@@ -404,9 +406,11 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_CALLS")) c.allow_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLY")) c.poly_max = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
-        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_MB")) c.code_budget = static_cast<size_t>(std::atoi(e)) << 20;
-        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_GROWTH_MB")) c.code_growth = static_cast<size_t>(std::atoi(e)) << 20;
         if (const char* e = std::getenv("QUANTA_OPT_BUDGET_GRACE_S")) c.code_grace = std::atof(e);
+        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_OFFERS")) c.budget_offers = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_STEP_KB")) c.code_step = static_cast<size_t>(std::atoi(e)) << 10;
+        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_EXTRA_MB")) c.code_extra_max = static_cast<size_t>(std::atoi(e)) << 20;
+        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_MB")) c.code_budget = static_cast<size_t>(std::atoi(e)) << 20;
         if (const char* e = std::getenv("QUANTA_OPT_MAXHELPERCALLS")) c.max_helper_calls = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_MAXSTEPS")) c.max_step_percent = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_AVOID")) c.avoid_after = static_cast<uint32_t>(std::atoi(e));
@@ -8301,17 +8305,34 @@ inline bool leaf_graph(const Graph& g, uint8_t& regs) {
 
 #ifdef QUANTA_OPT_BACKEND
 // Builds, allocates and emits. On success the chunk's JitCode has its optimized entry points.
+inline thread_local bool g_budget_pending = false;     // the last compile was turned down for the code budget only: the chunk is offered again later
 inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, JitCode::OptUnit& unit, const Emitter::NativeInfo* native = nullptr) {
     {
         const uint32_t ordinal = config().seen++;
         if (ordinal < config().skip || ordinal - config().skip >= config().limit) return false;
     }
-    static thread_local size_t g_code_total = 0;
-    static const auto g_first_compile = std::chrono::steady_clock::now();
-    {
-        const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_first_compile).count();
-        const size_t allowed = config().code_budget + (secs > config().code_grace ? static_cast<size_t>((secs - config().code_grace) * static_cast<double>(config().code_growth)) : 0);
-        if (g_code_total >= allowed) { if (config().log) std::fprintf(stderr, "[opt] refused (code budget): %zu bytes made, %zu allowed\n", g_code_total, allowed); return false; }
+    // The code the units alive now add up to is held to the budget (what dies with its chunk is given back). A function that keeps being offered to the tier past it is hot, and
+    // the code that is alive may be that of a part of the program that has finished: after kBudgetOffers offers of one chunk the budget grows by a step (up to a ceiling), and the
+    // offers before are turned down without the chunk being given up on (budget_pending: the caller offers it again).
+    g_budget_pending = false;
+    static thread_local size_t g_budget_extra = 0;
+    static thread_local std::unordered_map<const BytecodeChunk*, uint32_t> g_budget_offers;
+    if (g_cfg.opt_live_bytes >= config().code_budget + g_budget_extra) {
+        uint32_t& offers = g_budget_offers[&chunk];
+        if (offers < config().budget_offers) {
+            offers++;
+            g_budget_pending = true;
+            return false;
+        }
+        static const auto first_compile = std::chrono::steady_clock::now();
+        const bool young = std::chrono::duration<double>(std::chrono::steady_clock::now() - first_compile).count() < config().code_grace;
+        if (young || g_budget_extra + config().code_step > config().code_extra_max) {
+            if (config().log) std::fprintf(stderr, "[opt] refused (code budget): %zu bytes alive, %zu allowed\n", g_cfg.opt_live_bytes, config().code_budget + g_budget_extra);
+            return false;
+        }
+        g_budget_extra += config().code_step;
+        offers = 0;
+        if (config().log) std::fprintf(stderr, "[opt] code budget grows to %zu bytes (chunk %p is hot)\n", config().code_budget + g_budget_extra, static_cast<const void*>(&chunk));
     }
     const auto t0 = std::chrono::steady_clock::now();
     struct Timer { std::chrono::steady_clock::time_point t0; ~Timer() { if (config().log) { long rss = 0; if (FILE* sf = std::fopen("/proc/self/statm", "r")) { long a; if (std::fscanf(sf, "%ld %ld", &a, &rss) != 2) rss = 0; std::fclose(sf); } std::fprintf(stderr, "[opt] compile took %.3f ms (rss %ld KB)\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), rss * 4); } } } timer{t0};
@@ -8354,7 +8375,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     size_t size = 0;
     uint8_t* start = nullptr;
     if (!alloc_exec(bytes, mem, size, start)) return false;
-    g_code_total += size;
+    g_cfg.opt_live_bytes += size;
     unit.mem = mem;
     unit.mem_size = size;
     unit.code_bytes = bytes.size();

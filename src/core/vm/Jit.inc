@@ -119,6 +119,7 @@ struct Config {
     uint32_t threshold = 6;        // calls before a loop-free function is compiled
     const char* dump_dir = nullptr;
     size_t mapped_bytes = 0;
+    size_t opt_live_bytes = 0;     // the optimizing tier's units that are alive now (their machine code; given back when their chunk dies)
     size_t max_mapped_bytes = 192u << 20;
     uint32_t compiled = 0, refused = 0;
     // Debug aids: compile only the functions numbered [skip, skip+limit) in the order they get hot.
@@ -3028,6 +3029,7 @@ void free_code(JitCode* c) noexcept {
     for (auto& u : c->opt_units) {
         platform::unmap(u.mem, u.mem_size);
         g_cfg.mapped_bytes -= u.mem_size;
+        g_cfg.opt_live_bytes -= u.mem_size;
     }
     delete c;
 }
@@ -3349,6 +3351,7 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         JitCode::OptUnit made;
         const bool compiled = opt::compile(chunk, target, &f, made);
         if (chunk.opt_entry != 1) chunk.inline_state &= ~kInlineRecordCalls;       // the profile has been used (a function-entry profile is still running)
+        if (!compiled && opt::g_budget_pending) return 0;       // (only the code budget: it is offered again, and the budget grows for a chunk that keeps being offered)
         if (!compiled) {
             refused.insert({&chunk, target});
             if (!jc || jc->opt_units.empty()) chunk.opt_loops = 1;
