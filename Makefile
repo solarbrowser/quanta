@@ -40,7 +40,7 @@ CXXFLAGS += -pthread
 LTO_FLAGS = -fuse-ld=lld -flto=thin
 
 # Whole-program ThinLTO: LTO_FLAGS alone only covers console.cpp, so the engine's own objects were never optimised
-# across translation units. Measured -5% cycles on code.js and -11% on markdown.js, nothing lost elsewhere; full LTO
+# across translation units. Measured -5% cycles on a large parser benchmark and -11% on markdown.js, nothing lost elsewhere; full LTO
 # gave the same. Linux only for now (the archive needs llvm-ar). The embedding archive is pre-linked into one machine-code
 # object so a program with a different toolchain can still link it.
 AR = ar
@@ -432,7 +432,7 @@ asan: CXXFLAGS += $(ASAN_FLAGS)
 # reports as a heap-buffer-overflow on a "wild pointer" it has no allocation
 # record for -- an allocator collision, not a bug in anything Quanta itself
 # allocates. Found chasing what looked like a real corruption in Environment's
-# call-frame allocation (code.js under this target, 100% reproducible): the
+# call-frame allocation (a large parser benchmark under this target, 100% reproducible): the
 # same crash persisted across every candidate fix in that code, but vanished
 # for good the moment this object was left off the link line, on the same
 # binary otherwise. Left out of this target only -- the normal build still

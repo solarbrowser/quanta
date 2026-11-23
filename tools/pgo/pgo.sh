@@ -2,7 +2,7 @@
 # Profile-guided build: instrumented build, run the training corpus, rebuild with the merged profile.
 # Regenerates tools/pgo/quanta.profdata, which `make` then applies by itself (PGO=0 turns that off).
 #   tools/pgo/pgo.sh
-#   PGO_EXTRA=dir tools/pgo/pgo.sh   also trains on every *.js in dir (the Octane programs, code.js, ...)
+#   PGO_EXTRA=dir tools/pgo/pgo.sh   also trains on every *.js in dir (the Octane programs, large parser benchmarks, ...)
 # Needs clang, llvm-profdata, and node/npm for the library part of the corpus (skipped without them).
 set -euo pipefail
 cd "$(dirname "$0")/../.."

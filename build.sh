@@ -367,7 +367,7 @@ if [ -n "${QUANTA_EXTRA_CXXFLAGS:-}" ]; then
 fi
 
 # Whole-program ThinLTO: every object is compiled to bitcode and the link optimises across translation units
-# (-5% cycles on code.js, -11% on markdown.js). LTO_FLAGS alone, which is all this script used to pass, only covered
+# (-5% cycles on a large parser benchmark, -11% on markdown.js). LTO_FLAGS alone, which is all this script used to pass, only covered
 # console.cpp. Needs lld; QUANTA_NO_LTO=1 turns it off.
 USE_LTO=0
 if [ -z "${QUANTA_NO_LTO:-}" ] && { command -v ld.lld >/dev/null 2>&1 || command -v lld >/dev/null 2>&1; }; then
