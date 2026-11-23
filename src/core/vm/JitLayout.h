@@ -238,6 +238,7 @@ struct JitCode {
         };
         std::vector<std::unique_ptr<RtDesc>> rtdescs;
         std::vector<InlFrame> inl;
+        std::vector<Function*> inl_keep;        // the functions inlined here (and the bodies of forwarding constructors): the unit's code was made for their chunks, jit_trace keeps them alive
         struct InlState { int32_t func = 0; uint32_t pc = 0; std::vector<uint32_t> vars; };   // vars: global variable numbers
         std::vector<InlState> inl_states;       // by deopt state id; func 0 for a state of the root
         uint32_t root_vars = 0;                 // variables [0, root_vars) live in the root's register bank

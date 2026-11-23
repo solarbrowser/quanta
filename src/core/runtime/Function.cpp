@@ -815,7 +815,7 @@ Value Function::call_fast_gate(Context& ctx, std::span<const Value> args, Value 
         if (answer_leaf_call(*executable_, this_value, result)) return result;
     }
     CallStack& stack = CallStack::instance();
-    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) {
+    if (stack.depth() >= CallStack::MAX_STACK_DEPTH || thread_stack_low()) {
         ctx.throw_range_error("Maximum call stack size exceeded");
         return Value();
     }
@@ -848,7 +848,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // Runaway recursion has to become a catchable error before it becomes a
     // segfault: past this depth the C++ stack under the interpreter is nearly
     // spent, and nothing below here would get the chance to report it.
-    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) {
+    if (stack.depth() >= CallStack::MAX_STACK_DEPTH || thread_stack_low()) {
         ctx.throw_range_error("Maximum call stack size exceeded");
         return Value();
     }
@@ -1310,7 +1310,7 @@ bool Function::call_pure_native(Context& ctx, std::span<const Value> args, const
         if (call_pure_native(ctx, args, this_value, result)) return result;
     }
     CallStack& stack = CallStack::instance();
-    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) return throw_call_stack_exceeded(ctx);
+    if (stack.depth() >= CallStack::MAX_STACK_DEPTH || thread_stack_low()) return throw_call_stack_exceeded(ctx);
     // A frame count is only a stand-in for how much stack is left, and it is
     // calibrated for the thread's. Where the stack's own end is known, ask it.
     if (const char* floor = current_stack_floor()) {

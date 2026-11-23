@@ -4149,6 +4149,7 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
     if (compiled && made.native_off) {
         t->held.push_back(Value(fn));
         for (const auto& d : made.rtdescs) if (d->owner) t->held.push_back(Value(d->owner));
+        for (Function* k : made.inl_keep) t->held.push_back(Value(k));
 
         t->entry = reinterpret_cast<decltype(t->entry)>(made.base + made.native_off);
         t->slim = made.base + made.native_slim_off;
@@ -4213,6 +4214,7 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
     if (!compiled || !made.native_off) return false;
     t.held.push_back(Value(fn));
     for (const auto& d : made.rtdescs) if (d->owner) t.held.push_back(Value(d->owner));
+    for (Function* k : made.inl_keep) t.held.push_back(Value(k));
     t.entry = reinterpret_cast<decltype(t.entry)>(made.base + made.native_off);
     t.slim = made.base + made.native_slim_off;
     jc->opt_units.push_back(std::move(made));

@@ -11634,6 +11634,8 @@ void jit_trace(const JitCode* code, Visitor& v) {
     for (const auto& unit : code->opt_units)
         for (const auto& desc : unit.rtdescs)
             if (desc->owner) v.visit_object(static_cast<Object*>(desc->owner));
+    for (const auto& unit : code->opt_units)
+        for (Function* fn : unit.inl_keep) v.visit_object(reinterpret_cast<Object*>(fn));
 }
 }
 

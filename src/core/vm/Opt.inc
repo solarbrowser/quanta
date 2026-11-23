@@ -4743,6 +4743,14 @@ inline QUANTA_JIT_ABI uint64_t helper_call_fn(VM::Frame* f, uint64_t fn_bits, ui
                 if (JitCallIC* ic = reinterpret_cast<JitCallIC*>(argv[kCallFnIcSlot])) {
                     bool have = false;
                     for (int w = 0; w < JitCallIC::kWays; w++) if (ic->fn_bits[w] == fn_bits) have = true;
+                    // A cache way names its function by its bits, so the thunk keeps that function alive (the bits of a function that was freed must not become another function's: its next owner would be
+                    // run by this unit). The thunk of a code shared by closures holds up to 64 of them; more go through the helper.
+                    if (!have) {
+                        bool held = false;
+                        for (const Value& h : it->second->held) if (std::bit_cast<uint64_t>(h) == fn_bits) { held = true; break; }
+                        if (!held && it->second->held.size() < 64) { it->second->held.push_back(fv); held = true; }
+                        have = !held;
+                    }
                     if (!have) {
                         const int w = ic->next++ % JitCallIC::kWays;
                         ic->entry[w] = reinterpret_cast<void*>(it->second->slim);
@@ -8370,6 +8378,8 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
         unit.inl.resize(g.funcs.size());
         for (size_t k = 1; k < g.funcs.size(); k++) {
             const Func& fn = g.funcs[k];
+            if (fn.fnp) unit.inl_keep.push_back(fn.fnp);
+            if (fn.gbody) unit.inl_keep.push_back(fn.gbody);
             unit.inl[k] = {fn.chunk, fn.parent, fn.var_base, fn.nregs, fn.call_pc, fn.call_len, fn.gctor, fn.gbody, fn.env_var >= 0, fn.cur_env_var >= 0};
         }
         unit.inl_states.resize(g.states.size());
