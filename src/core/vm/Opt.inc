@@ -121,6 +121,7 @@ enum class K : uint8_t {
     LoadEnvName,          // [Tagged a: an environment's bits, else the frame's current one] -> Tagged: the binding named imm (an interned key) found by walking out through declarative environments; deopt when it is not plainly there
     InitEnvName,          // Tagged a (the value) [, Tagged b: an environment's bits, else the frame's]: initializes the binding named imm in that environment
     StoreEnvName,         // Tagged a (the value) [, Tagged b: an environment's bits, else the frame's]: assigns the binding named imm found by walking out; deopt (before doing anything) unless it is plainly assignable
+    IsNum,                // Tagged a -> Bool: a number (a double, or the boxed NaN and infinities)
     CheckIterArray,       // Ptr a: deopt unless it is a dense array that for-of walks by index (the array iteration protector is intact)
     FnEnv,                // Tagged a (a function) -> Tagged: the bits of the environment it captured; deopt when it captured none
 };
@@ -268,7 +269,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "FnEnv", "IterElem", "IsIterDone", "CheckIterArray", "LoadEnvName", "InitEnvName", "StoreEnvName"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "IterElem", "IsIterDone", "LoadEnvName", "InitEnvName", "StoreEnvName", "IsNum", "CheckIterArray", "FnEnv"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -755,7 +756,7 @@ inline Effects op_effects(Op op, const uint8_t* code, uint32_t pc, uint32_t acc,
         e.rd(acc); e.wr(acc); break;
     case Op::Jump: break;
     case Op::JumpIfTrue: case Op::JumpIfFalse: case Op::Return: case Op::JumpIfNullish: case Op::JumpIfNotNullish:
-    case Op::JumpIfNotUndefined: e.rd(acc); break;
+    case Op::JumpIfNotUndefined: case Op::JumpIfNotNumber: e.rd(acc); break;
     case Op::GetNamed: R(pc + 1); e.wr(acc); break;
     case Op::GetNamedStar: R(pc + 1); e.wr(acc); W(pc + 6); break;
     case Op::SetNamed: R(pc + 1); e.rd(acc); break;
@@ -1813,6 +1814,17 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     case Op::CheckObjectCoercible: {
         const int32_t v = tagged(value(acc()));
         set(acc(), guarded(K::CheckNotNullish, Rep::Tagged, v));
+        return true;
+    }
+    case Op::JumpIfNotNumber: {
+        // The dispatch of a switch over numbers: leaves for the branch target unless the accumulator is a number.
+        const int32_t c = emit(K::NotBool, Rep::Bool, emit(K::IsNum, Rep::Bool, tagged(value(acc()))));
+        Block& B = g_.b[cb_];
+        B.term.kind = T::Branch;
+        B.term.cond = c;
+        B.term.t = B.succs[0];
+        B.term.f = B.succs[1];
+        ended = true;
         return true;
     }
     case Op::JumpIfNullish: case Op::JumpIfNotNullish: case Op::JumpIfNotUndefined: {
@@ -4395,7 +4407,7 @@ inline void Builder::cse() {
         case K::AddF: case K::SubF: case K::MulF: case K::DivF: case K::NegF: case K::ModF:
         case K::AndI: case K::OrI: case K::XorI: case K::ShlI: case K::SarI: case K::ShrI: case K::NotI:
         case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag:
-        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish: case K::CheckBits: case K::IsFn:
+        case K::NotBool: case K::TruthyF: case K::Truthy: case K::NotTdz: case K::CheckObj: case K::ToIndex: case K::NonNegI32: case K::CheckFn: case K::IsNullish: case K::CheckNotNullish: case K::CheckBits: case K::IsFn: case K::IsNum:
             return 1;
         // A variable of an environment is changed only by a store to the environment or by something that runs script, which is what the binding epoch counts: a
         // store to an array's element or an object's slot cannot touch it.
@@ -5146,7 +5158,7 @@ inline QUANTA_JIT_ABI uint64_t helper_new_object(uint64_t fn_bits, const JitCode
 inline QUANTA_JIT_ABI uint64_t helper_new_literal(const BytecodeChunk::IcFeedback::LiteralTemplate* t, Context* ctx) noexcept {
     if (!t->shape) return 0;
     Object* obj;
-    if (t->count <= 4) {
+    if (t->count <= 16) {
         obj = ObjectFactory::create_object_with_slots((t->count + 1u) & ~1u).release();
     } else {
         obj = ObjectFactory::create_object().release();
@@ -5551,6 +5563,7 @@ inline bool Emitter::allocate() {
     // Nothing may be live across a step: the callee clobbers every register and the tier does not
     // save them (a step is a full barrier, so the builder never lets a value cross one). Checked on
     // real liveness, not on the intervals, which have no holes and so overlap steps they are dead at.
+    // (A stack slot for such a value was tried: Fe, Je and Re of code.js then compile, and deoptimize on their loop-carried values again and again: +13% instructions.)
     for (int32_t blk : order_) {
         std::vector<uint64_t> live = live_out[blk];
         const Term& t = g_.b[blk].term;
@@ -6375,6 +6388,33 @@ inline void Emitter::emit_node(int32_t id) {
         a_.jmp(done);
         a_.bind(no);
         a_.mov_imm32(RAX, 0);
+        a_.bind(done);
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov32(d, RAX);
+        commit_g(id, d);
+        return;
+    }
+    case K::IsNum: {
+        // A double has not all ones in its exponent; the boxed NaN, -Infinity and +Infinity (0x7FF8, 0x7FFA, 0x7FFB in the top 16 bits) are numbers as well.
+        const Reg s = use_g(n.a, RAX);
+        Label& yes = new_label();
+        Label& done = new_label();
+        a_.mov(RCX, s);
+        a_.shr_imm(RCX, 52);
+        a_.cmp32_imm(RCX, 0x7FF);
+        a_.jcc(CC_NE, yes);
+        a_.mov(RCX, s);
+        a_.shr_imm(RCX, 48);
+        a_.cmp32_imm(RCX, 0x7FF8);
+        a_.jcc(CC_E, yes);
+        a_.cmp32_imm(RCX, 0x7FFA);
+        a_.jcc(CC_E, yes);
+        a_.cmp32_imm(RCX, 0x7FFB);
+        a_.jcc(CC_E, yes);
+        a_.mov_imm32(RAX, 0);
+        a_.jmp(done);
+        a_.bind(yes);
+        a_.mov_imm32(RAX, 1);
         a_.bind(done);
         const Reg d = def_g(id, RAX);
         if (d != RAX) a_.mov32(d, RAX);
@@ -8295,7 +8335,7 @@ inline bool leaf_graph(const Graph& g, uint8_t& regs) {
             case K::ShrI: case K::NotI: case K::LtF: case K::GtF: case K::LeF: case K::GeF: case K::EqF: case K::NeF: case K::EqTag: case K::NeTag: case K::NotBool:
             case K::Truthy: case K::TruthyF: case K::NotTdz: case K::StoreReg: case K::StoreAcc: case K::CheckObj: case K::CheckShape: case K::LoadSlot:
             case K::CheckDense: case K::ToIndex: case K::LoadElem: case K::ArrayLen: case K::LoadThis: case K::NonNegI32: case K::CheckFn: case K::CheckProto:
-            case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadProtoPoly: case K::CheckNotNullish: case K::IsFn: case K::Trap: case K::CheckBits: case K::MathF:
+            case K::CheckEpoch: case K::LoadHolder: case K::LoadPoly: case K::LoadProtoPoly: case K::CheckNotNullish: case K::IsFn: case K::IsNum: case K::Trap: case K::CheckBits: case K::MathF:
             case K::IsNullish: case K::LoadTyped: case K::AddI: case K::SubI: case K::MulI: case K::CheckI32: case K::CmpI:
                 break;
             default:

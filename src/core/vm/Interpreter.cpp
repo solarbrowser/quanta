@@ -10554,7 +10554,7 @@ QUANTA_HANDLER Value h_CreateObjectT(HANDLER_PARAMS);
     if (t.shape) [[clang::musttail]] return h_CreateObjectT(f, pc, acc, regs, code);
     // The ordinary object, the way Op::CreateObject makes it; the properties arrive one by one.
     Object* obj;
-    if (t.count <= 4) {
+    if (t.count <= 16) {
         obj = ObjectFactory::create_object_with_slots((t.count + 1u) & ~1u).release();
     } else {
         obj = ObjectFactory::create_object().release();
@@ -10570,7 +10570,7 @@ QUANTA_HANDLER Value h_CreateObjectT(HANDLER_PARAMS) {
     const BytecodeChunk::IcFeedback::LiteralTemplate& t = f.chunk->ic_feedback->literal_templates[read_u16(code, pc + 1)];
     if (UNLIKELY(!t.shape)) [[clang::musttail]] return h_CreateObjectTSlow(f, pc, acc, regs, code);
     Object* obj;
-    if (t.count <= 4) {
+    if (t.count <= 16) {
         obj = ObjectFactory::create_object_with_slots((t.count + 1u) & ~1u).release();
     } else {
         obj = ObjectFactory::create_object().release();

@@ -977,7 +977,7 @@ QUANTA_JIT_ABI int fast_create_object_t(Frame* f, uint32_t pc, uint32_t) noexcep
     const auto& t = f->chunk->ic_feedback->literal_templates[read_u16(f->chunk->code.data(), pc + 1)];
     if (!t.shape) return 0;
     Object* obj;
-    if (t.count <= 4) {
+    if (t.count <= 16) {
         obj = ObjectFactory::create_object_with_slots((t.count + 1u) & ~1u).release();
     } else {
         obj = ObjectFactory::create_object().release();
