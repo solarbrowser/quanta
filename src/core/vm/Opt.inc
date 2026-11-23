@@ -369,7 +369,9 @@ struct Config {
     uint32_t inline_recursion = 99;   // QUANTA_OPT_RECUR: how many times a function may stand inside itself in the chain of inlined calls (the root counts)
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 256, entry_compile_at = 256;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
+    bool reclaim = true;              // QUANTA_OPT_RECLAIM=0: units that do not run are not given back
     uint32_t budget_offers = 8192;    // QUANTA_OPT_BUDGET_OFFERS: offers of one chunk, past the budget, before the budget grows for it
+    size_t code_rate = 4u << 20;      // QUANTA_OPT_BUDGET_RATE_MB: bytes of code the tier may make per second past the grace period, above the budget
     double code_grace = 5.0;          // QUANTA_OPT_BUDGET_GRACE_S: seconds from the first compile in which the budget does not grow (a page that is still loading is held to it)
     size_t code_step = 1u << 20;      // QUANTA_OPT_BUDGET_STEP_KB: what the budget grows by each time
     size_t code_extra_max = 32u << 20; // QUANTA_OPT_BUDGET_EXTRA_MB: the most the budget grows by in all
@@ -406,6 +408,8 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_CALLS")) c.allow_calls = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_POLY")) c.poly_max = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_INLINE")) c.inl = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_BUDGET_RATE_MB")) c.code_rate = static_cast<size_t>(std::atoi(e)) << 20;
+        if (const char* e = std::getenv("QUANTA_OPT_RECLAIM")) c.reclaim = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_BUDGET_GRACE_S")) c.code_grace = std::atof(e);
         if (const char* e = std::getenv("QUANTA_OPT_BUDGET_OFFERS")) c.budget_offers = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_BUDGET_STEP_KB")) c.code_step = static_cast<size_t>(std::atoi(e)) << 10;
@@ -8315,8 +8319,17 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     // the code that is alive may be that of a part of the program that has finished: after kBudgetOffers offers of one chunk the budget grows by a step (up to a ceiling), and the
     // offers before are turned down without the chunk being given up on (budget_pending: the caller offers it again).
     g_budget_pending = false;
+    // What the tier makes in all is held to the budget too, plus a few megabytes a second after the first seconds of the process: units that deoptimize are made again and again, and
+    // the memory that makes costs does not come back with the code (the code freed, the process stays as large as the work made it).
+    static const auto g_first_compile = std::chrono::steady_clock::now();
+    {
+        const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_first_compile).count();
+        const size_t allowed = config().code_budget + (secs > config().code_grace ? static_cast<size_t>((secs - config().code_grace) * static_cast<double>(config().code_rate)) : 0);
+        if (g_cfg.opt_made_bytes >= allowed) { if (config().log) std::fprintf(stderr, "[opt] refused (code made): %zu bytes made, %zu allowed\n", g_cfg.opt_made_bytes, allowed); return false; }
+    }
     static thread_local size_t g_budget_extra = 0;
     static thread_local std::unordered_map<const BytecodeChunk*, uint32_t> g_budget_offers;
+    if (g_cfg.opt_live_bytes >= config().code_budget + g_budget_extra && config().reclaim) opt_reclaim();
     if (g_cfg.opt_live_bytes >= config().code_budget + g_budget_extra) {
         uint32_t& offers = g_budget_offers[&chunk];
         if (offers < config().budget_offers) {
@@ -8376,6 +8389,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     uint8_t* start = nullptr;
     if (!alloc_exec(bytes, mem, size, start)) return false;
     g_cfg.opt_live_bytes += size;
+    g_cfg.opt_made_bytes += size;
     unit.mem = mem;
     unit.mem_size = size;
     unit.code_bytes = bytes.size();

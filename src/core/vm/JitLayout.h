@@ -237,6 +237,8 @@ struct JitCode {
             Shape* t_from = nullptr; Shape* t_to = nullptr; Object* t_proto = nullptr; uint64_t t_epoch = 0; uint8_t t_type = 0;
         };
         std::vector<std::unique_ptr<RtDesc>> rtdescs;
+        uint64_t seen_runs = 0;                 // runs (and native runs) when the reclaim pass last looked
+        uint8_t idle = 0;                       // reclaim passes it has gone through without running
         std::vector<InlFrame> inl;
         std::vector<Function*> inl_keep;        // the functions inlined here (and the bodies of forwarding constructors): the unit's code was made for their chunks, jit_trace keeps them alive
         struct InlState { int32_t func = 0; uint32_t pc = 0; std::vector<uint32_t> vars; };   // vars: global variable numbers

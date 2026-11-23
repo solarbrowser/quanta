@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <type_traits>
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/core/runtime/RegExp.h"
@@ -991,8 +992,9 @@ constinit thread_local size_t g_scanned_words = 0;
 #  define QUANTA_NO_ASAN
 #endif
 
+template <class V>
 QUANTA_NO_ASAN
-void scan_range(MarkVisitor& v, const void* lo, const void* hi) {
+void scan_range(V& v, const void* lo, const void* hi) {
     auto a = (reinterpret_cast<uintptr_t>(lo) + sizeof(uint64_t) - 1) & ~(sizeof(uint64_t) - 1);
     auto b = reinterpret_cast<uintptr_t>(hi) & ~(sizeof(uint64_t) - 1);
     g_scanned_words += (b > a) ? (b - a) / sizeof(uint64_t) : 0;
@@ -1033,8 +1035,9 @@ void main_thread_stack_bounds(const char** lo, const char** hi) {
     *hi = cached_hi;
 }
 
+template <class V>
 __attribute__((no_sanitize("address")))
-void scan_stacks(MarkVisitor& v) {
+void scan_stacks_t(V& v) {
     g_scanned_words = 0;
     // Spill registers into a struct scanned explicitly below -- relying on
     // it falling inside [sp, main_hi] by luck of stack layout missed a
@@ -1122,9 +1125,21 @@ void scan_stacks(MarkVisitor& v) {
             }
         }
         // A fiber of the heap being retired is going with it, and what it holds with it.
-        if (rec.extra_roots && !Heap::is_retiring()) rec.extra_roots(v);
+        if constexpr (std::is_same_v<V, MarkVisitor>) { if (rec.extra_roots && !Heap::is_retiring()) rec.extra_roots(v); }
     });
 }
+
+void scan_stacks(MarkVisitor& v) { scan_stacks_t(v); }
+
+// What the stack words are asked: does one of them lie in a range (the machine code of a unit: a word there is a return address into it)?
+struct RangeProbe {
+    const std::pair<uintptr_t, uintptr_t>* ranges;
+    size_t n;
+    bool* hit;
+    void mark_word(uint64_t w) {
+        for (size_t i = 0; i < n; i++) if (w >= ranges[i].first && w < ranges[i].second) hit[i] = true;
+    }
+};
 
 
 thread_local Collector::CycleStats g_last_cycle;
@@ -2193,6 +2208,11 @@ void Collector::pop_value_vector(const std::vector<Value>* vec) {
     for (size_t i = roots.size(); i-- > 0;) {
         if (roots[i] == vec) { roots.erase(roots.begin() + i); return; }
     }
+}
+
+void Collector::stack_words_hit(const std::pair<uintptr_t, uintptr_t>* ranges, size_t n, bool* hit) {
+    RangeProbe probe{ranges, n, hit};
+    scan_stacks_t(probe);
 }
 
 void Collector::purge_stack_roots(const void* lo, const void* hi) {

@@ -119,6 +119,7 @@ struct Config {
     uint32_t threshold = 6;        // calls before a loop-free function is compiled
     const char* dump_dir = nullptr;
     size_t mapped_bytes = 0;
+    size_t opt_made_bytes = 0;     // ... and all it has made
     size_t opt_live_bytes = 0;     // the optimizing tier's units that are alive now (their machine code; given back when their chunk dies)
     size_t max_mapped_bytes = 192u << 20;
     uint32_t compiled = 0, refused = 0;
@@ -3020,13 +3021,18 @@ std::unique_ptr<JitCode, JitCodeDeleter> Compiler::compile(const char*& why) {
     return jc;
 }
 
+// Every JitCode of this thread that has optimizing-tier units, with its chunk: what the reclaim pass walks (free_code takes a JitCode out).
+inline thread_local std::unordered_map<JitCode*, const BytecodeChunk*> g_opt_codes;
+
 void free_code(JitCode* c) noexcept {
     if (!c) return;
+    g_opt_codes.erase(c);
     if (c->mem) {
         platform::unmap(c->mem, c->mem_size);
         g_cfg.mapped_bytes -= c->mem_size;
     }
     for (auto& u : c->opt_units) {
+        if (!u.mem) continue;      // (given back by the reclaim pass)
         platform::unmap(u.mem, u.mem_size);
         g_cfg.mapped_bytes -= u.mem_size;
         g_cfg.opt_live_bytes -= u.mem_size;
@@ -3067,6 +3073,7 @@ void compile_chunk(const BytecodeChunk& chunk) noexcept {
             compiled->opt_state = chunk.jit->opt_state;
         }
         chunk.jit = std::move(compiled);
+        if (!chunk.jit->opt_units.empty()) g_opt_codes[chunk.jit.get()] = &chunk;
         chunk.jit_state = 1;
         chunk.bl_compiled = true;
         chunk.inline_state &= kInlineKeepBits;          // (undecided: the verdict is made the next call, with the generated code in view, and a stackless frame of it runs there)
@@ -3150,6 +3157,7 @@ struct NativeThunk {
     uint32_t runs_before_stale = 0;
     uint32_t stale_calls = 0;  // calls the helper made for the callee while the thunk was stale and the rebuild budget was spent
     bool closed = false;       // no more rebuilds
+    bool cold = false;         // its unit was given back by the reclaim pass for not running: the rebuild it asks for is not charged to the rebuild budget
     bool stale = false;        // its unit was found wrong (guards failing, learned from): its caches are cleared and the next call through the helper builds it again
     uint32_t ui = 0;           // the unit that is current, in its chunk's JitCode
     uint8_t rebuilds = 0;
@@ -3160,6 +3168,7 @@ inline thread_local std::unordered_map<uint64_t, std::unique_ptr<NativeThunk>> g
 inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& this_value, const Value* argv, uint32_t argc, bool construct);
 inline QUANTA_JIT_ABI uint64_t native_exit(Frame* f, uint64_t status, JitRt* rt) noexcept;
 inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, const Value& this_value, const Value* argv, uint32_t argc);
+bool opt_reclaim();
 #include "Opt.inc"
 
 // The interpreter's offer at a hot back edge (see osr_try in Interpreter.cpp).
@@ -3324,6 +3333,92 @@ std::set<std::pair<const BytecodeChunk*, uint32_t>>& opt_refused() {
     return refused;
 }
 
+// ---- giving the optimizing tier's code back ----
+// The code budget counts the units that are alive. When it is spent, the units that have not run for a while are given up (their entries go, nothing enters them any more) and
+// the memory of every unit that nothing enters is freed, unless a word on a stack says that something is still running in it (a return address into its code: an activation
+// that called out, a suspended fiber). A function whose unit was given up is offered to the tier again when it runs again.
+void opt_unit_release(JitCode::OptUnit& u) {
+    if (!u.call_ics.empty()) {
+        // (The caches of this unit's call sites are named by the lists of the thunks they were bound to.)
+        for (auto& [key, nt] : g_native_thunks)
+            if (nt) std::erase_if(nt->ics, [&](const std::pair<JitCallIC*, int>& pr) {
+                for (const auto& c : u.call_ics) if (c.get() == pr.first) return true;
+                return false;
+            });
+    }
+    platform::unmap(u.mem, u.mem_size);
+    g_cfg.mapped_bytes -= u.mem_size;
+    g_cfg.opt_live_bytes -= u.mem_size;
+    auto rt = std::move(u.rt);
+    u = JitCode::OptUnit{};
+    u.rt = std::move(rt);
+}
+
+// Whether nothing enters unit `k` of `jc` any more.
+bool opt_unit_dead(const BytecodeChunk* chunk, const JitCode::OptUnit& u, uint32_t k) {
+    if (u.entries.empty()) return true;
+    auto it = g_native_by_chunk.find(chunk);
+    return it != g_native_by_chunk.end() && it->second->ui != k;      // (a thunk's unit that a rebuild replaced)
+}
+
+bool opt_reclaim() {
+    static thread_local std::chrono::steady_clock::time_point last{};
+    const auto now = std::chrono::steady_clock::now();
+    static const long interval_ms = [] { const char* e = std::getenv("QUANTA_OPT_RECLAIM_MS"); return e ? std::atol(e) : 250l; }();
+    if (now - last < std::chrono::milliseconds(interval_ms)) return false;
+    last = now;
+    size_t freed = 0, killed = 0;
+    // 1. Give up the units that did not run since the last pass but one.
+    for (auto& [jc, chunk] : g_opt_codes) {
+        if (jc->owner_thread != &g_thread_marker) continue;
+        for (uint32_t k = 0; k < jc->opt_units.size(); k++) {
+            JitCode::OptUnit& u = jc->opt_units[k];
+            if (!u.mem || opt_unit_dead(chunk, u, k)) continue;
+            const uint64_t runs = u.rt->opt_runs + u.rt->native_runs;
+            if (runs != u.seen_runs) { u.seen_runs = runs; u.idle = 0; continue; }
+            if (++u.idle < 2) continue;
+            u.entries.clear();
+            if (chunk->direct == u.direct.get()) chunk->direct = nullptr;
+            auto nt = g_native_by_chunk.find(chunk);
+            if (nt != g_native_by_chunk.end()) {
+                NativeThunk& t = *nt->second;
+                t.ok = false;
+                t.stale = true;
+                t.cold = true;
+                t.runs_before_stale = u.rt->native_runs;
+                for (auto& [ic, w] : t.ics) { ic->fn_bits[w] = 0; ic->entry[w] = nullptr; }
+                t.ics.clear();
+            }
+            killed++;
+        }
+    }
+    // 2. Free the units that nothing enters and nothing runs in.
+    std::vector<std::pair<uintptr_t, uintptr_t>> ranges;
+    std::vector<std::pair<JitCode*, uint32_t>> who;
+    for (auto& [jc, chunk] : g_opt_codes) {
+        if (jc->owner_thread != &g_thread_marker) continue;
+        for (uint32_t k = 0; k < jc->opt_units.size(); k++) {
+            JitCode::OptUnit& u = jc->opt_units[k];
+            if (!u.mem || !opt_unit_dead(chunk, u, k)) continue;
+            u.entries.clear();
+            if (chunk->direct == u.direct.get()) chunk->direct = nullptr;
+            ranges.push_back({reinterpret_cast<uintptr_t>(u.mem), reinterpret_cast<uintptr_t>(u.mem) + u.mem_size});
+            who.push_back({jc, k});
+        }
+    }
+    if (!ranges.empty()) {
+        std::unique_ptr<bool[]> hit(new bool[ranges.size()]());
+        Collector::stack_words_hit(ranges.data(), ranges.size(), hit.get());
+        for (size_t i = 0; i < who.size(); i++) {
+            if (hit[i]) continue;
+            freed += who[i].first->opt_units[who[i].second].mem_size;
+            opt_unit_release(who[i].first->opt_units[who[i].second]);
+        }
+    }
+    if (opt::config().log) std::fprintf(stderr, "[opt] reclaim: %zu units given up, %zu bytes freed, %zu bytes alive\n", killed, freed, g_cfg.opt_live_bytes);
+    return freed > 0;
+}
+
 [[gnu::always_inline]] inline int opt_run_unit(Frame& f, const BytecodeChunk& chunk, JitCode* jc, long ui, uint32_t target, uint32_t offset);
 
 int opt_osr(Frame& f, uint32_t target, const Value& acc) {
@@ -3363,6 +3458,7 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
         // compiles it later, compile_chunk carries the optimized units over to the new JitCode.
         if (!jc) jc = opt::ensure_jitcode(chunk);
         jc->opt_units.push_back(std::move(made));
+        g_opt_codes[jc] = &chunk;
         // What the unit's property accesses learn at run time goes into the feedback of the functions they were compiled in, an inlined callee's included. The unit keeps those
         // functions alive (jit_trace), and the collector is told now that this chunk has more to trace than the last time it looked: without that, a minor collection that
         // does not look at this chunk again frees a function that a later trace is going to visit.
@@ -4157,6 +4253,7 @@ inline NativeThunk* native_thunk_make(Frame& caller, Function* fn, const Value& 
         t->entry = reinterpret_cast<decltype(t->entry)>(made.base + made.native_off);
         t->slim = made.base + made.native_slim_off;
         jc->opt_units.push_back(std::move(made));
+        g_opt_codes[jc] = ch.get();
         t->ok = true;
     }
     const BytecodeChunk* chp = ch.get();
@@ -4227,6 +4324,7 @@ inline bool native_thunk_rebuild(Frame& caller, NativeThunk& t, Function* fn, co
     t.ok = true;
     t.rebuilds++;
     g_thunk_rebuilt_total++;
+    if (t.cold) { t.cold = false; t.rebuilds--; g_thunk_rebuilt_total--; }
     return true;
 }
 

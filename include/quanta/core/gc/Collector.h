@@ -231,6 +231,9 @@ public:
     static void push_value_array(const FixedArray<Value>* arr);
     // Forgets the roots registered from inside [lo, hi), the stack of a fiber that was abandoned.
     static void purge_stack_roots(const void* lo, const void* hi);
+    // Sets hit[i] when some word of this thread's stacks (the host stack and its fibers', registers included) lies in [ranges[i].first, ranges[i].second): machine code that has
+    // a return address on a stack is still running, and must not be freed.
+    static void stack_words_hit(const std::pair<uintptr_t, uintptr_t>* ranges, size_t n, bool* hit);
     static void push_chunk(const class BytecodeChunk* chunk);
     static void pop_chunk(const class BytecodeChunk* chunk);
     static void pop_value_array(const FixedArray<Value>* arr);
