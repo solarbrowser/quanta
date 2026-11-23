@@ -8365,7 +8365,7 @@ inline bool compile(const BytecodeChunk& chunk, uint32_t pc, const Frame* peek, 
     {
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_first_compile).count();
         const size_t allowed = config().code_budget + (secs > config().code_grace ? static_cast<size_t>((secs - config().code_grace) * static_cast<double>(config().code_rate)) : 0);
-        if (g_cfg.opt_made_bytes >= allowed) { if (config().log) std::fprintf(stderr, "[opt] refused (code made): %zu bytes made, %zu allowed\n", g_cfg.opt_made_bytes, allowed); return false; }
+        if (g_cfg.opt_made_bytes >= allowed) { if (config().log) std::fprintf(stderr, "[opt] refused (code made): %zu bytes made, %zu allowed, chunk %p pc %u\n", g_cfg.opt_made_bytes, allowed, static_cast<const void*>(&chunk), pc); return false; }
     }
     static thread_local size_t g_budget_extra = 0;
     static thread_local std::unordered_map<const BytecodeChunk*, uint32_t> g_budget_offers;

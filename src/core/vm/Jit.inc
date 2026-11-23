@@ -3428,7 +3428,14 @@ int opt_osr(Frame& f, uint32_t target, const Value& acc) {
     if (jc && (jc->opt_state == 2 || jc->owner_thread != &g_thread_marker)) return 0;
     long ui = -1;
     uint32_t offset = 0;
-    if (jc) {
+    // A function's own entry (the unit the chunk's direct call enters) is found without walking the units: a function that was compiled again and again has many dead ones before it.
+    if (target == 0 && jc) {
+        if (const BytecodeChunk::DirectCall* d = chunk.direct; d && d->owner == &g_thread_marker && d->ix < jc->opt_units.size() && !jc->opt_units[d->ix].entries.empty()) {
+            ui = static_cast<long>(d->ix);
+            offset = d->off;
+        }
+    }
+    if (jc && ui < 0) {
         for (size_t k = 0; k < jc->opt_units.size() && ui < 0; k++)
             for (auto& [pc, off] : jc->opt_units[k].entries) if (pc == target) { ui = static_cast<long>(k); offset = off; break; }
     }
@@ -4446,6 +4453,7 @@ void opt_note_call(const BytecodeChunk& chunk, Frame& callee) {
         if (!g_cfg.opt || !opt::config().enabled || !opt::config().entry || (chunk.handlers && !chunk.handlers->empty()) || chunk.code.size() == 0 ||
             chunk.code.size() > opt::config().max_insns * 8u) {
             chunk.opt_entry = 2;
+            if (opt::config().log) std::fprintf(stderr, "[opt] not armed chunk %p (%zu bytes): %s\n", static_cast<const void*>(&chunk), chunk.code.size(), (chunk.handlers && !chunk.handlers->empty()) ? "has try regions" : chunk.code.size() > opt::config().max_insns * 8u ? "too big" : "tier off");
             if (!chunk_has_loop(chunk)) chunk.inline_state &= ~kInlineHasOpt;
             return;
         }
