@@ -122,6 +122,7 @@ public:
     void mov_store(Mem m, Reg src) { access(8, false, phys(src), m); }
     void mov_load32(Reg dst, Mem m) { access(4, true, phys(dst), m); }
     void mov_store32(Mem m, Reg src) { access(4, false, phys(src), m); }
+    void mov_store8(Mem m, Reg src) { access(1, false, phys(src), m); }
     void mov_store8_imm(Mem m, uint8_t imm) { mov_imm_to(kScratchData, imm); access(1, false, kScratchData, m); }
     void mov_store32_imm(Mem m, uint32_t imm) { mov_imm_to(kScratchData, imm); access(4, false, kScratchData, m); }
     void movzx8_load(Reg dst, Mem m) { access(1, true, phys(dst), m); }

@@ -77,7 +77,7 @@ jobs:
           submodules: recursive
 
       - name: Install LLVM/Clang
-        run: choco install llvm -y --no-progress
+        run: choco upgrade llvm -y --no-progress
 
       - name: Build engine
         shell: cmd
