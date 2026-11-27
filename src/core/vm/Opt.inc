@@ -124,6 +124,7 @@ enum class K : uint8_t {
     IsNum,                // Tagged a -> Bool: a number (a double, or the boxed NaN and infinities)
     CheckIterArray,       // Ptr a: deopt unless it is a dense array that for-of walks by index (the array iteration protector is intact)
     FnEnv,                // Tagged a (a function) -> Tagged: the bits of the environment it captured; deopt when it captured none
+    FrameOp,              // aux: the opcode, imm: its operand; a scope or closure instruction of the root, done on the frame itself (nothing in registers is touched)
 };
 
 struct Node {
@@ -269,7 +270,7 @@ struct Graph {
 
 inline const char* kname(K k) {
     static const char* names[] = {
-        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "IterElem", "IsIterDone", "LoadEnvName", "InitEnvName", "StoreEnvName", "IsNum", "CheckIterArray", "FnEnv"};
+        "ConstTagged", "ConstF64", "ConstBool", "ConstI32", "LoadReg", "LoadAcc", "Phi", "ToNum", "ToTagged", "ToBool", "CheckNum", "BoxF64", "BoxBool", "ToI32", "I32ToF64", "U32ToF64", "AddF", "SubF", "MulF", "DivF", "NegF", "AndI", "OrI", "XorI", "ShlI", "SarI", "ShrI", "NotI", "LtF", "GtF", "LeF", "GeF", "EqF", "NeF", "EqTag", "NeTag", "NotBool", "Truthy", "TruthyF", "NotTdz", "StoreReg", "StoreAcc", "Step", "StepExit", "Poll", "CheckObj", "CheckShape", "LoadSlot", "StoreSlot", "CheckDense", "ToIndex", "LoadElem", "StoreElem", "ArrayLen", "ModF", "LoadThis", "LoadEnv", "StoreEnv", "NonNegI32", "CheckFn", "CheckProto", "CheckEpoch", "LoadHolder", "LoadPoly", "CheckNotNullish", "IsFn", "Trap", "CheckBits", "MathF", "CallNative", "NewLiteral", "NewObject", "IsNullish", "LoadLookup", "LoadTyped", "StoreTyped", "Rt", "CallFn", "AddI", "SubI", "MulI", "CheckI32", "CmpI", "NewArray", "LoadProtoPoly", "CheckDenseSt", "NewArrayConst", "DefineElem", "CheckLookupRes", "StoreLookup", "CheckPlainElems", "LoadElemPlain", "StoreElemPlain", "StoreTrans", "NewEnv", "NewClosure", "NewBlockEnv", "AdvanceEnv", "EnvOuter", "IterElem", "IsIterDone", "LoadEnvName", "InitEnvName", "StoreEnvName", "IsNum", "CheckIterArray", "FnEnv", "FrameOp"};
     return names[static_cast<int>(k)];
 }
 inline const char* rname(Rep r) {
@@ -283,7 +284,7 @@ inline bool is_pure_removable(K k) {
     case K::StoreSlot: case K::StoreElem: case K::CheckObj: case K::CheckShape: case K::CheckDense:
     case K::ToIndex: case K::LoadElem: case K::LoadThis: case K::LoadEnv: case K::StoreEnv: case K::NonNegI32: case K::CheckFn: case K::CheckProto: case K::CheckEpoch: case K::Trap: case K::CheckNotNullish:
     case K::CallNative: case K::CheckBits: case K::CallFn: case K::Rt: case K::LoadTyped: case K::StoreTyped: case K::CheckI32: case K::DefineElem: case K::CheckDenseSt:
-    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain: case K::StoreTrans: case K::IterElem: case K::CheckIterArray: case K::LoadEnvName: case K::InitEnvName: case K::StoreEnvName:
+    case K::CheckLookupRes: case K::StoreLookup: case K::CheckPlainElems: case K::LoadElemPlain: case K::StoreElemPlain: case K::StoreTrans: case K::IterElem: case K::CheckIterArray: case K::LoadEnvName: case K::InitEnvName: case K::StoreEnvName: case K::FrameOp:
         return false;
     default: return true;
     }
@@ -367,6 +368,8 @@ struct Config {
     uint32_t deopt_ratio = 16;        // QUANTA_OPT_DEOPT_RATIO=n: a unit is given up on once it has left more than max_deopts times AND more than one run in n
     uint32_t poly_insns = 100;        // QUANTA_OPT_POLYINSNS=n: all the callees of one polymorphic site together (a monomorphic one is not held to it)
     uint32_t inline_depth = 4;
+    // Below the first level of inlining only small callees go in: large bodies nested inside large bodies cost more in code and in guards that fail than the calls they save.
+    uint32_t deep_from = 1, deep_insns = 40;       // QUANTA_OPT_DEEPFROM / QUANTA_OPT_DEEPINSNS
     uint32_t inline_recursion = 99;   // QUANTA_OPT_RECUR: how many times a function may stand inside itself in the chain of inlined calls (the root counts)
     uint32_t inline_vars = 150;       // variables the inlined callees add (the deopt scratch buffer is sized to them)
     uint32_t entry_arm_at = 256, entry_compile_at = 256;   // QUANTA_OPT_ARM / QUANTA_OPT_PROFILE: calls before a function is watched, and watched before it is compiled
@@ -434,6 +437,8 @@ inline void config_init() {
         if (const char* e = std::getenv("QUANTA_OPT_LOOPS")) c.inline_loops = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_STALOOKUP")) c.sta_lookup = e[0] && e[0] != '0';
         if (const char* e = std::getenv("QUANTA_OPT_INT32")) c.int32 = e[0] && e[0] != '0';
+        if (const char* e = std::getenv("QUANTA_OPT_DEEPFROM")) c.deep_from = static_cast<uint32_t>(std::atoi(e));
+        if (const char* e = std::getenv("QUANTA_OPT_DEEPINSNS")) c.deep_insns = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_DEPTH")) c.inline_depth = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_RECUR")) c.inline_recursion = static_cast<uint32_t>(std::atoi(e));
         if (const char* e = std::getenv("QUANTA_OPT_HOIST")) { c.hoist = e[0] && e[0] != '0'; c.hoist_every = e[0] == '2'; }
@@ -1099,8 +1104,24 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
     const uint32_t pc = in.pc;
     // (A site the dense-array guards kept failing at is a step, unless the interpreter has met the plain-element road there: that is compiled for what it is.)
     const bool plain_site = (op == Op::GetKeyed && plain_keyed(pc + 2)) || (op == Op::SetKeyed && plain_keyed(pc + 3));
-    if (cf_ == 0 && avoided(pc) && !plain_site) { if (config().log) std::fprintf(stderr, "[opt] pc %u avoided\n", pc); return false; }
     const bool generic_here = cf_ != 0 && avoid_ && !avoid_->generic_in.empty() && avoid_->generic_in.count({F().chunk, pc});
+    // A lookup whose cached entry keeps failing is read by name rather than left to a step, if the name is a declarative binding.
+    if ((op == Op::LdaLookup || op == Op::LdaLookupStar) && ((cf_ == 0 && avoided(pc)) || generic_here)) {
+        const uint32_t nidx = u16(pc + 1);
+        const bool fused = op == Op::LdaLookupStar;
+        const uint32_t dst = fused ? F().var_base + code[pc + 3] : 0;
+        Environment* sample = cf_ == 0 ? (g_.frame ? g_.frame->current_lexical_env : nullptr) : (F().fnp ? F().fnp->get_closure_environment() : nullptr);
+        Value seen;
+        if (sample && nidx < F().chunk->names.size() && (!fused || dst < F().acc_var) && sample->try_read_declarative_chain(F().chunk->names[nidx], seen)) {
+            int32_t scope = -1;
+            if (cf_ != 0) scope = F().cur_env_var >= 0 ? tagged(value(static_cast<uint32_t>(F().cur_env_var))) : guarded(K::FnEnv, Rep::Tagged, tagged(value(static_cast<uint32_t>(F().fn_var))), -1, 0, 0);
+            const int32_t v = guarded(K::LoadEnvName, Rep::Tagged, scope, -1, 0, reinterpret_cast<uint64_t>(F().chunk->names[nidx]));
+            set(acc(), v);
+            if (fused) set(dst, v);
+            return true;
+        }
+    }
+    if (cf_ == 0 && avoided(pc) && !plain_site) { if (config().log) std::fprintf(stderr, "[opt] pc %u avoided\n", pc); return false; }
     if (generic_here && !plain_site) { if (config().log) std::fprintf(stderr, "[opt] callee pc %u made generic\n", pc); return false; }
     auto reg = [&](uint32_t at) -> uint32_t { return F().var_base + code[at]; };
     auto ok_reg = [&](uint32_t r) { return r < F().acc_var; };
@@ -1985,23 +2006,37 @@ inline bool Builder::translate_fast(const Insn& in, bool& ended) {
         return true;
     }
     case Op::EnterLoopEnv: case Op::AdvanceLoopEnv: {
-        if (cf_ == 0 || F().cur_env_var < 0 || !F().chunk->env) return false;
+        if (!F().chunk->env) return false;
         const uint32_t idx = u16(pc + 1);
-        if (idx >= F().chunk->env->loop_envs.size() || F().chunk->env->loop_envs[idx].size() > 8) return false;
+        if (idx >= F().chunk->env->loop_envs.size()) return false;
+        if (cf_ == 0) {
+            if (op != Op::EnterLoopEnv) return false;
+            emit(K::FrameOp, Rep::None, -1, -1, static_cast<uint32_t>(op), idx);
+            return true;
+        }
+        if (F().cur_env_var < 0 || F().chunk->env->loop_envs[idx].size() > 8) return false;
         const int32_t ne = guarded(op == Op::EnterLoopEnv ? K::NewBlockEnv : K::AdvanceEnv, Rep::Tagged, tagged(value(static_cast<uint32_t>(F().cur_env_var))), -1, idx, reinterpret_cast<uint64_t>(F().chunk));
         set(static_cast<uint32_t>(F().cur_env_var), ne);
         return true;
     }
     case Op::ExitLoopEnv: {
-        if (cf_ == 0 || F().cur_env_var < 0) return false;
+        if (cf_ == 0) {
+            emit(K::FrameOp, Rep::None, -1, -1, static_cast<uint32_t>(op), 0);
+            return true;
+        }
+        if (F().cur_env_var < 0) return false;
         set(static_cast<uint32_t>(F().cur_env_var), emit(K::EnvOuter, Rep::Tagged, tagged(value(static_cast<uint32_t>(F().cur_env_var)))));
         return true;
     }
     case Op::CreateClosure: {
-        // Only in an environment-mode callee the unit made the environment for: the closure captures that one.
-        if (cf_ == 0 || F().cur_env_var < 0 || !F().chunk->closures) return false;
+        if (!F().chunk->closures) return false;
         const uint32_t idx = u16(pc + 1);
         if (idx >= F().chunk->closures->size()) return false;
+        if (cf_ == 0) {
+            set(acc(), guarded(K::FrameOp, Rep::Tagged, -1, -1, static_cast<uint32_t>(op), idx));
+            return true;
+        }
+        if (F().cur_env_var < 0) return false;
         const int32_t id = guarded(K::NewClosure, Rep::Tagged, tagged(value(static_cast<uint32_t>(F().cur_env_var))), tagged(value(static_cast<uint32_t>(F().this_var))), 0,
                                    reinterpret_cast<uint64_t>(&(*F().chunk->closures)[idx]));
         set(acc(), id);
@@ -2227,7 +2262,7 @@ inline bool Builder::inline_targets(int32_t fi, const Insn& in, std::vector<Func
             if (static_cast<Op>(in.op) == Op::CallViaFunctionCall && !via_call_pristine_in(*P.chunk, in.pc, Value(fn))) return no(14);
             uint32_t n = 0;
             if (!inline_scan(fn, c, n)) return no(11);
-            if (n > config().inline_insns) { if (config().log) std::fprintf(stderr, "[scan] too-big %u\n", n); return no(11); }
+            if (n > config().inline_insns || (depth >= config().deep_from && n > config().deep_insns)) { if (config().log) std::fprintf(stderr, "[scan] too-big %u\n", n); return no(11); }
             poly_total += n;
             out.push_back(fn);
         }
@@ -3655,7 +3690,7 @@ inline void Builder::hoist_invariants() {
                 const Node& nd = g_.n[id];
                 if (nd.dead) continue;
                 switch (nd.op) {
-                case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::LoadElemPlain: case K::StoreElemPlain: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
+                case K::Step: case K::StepExit: case K::CallNative: case K::CallFn: case K::Rt: case K::FrameOp: case K::LoadElemPlain: case K::StoreElemPlain: case K::NewLiteral: case K::NewObject: case K::NewArray: case K::NewArrayConst: opaque = true; break;
                 case K::StoreEnv: env_store = true; break;
                 case K::StoreLookup: env_store = true; slot_store = true; break;
                 case K::StoreSlot: case K::StoreTrans: slot_store = true; break;
@@ -4473,14 +4508,14 @@ inline void Builder::cse() {
         }
     };
     auto breaks_bindings = [](K op) {   // what can assign to an environment slot or run script that can
-        return op == K::Step || op == K::StoreEnv || op == K::StoreLookup || op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreElemPlain;
+        return op == K::Step || op == K::StoreEnv || op == K::StoreLookup || op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::FrameOp || op == K::LoadElemPlain || op == K::StoreElemPlain;
     };
     auto breaks_guards = [](K op) {   // what can change an object's shape, density or prototype
-        return op == K::Step || op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreElemPlain;
+        return op == K::Step || op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::FrameOp || op == K::LoadElemPlain || op == K::StoreElemPlain;
     };
     auto breaks_memory = [](K op) {
         return op == K::Step || op == K::StoreSlot || op == K::StoreTrans || op == K::StoreElem || op == K::StoreElemPlain || op == K::StoreEnv || op == K::StoreLookup || op == K::StoreReg || op == K::StoreAcc ||
-               op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::LoadElemPlain || op == K::StoreTyped || op == K::DefineElem;
+               op == K::CallNative || op == K::CallFn || op == K::Rt || op == K::FrameOp || op == K::LoadElemPlain || op == K::StoreTyped || op == K::DefineElem;
     };
     struct Frame2 { int32_t blk; size_t kid; std::vector<Key> added; };
     std::vector<Frame2> stack;
@@ -5138,6 +5173,51 @@ inline QUANTA_JIT_ABI uint64_t helper_new_closure(VM::Frame* f, uint64_t env_bit
     ctx.set_variable_environment(saved_var);
     ctx.set_this_value(saved_this);
     if (threw || ctx.has_exception()) return 0;
+    return std::bit_cast<uint64_t>(r);
+}
+// A scope or closure instruction of the root frame (K::FrameOp), as its handler does it. 0 when it threw; a scope instruction answers 1.
+inline QUANTA_JIT_ABI uint64_t helper_frame_op(VM::Frame* f, uint64_t op_bits, uint64_t idx) noexcept {
+    const BytecodeChunk& chunk = *f->chunk;
+    Context& ctx = *f->ctx;
+    const Op op = static_cast<Op>(op_bits);
+    if (op == Op::ExitLoopEnv) {
+        frame_pop_block_scope(*f);
+        return 1;
+    }
+    if (op == Op::EnterLoopEnv) {
+        frame_push_block_scope(*f);
+        Environment* env = frame_lexical_env(*f);
+        const auto& vars = chunk.env->loop_envs[idx];
+        const auto& keys = loop_env_keys_for(chunk, static_cast<uint16_t>(idx));
+        if (seed_scope_bindings(env, vars, keys, nullptr)) return 1;
+        for (size_t i = 0; i < vars.size(); i++) {
+            const auto& v = vars[i];
+            if (v.is_lexical) {
+                env->create_uninitialized_binding_interned(keys[i], !v.is_const);
+                if (v.is_const) env->mark_const_binding(v.name);
+            } else env->create_binding_interned(keys[i], Value(), true);
+        }
+        return 1;
+    }
+    Value r;
+    try {
+        if (f->call_info) {
+            Environment* saved_lex = ctx.get_lexical_environment();
+            Environment* saved_var = ctx.get_variable_environment();
+            EnvironmentRoot saved_lex_root(&saved_lex);
+            EnvironmentRoot saved_var_root(&saved_var);
+            ctx.set_lexical_environment(frame_lexical_env(*f));
+            ctx.set_variable_environment(frame_variable_env(*f));
+            r = ::Quanta::instantiate_closure(ctx, (*chunk.closures)[idx], true);
+            ctx.set_lexical_environment(saved_lex);
+            ctx.set_variable_environment(saved_var);
+        } else {
+            r = ::Quanta::instantiate_closure(ctx, (*chunk.closures)[idx]);
+        }
+    } catch (...) {
+        return 0;
+    }
+    if (ctx.has_exception()) return 0;
     return std::bit_cast<uint64_t>(r);
 }
 // EnterLoopEnv for an inlined environment-mode callee: the block environment, seeded as the interpreter seeds it. 0 when the seed plan cannot be used (the unit leaves, and the interpreter
@@ -7008,6 +7088,22 @@ inline void Emitter::emit_node(int32_t id) {
         commit_g(id, d);
         return;
     }
+    case K::FrameOp: {
+        int32_t bytes;
+        save_live(bytes, &cur_ls_);
+        a_.mov(abi::A0, RBX);
+        a_.mov_imm64(abi::A1, n.aux);
+        a_.mov_imm64(abi::A2, n.imm);
+        call_c(reinterpret_cast<const void*>(&helper_frame_op));
+        restore_live(bytes, &cur_ls_);
+        if (n.rep == Rep::None) return;
+        a_.test(RAX, RAX);
+        a_.jcc(CC_E, deopt_label(n.state));
+        const Reg d = def_g(id, RAX);
+        if (d != RAX) a_.mov(d, RAX);
+        commit_g(id, d);
+        return;
+    }
     case K::NewClosure: {
         Label& dl = deopt_label(n.state);
         const Reg ev = use_g(n.a, RAX);
@@ -8225,6 +8321,7 @@ inline bool Emitter::emit(std::vector<uint8_t>& out, std::vector<std::pair<uint3
             if (g_.n[id].dead) continue;
             if (id == fused_cmp_[blk]) continue;
             switch (g_.n[id].op) {
+            case K::FrameOp:
             case K::CallFn: case K::Rt: case K::CallNative: case K::NewLiteral: case K::NewArray: case K::NewArrayConst: case K::DefineElem: case K::NewObject: case K::NewEnv: case K::NewClosure: case K::NewBlockEnv: case K::AdvanceEnv: case K::IterElem: case K::CheckIterArray: case K::LoadEnvName: case K::InitEnvName: case K::StoreEnvName:
                 cur_ls_ = live_across(id);
                 // (A native entry does not keep the allocator's registers: the call site keeps the ones that live across it.)
