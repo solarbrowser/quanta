@@ -2181,6 +2181,7 @@ static void test_modules() {
     auto parked = std::move(world.parked);
     world.parked.clear();
     for (auto& [url, done] : parked) done(S());
+    isolate->RunDueTimers();   // a late answer is a task
     CHECK(settled(*isolate, r, p).promise_state == Embed::PromiseState::Fulfilled);
     CHECK(Embed::ToWtf8(ctx, Embed::Get(ctx, Value(ctx.get_global_object()), "got")) == "L");
 
