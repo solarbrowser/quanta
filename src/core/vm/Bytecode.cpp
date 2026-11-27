@@ -55,6 +55,8 @@ void BytecodeChunk::drop_feedback() const {
     // return the old realm's object. Forgetting them is what keeps the two in step.
     if (jit) jit_forget_cells(jit.get());
     for (const auto& slot : feedback) const_cast<FeedbackSlot&>(slot).reset();
+    // An entry keeps its environment alive, and through it the realm's closures.
+    for (const auto& e : lookup_cache) const_cast<LookupCacheEntry&>(e) = LookupCacheEntry{};
     if (ic_feedback) {
         for (auto& kfb : ic_feedback->keyed_feedback) kfb.reset();
         for (auto& t : ic_feedback->literal_templates) { t.shape = nullptr; t.runs = 0; t.refused = false; }

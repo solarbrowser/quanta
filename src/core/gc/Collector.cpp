@@ -1549,10 +1549,7 @@ void run_minor_collection() {
         }
         survivors = std::move(kept);
         engine->set_survivor_traced(survivors.size());
-        // Deleted only once the pool no longer refers to them: ~Context hands
-        // an escaped owned_env_ back to the Environment survivor pool and
-        // routes the rest through Collector::release_env, so it can append
-        // while this runs.
+        // Deleted only once the pool no longer refers to them.
         for (Context* ctx : doomed) delete ctx;
     }
     auto t3 = std::chrono::steady_clock::now();

@@ -1867,7 +1867,7 @@ void Context::pop_with_scope() {
         // Function::closure_environment_), and deleting it here would leave
         // that closure holding a dangling pointer. Block scopes are leaked
         // for the same reason (see BlockStatement::evaluate) and environments
-        // are already swept by Context::~Context(), so leaking here is
+        // are already swept by the collector, so leaking here is
         // consistent.
         lexical_environment_ = lexical_environment_->get_outer();
     }

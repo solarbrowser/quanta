@@ -216,18 +216,13 @@ public:
     explicit Context(Engine* engine, Context* parent, Type type);
     // Never relocated once constructed (nothing repoints a Context anymore --
     // see the call-cost redesign plan for why that used to exist and why it
-    // doesn't need to), so there is no move constructor to write around the
-    // destructor's owned_env_ release either.
+    // doesn't need to), so there is no move constructor.
     Context(const Context&) = delete;
     Context(Context&&) = delete;
     Context& operator=(const Context&) = delete;
     Context& operator=(Context&&) = delete;
-    // Inline: reaching this in another translation unit cost a call each way
-    // on every JS call for a body this small. release_owned_env() itself
-    // stays out of line (needs Environment's full definition, this pointer
-    // check does not) -- the point is skipping the CALL entirely for the
-    // common case of nothing to release, not what happens inside it.
-    ~Context() { if (owned_env_) release_owned_env(); }
+    // Frees no environment: a context can be destroyed after its heap was collected (an Isolate's retired realms), when the cells are already gone. The collector has them.
+    ~Context() = default;
 
     // Pooled: reuses freed blocks instead of round-tripping the allocator
     // on every call (see Context.cpp).
@@ -347,11 +342,11 @@ public:
 
     Environment* get_lexical_environment() const { return lexical_environment_; }
     // The env created FOR this context (function/eval env); dies with the
-    // context in ~Context unless a capture marked it escaped.
+    // context in release_owned_env unless a capture marked it escaped.
     // Hands back the environment this context owns -- and any block scope
     // still open inside it -- deciding per environment whether it can be
-    // freed or has to be kept for whoever captured it. The destructor's own
-    // work, callable early: a context whose environment is gone is reusable,
+    // freed or has to be kept for whoever captured it.
+    // A context whose environment is gone is reusable,
     // which is what lets a call that needed a real Environment still return
     // its context to the pool.
     void release_owned_env();
@@ -913,7 +908,7 @@ private:
     // How many live environments name this one as their outer_environment_.
     // An environment must outlive every one of them: the marker follows that
     // link (Environment::gc_trace) and so does every scope-chain walk, and the
-    // scope-exit paths do NOT guarantee inner-before-outer -- ~Context releases
+    // scope-exit paths do NOT guarantee inner-before-outer -- release_owned_env frees
     // owned_env_ even when block scopes opened inside the call were abandoned
     // rather than popped (an abrupt return/throw), and those keep pointing at
     // it. Counting them is what makes the abandoned ones a leak, which is what

@@ -533,7 +533,7 @@ void Engine::add_survivor_context(Context* ctx) {
     // so every environment it points at stops being provably unreachable.
     // All three, not just the lexical one: variable_environment_ can sit on a
     // different chain (a function's var env vs. a block's lexical env), and
-    // owned_env_ is the one ~Context will hand back.
+    // owned_env_ is the one release_owned_env would hand back.
     if (ctx->get_lexical_environment()) ctx->get_lexical_environment()->mark_referenced();
     if (ctx->get_variable_environment()) ctx->get_variable_environment()->mark_referenced();
     if (ctx->get_owned_env()) ctx->get_owned_env()->mark_referenced();
