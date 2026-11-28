@@ -2891,6 +2891,9 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
 
     HybridDescriptorMap& descs = ensure_descriptors();
 
+    // An accessor kept in the shape's slots (a literal's) has no place for a value: turning it into anything else goes through the descriptor map.
+    if (shape_ && !desc.is_accessor_descriptor() && shape_->is_accessor_slot(key)) migrate_to_dictionary_mode();
+
     // Early non-configurable check -- runs BEFORE elements_ is written.
     // Covers both descriptors_-stored and externally-stored (e.g. Array.length) properties.
     if (current_context_ && has_own_property(key)) {
