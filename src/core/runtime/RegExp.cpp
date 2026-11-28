@@ -1381,13 +1381,15 @@ static std::string expand_js_charclass_shortcuts(const std::string& p, bool unic
     for (size_t i = 0; i < p.size(); i++) {
         if (p[i] == '\\' && i + 1 < p.size()) {
             char next = p[i + 1];
+            // In a class set (v flag) the ranges keep brackets of their own: as an operand of -- or && they are one set, not many.
             if (next == 's') {
-                result += (cc_depth > 0) ? s_inner : s_outer;
+                if (cc_depth > 0 && !class_sets) result += s_inner;
+                else result += s_outer;
                 i++;
                 continue;
             }
             if (next == 'S') {
-                if (cc_depth > 0) result += S_inner;
+                if (cc_depth > 0 && !class_sets) result += S_inner;
                 else { result += '['; result += S_inner; result += ']'; }
                 i++;
                 continue;
