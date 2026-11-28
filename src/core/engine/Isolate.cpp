@@ -14,8 +14,18 @@
 
 namespace Quanta {
 
+namespace {
+std::vector<Isolate*>& thread_isolates() {
+    static thread_local std::vector<Isolate*> isolates;
+    return isolates;
+}
+}
+
+const std::vector<Isolate*>& Isolate::all() { return thread_isolates(); }
+
 Isolate::Isolate() : heap_(new Heap()) {
     Heap::set_active(heap_);
+    thread_isolates().push_back(this);
 }
 
 Isolate::~Isolate() {
@@ -34,6 +44,8 @@ Isolate::~Isolate() {
     Collector::retire_heap(heap_);
     // Only now: until the heap was collected its cells named these as closure contexts.
     retired_contexts_.clear();
+    std::vector<Isolate*>& isolates = thread_isolates();
+    isolates.erase(std::remove(isolates.begin(), isolates.end(), this), isolates.end());
 }
 
 void Isolate::add_engine(Engine* engine) {

@@ -701,11 +701,16 @@ static void test_realms() {
         CHECK(eval_in(*a, "k.length").as_number() == 3);
     }
 
-    // The last realm can go, and a new one take its place.
+    // The last realm can go, and a new one take its place. The Contexts its calls left behind wait for that one,
+    // and a collection in between must keep what they point at: the new realm's collections trace them again.
+    a->Evaluate("for (let i = 0; i < 200; i++) (function () { let x = [i]; eval('x'); arguments; (function () { return x; })(); return function* () { yield x; }; })();"
+                "for (let i = 0; i < 200; i++) (class { m() { let y = i; return () => [this, y, eval('y')]; } }).prototype.m();");
     a.reset();
     isolate->CollectGarbage();
     std::unique_ptr<Embed::Realm> d = isolate->CreateRealm();
     CHECK(d != nullptr);
+    d->Evaluate("for (let i = 0; i < 200000; i++) ({ i });");
+    isolate->CollectGarbage();
     CHECK(eval_in(*d, "[1, 2, 3].map(x => x * 2).length").as_number() == 3);
 
     // An Isolate that goes first takes the realms still alive with it.

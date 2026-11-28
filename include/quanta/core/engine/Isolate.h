@@ -45,6 +45,12 @@ public:
     // True while the Isolate is destroying the realms it still holds.
     bool closing() const { return closing_; }
 
+    // This thread's Isolates.
+    static const std::vector<Isolate*>& all();
+    // Contexts of realms that are gone and that no realm has taken over yet. Nothing prunes them until one does, so the collector
+    // roots them: an Environment is a cell, and one swept from under a parked Context is traced again when the Context is handed on.
+    const std::vector<std::unique_ptr<Context>>& retired_contexts() const { return retired_contexts_; }
+
 private:
     friend class Engine;
     void add_engine(Engine* engine);

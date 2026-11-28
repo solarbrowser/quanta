@@ -11,6 +11,7 @@
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/Isolate.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/SmallMapPool.h"
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
@@ -1423,6 +1424,14 @@ namespace {
 // QUANTA_GC_ROOT_ALL_SURVIVORS=1: every survivor context is rooted in every minor, as it was (for finding out whether a bug is in skipping them).
 const bool g_survivors_always_rooted = env_flag("QUANTA_GC_ROOT_ALL_SURVIVORS");
 
+// (retired_contexts says why they are roots; an Isolate that is closing wants its heap emptied.)
+void visit_retired_contexts(MarkVisitor& v) {
+    for (const Isolate* isolate : Isolate::all()) {
+        if (isolate->closing()) continue;
+        for (const auto& ctx : isolate->retired_contexts()) v.visit_context(ctx.get());
+    }
+}
+
 void run_minor_collection() {
     ++Collector::sweep_generation_;
     static const bool verify = env_flag("QUANTA_GC_VERIFY");
@@ -1472,6 +1481,7 @@ void run_minor_collection() {
             }
         }
     }
+    visit_retired_contexts(v);
     v.visit_context(Object::current_context_);
     for (Engine* engine : Engine::all_engines())
         for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
@@ -1636,6 +1646,7 @@ void scan_major_roots(MarkVisitor& v) {
             }
         }
     }
+    visit_retired_contexts(v);
     v.revisit_context(Object::current_context_);
     for (Engine* engine : Engine::all_engines())
         for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
