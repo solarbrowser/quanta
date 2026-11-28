@@ -178,6 +178,22 @@ public:
     CallStackFrameGuard& operator=(CallStackFrameGuard&&) = delete;
 };
 
+// A generator's body runs on a stack of its own, entered without a call: this is the frame that says whose body is running, which private names resolve against.
+class GeneratorFrameGuard {
+public:
+    GeneratorFrameGuard(const std::string* filename, Function* function_ptr)
+        : stack_(CallStack::instance()), pushed_(!stack_.is_full()) {
+        if (pushed_) stack_.push_frame_unchecked(filename, function_ptr);
+    }
+    ~GeneratorFrameGuard() { if (pushed_) stack_.pop_frame(); }
+    GeneratorFrameGuard(const GeneratorFrameGuard&) = delete;
+    GeneratorFrameGuard& operator=(const GeneratorFrameGuard&) = delete;
+
+private:
+    CallStack& stack_;
+    bool pushed_;
+};
+
 #define STACK_FRAME(name, file, pos) \
     CallStackFrameGuard __frame_guard(CallStack::instance(), name, file, pos)
 

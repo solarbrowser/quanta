@@ -657,6 +657,7 @@ void AsyncGenerator::enter_fiber() {
     auto* prev = current_;
     current_ = this;
     {
+        GeneratorFrameGuard frame(&get_generator_context()->get_current_filename(), owner_fn_);
         FiberEnterScope enter_scope;
         quanta_fiber_resume(fiber_.get());
     }

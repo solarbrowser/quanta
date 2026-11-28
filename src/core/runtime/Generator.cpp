@@ -13,6 +13,7 @@
 #include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/parser/AST.h"
@@ -158,6 +159,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
         ensure_fiber();
         // The body runs in the generator function's realm, whoever called next().
         RealmScope realm_scope(&realm_of(generator_context_));
+        GeneratorFrameGuard frame(&generator_context_->get_current_filename(), generator_function_);
         FiberEnterScope enter_scope;
         quanta_fiber_resume(&fiber_);
     }
@@ -208,6 +210,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
         ensure_fiber();
         // The body runs in the generator function's realm, whoever called next().
         RealmScope realm_scope(&realm_of(generator_context_));
+        GeneratorFrameGuard frame(&generator_context_->get_current_filename(), generator_function_);
         FiberEnterScope enter_scope;
         quanta_fiber_resume(&fiber_);
     }
@@ -263,6 +266,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
         ensure_fiber();
         // The body runs in the generator function's realm, whoever called next().
         RealmScope realm_scope(&realm_of(generator_context_));
+        GeneratorFrameGuard frame(&generator_context_->get_current_filename(), generator_function_);
         FiberEnterScope enter_scope;
         quanta_fiber_resume(&fiber_);
     }
