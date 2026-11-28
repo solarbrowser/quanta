@@ -693,6 +693,8 @@ struct ClosureTemplate {
     bool is_arrow = false;
     bool is_method_shorthand = false;  // spec 14.3.9: no .prototype, not a constructor
     bool needs_self_binding = false;   // named function expression: immutable self-reference
+    // A class's constructor, method, field initializer or static block: the class definition gives it its private names.
+    bool is_class_element = false;
     // Set only where closure_needs_outer_environment actually ran and said no
     // -- not where a form simply reproduces what it used to do. That is the
     // difference between "we know nothing is captured" and "this form never

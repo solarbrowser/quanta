@@ -10879,6 +10879,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             // Nothing to cut from here: this body was made, not parsed.
             tmpl.executable->set_source_text(cls->get_source_text());
         }
+        tmpl.is_class_element = true;
         chunk_->ensure_closures().push_back(std::move(tmpl));
     }
     emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
@@ -10987,6 +10988,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 tmpl.form = ClosureTemplate::Form::FunctionExpr;
                 tmpl.body_is_strict = true;
                 tmpl.is_method_shorthand = true;  // no .prototype, not a constructor
+                tmpl.is_class_element = true;
                 if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
                 chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
                 emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
@@ -11022,6 +11024,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 if (tmpl.is_async && !tmpl.is_generator) {
                     tmpl.form = ClosureTemplate::Form::AsyncFunctionExpr;
                 }
+                tmpl.is_class_element = true;
                 chunk_->ensure_closures().push_back(std::move(tmpl));
             }
             emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
@@ -11108,6 +11111,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             tmpl.form = ClosureTemplate::Form::FunctionExpr;
             tmpl.body_is_strict = true;
             tmpl.is_method_shorthand = true;
+            tmpl.is_class_element = true;
             if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
             chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
             emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);

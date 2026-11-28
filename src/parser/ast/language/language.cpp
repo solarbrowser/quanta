@@ -606,12 +606,13 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl, bool ctx_is_
         // (`this` is the frame's own: has_binding("this") is always true and get_binding("this") is this_value_, so asking by name only built two strings.)
         function->set_arrow_this(ctx.get_this_value());
     }
-    // A private name is the class's lexically, wherever the closure is called from: one made in a method of a class that has private names
-    // carries what that method does (the call stack alone names the class of whoever is calling, which is not it).
+    // A private name is the class's lexically, wherever the closure is called from: one made inside code that can name some carries what its maker does
+    // (the call stack alone names the class of whoever is calling, which is not it). A class's own elements are left to the class definition, which
+    // must not add its names to a map it shares with the code around it.
     {
         CallStack& cs = CallStack::instance();
         if (cs.depth() > 0) {
-            if (Function* creator = cs.top().function_ptr; creator && creator != function.get() && (tpl.form == Form::Arrow || tpl.is_arrow)) {
+            if (Function* creator = cs.top().function_ptr; creator && creator != function.get() && !tpl.is_class_element) {
                 if (Object* brands = creator->private_brands()) {
                     function->set_private_brands(brands);
                     const std::string& slot = creator->pm_brand_slot();
